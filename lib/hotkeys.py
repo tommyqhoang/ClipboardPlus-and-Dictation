@@ -165,6 +165,41 @@ def from_tk(keysym: str, held: set[str]) -> Shortcut | None:
     return Shortcut(canonical(held), key)
 
 
+@dataclass(frozen=True)
+class Features:
+    """Which halves of the app the user chose in setup."""
+
+    dictation: bool = True
+    clipboard: bool = False
+
+
+def _bounded(raw: Any, default: int, low: int, high: int) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return default
+    return max(low, min(high, raw))
+
+
+@dataclass(frozen=True)
+class ClipboardSettings:
+    """Clipboard history options. `paused_until` is an epoch time, or -1 for until resumed."""
+
+    keep_items: int = 1000
+    keep_days: int = 30
+    images: bool = True
+    paused_until: float = 0.0
+
+    def paused(self, now: float) -> bool:
+        return self.paused_until == -1 or self.paused_until > now
+
+    def clamped(self) -> ClipboardSettings:
+        return ClipboardSettings(
+            keep_items=_bounded(self.keep_items, 1000, 50, 10_000),
+            keep_days=_bounded(self.keep_days, 30, 1, 3650),
+            images=self.images,
+            paused_until=self.paused_until,
+        )
+
+
 class Preferences:
     def __init__(self, paths: d.Paths) -> None:
         self.path = paths.config.parent / "menubar.json"
@@ -191,11 +226,54 @@ class Preferences:
         shortcut = Shortcut(canonical(modifiers), key)
         return DEFAULT if shortcut.problem() else shortcut
 
+    def features(self) -> Features:
+        """Dictation only until the user chooses; at least one feature is always on."""
+        raw = self.read().get("features")
+        if not isinstance(raw, dict):
+            return Features()
+        dictation, clipboard = raw.get("dictation"), raw.get("clipboard")
+        if not isinstance(dictation, bool) or not isinstance(clipboard, bool):
+            return Features()
+        if not (dictation or clipboard):
+            return Features()
+        return Features(dictation, clipboard)
+
+    def clipboard(self) -> ClipboardSettings:
+        raw = self.read().get("clipboard")
+        if not isinstance(raw, dict):
+            return ClipboardSettings()
+        defaults = ClipboardSettings()
+        images, paused = raw.get("images"), raw.get("paused_until")
+        return ClipboardSettings(
+            keep_items=raw.get("keep_items", defaults.keep_items),
+            keep_days=raw.get("keep_days", defaults.keep_days),
+            images=images if isinstance(images, bool) else defaults.images,
+            paused_until=float(paused)
+            if isinstance(paused, (int, float)) and not isinstance(paused, bool)
+            else defaults.paused_until,
+        ).clamped()
+
     def open_at_login(self) -> bool:
         return self.read().get("open_at_login", True) is not False
 
-    def save(self, shortcut: Shortcut | None = None, open_at_login: bool | None = None) -> None:
+    def save(
+        self,
+        shortcut: Shortcut | None = None,
+        open_at_login: bool | None = None,
+        features: Features | None = None,
+        clipboard: ClipboardSettings | None = None,
+    ) -> None:
         values = self.read()
+        if features is not None:
+            values["features"] = {"dictation": features.dictation, "clipboard": features.clipboard}
+        if clipboard is not None:
+            saved = clipboard.clamped()
+            values["clipboard"] = {
+                "keep_items": saved.keep_items,
+                "keep_days": saved.keep_days,
+                "images": saved.images,
+                "paused_until": saved.paused_until,
+            }
         if shortcut is not None:
             values["shortcut"] = {"modifiers": list(shortcut.modifiers), "key": shortcut.key}
         if open_at_login is not None:

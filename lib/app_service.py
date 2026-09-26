@@ -13,6 +13,7 @@ from pathlib import Path
 import clipboardplus
 import desktop
 import dictation as d
+import hotkeys
 import onboarding
 
 # Speech-to-text services with an OpenAI-compatible /audio/transcriptions API.
@@ -36,6 +37,9 @@ class Service:
         self.marker = paths.config.parent / "welcome.json"
 
     def ready(self) -> bool:
+        """Whether the chosen features can be used; dictation needs a model and microphone."""
+        if not hotkeys.Preferences(self.paths).features().dictation:
+            return True
         try:
             d.Config(self.paths).check(recording=True)
             return True

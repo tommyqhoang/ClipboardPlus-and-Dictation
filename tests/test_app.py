@@ -147,6 +147,15 @@ class ServiceTests(ServiceCase):
             self.assertEqual(dispatch.call_args.args[-1], "toggle")
 
 
+class ModeServiceTests(ServiceCase):
+    def test_setup_is_not_required_for_dictation_when_only_the_clipboard_is_used(self):
+        self.assertFalse(self.service.ready())  # No model yet: dictation is not usable.
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(False, True))
+        self.assertTrue(self.service.ready())
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        self.assertFalse(self.service.ready())
+
+
 class ClipboardPlusServiceTests(ServiceCase):
     KEY = "cp_live_" + "a1b2c3d4" * 6
 

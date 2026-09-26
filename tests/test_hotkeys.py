@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import sys
@@ -162,6 +163,59 @@ class HotkeyTests(unittest.TestCase):
             hotkeys.gnome_remove(Path("/bin/toggle"), run)
             self.assertIn(["set", *hotkeys.GNOME_LIST, "['/other/']"], calls)
             self.assertEqual(calls[-1][0], "reset-recursively")
+
+    def write_raw(self, text: str) -> None:
+        """Put arbitrary text in the preferences file, as a hand edit or crash would."""
+        self.preferences.path.parent.mkdir(parents=True, exist_ok=True)
+        self.preferences.path.write_text(text)
+
+    def test_features_default_to_dictation_only_and_round_trip(self):
+        self.assertEqual(self.preferences.features(), hotkeys.Features(True, False))
+        for features in (hotkeys.Features(False, True), hotkeys.Features(True, True)):
+            self.preferences.save(features=features)
+            self.assertEqual(self.preferences.features(), features)
+
+    def test_features_ignore_corrupt_values_and_never_turn_everything_off(self):
+        for raw in ("nonsense", {"dictation": "yes"}, {"dictation": False, "clipboard": False}, []):
+            self.write_raw(json.dumps({"features": raw}))
+            self.assertEqual(self.preferences.features(), hotkeys.Features(True, False), raw)
+        self.write_raw("{not json")
+        self.assertEqual(self.preferences.features(), hotkeys.Features(True, False))
+
+    def test_saving_features_keeps_the_other_preferences(self):
+        self.preferences.save(shortcut=hotkeys.PRESETS[1], open_at_login=False)
+        self.preferences.save(features=hotkeys.Features(True, True))
+        self.assertEqual(self.preferences.shortcut(), hotkeys.PRESETS[1])
+        self.assertFalse(self.preferences.open_at_login())
+
+    def test_clipboard_settings_defaults_round_trip_and_clamping(self):
+        self.assertEqual(self.preferences.clipboard(), hotkeys.ClipboardSettings())
+        settings = hotkeys.ClipboardSettings(
+            keep_items=200, keep_days=7, images=False, paused_until=-1
+        )
+        self.preferences.save(clipboard=settings)
+        self.assertEqual(self.preferences.clipboard(), settings)
+        self.preferences.save(clipboard=hotkeys.ClipboardSettings(keep_items=1, keep_days=0))
+        self.assertEqual(self.preferences.clipboard().keep_items, 50)
+        self.assertEqual(self.preferences.clipboard().keep_days, 1)
+        self.preferences.save(
+            clipboard=hotkeys.ClipboardSettings(keep_items=10**9, keep_days=10**9)
+        )
+        self.assertEqual(self.preferences.clipboard().keep_items, 10000)
+        self.assertEqual(self.preferences.clipboard().keep_days, 3650)
+
+    def test_clipboard_settings_ignore_wrong_types(self):
+        self.write_raw(
+            json.dumps({"clipboard": {"keep_items": "many", "keep_days": None, "images": "no"}})
+        )
+        self.assertEqual(self.preferences.clipboard(), hotkeys.ClipboardSettings())
+
+    def test_pause_state(self):
+        settings = hotkeys.ClipboardSettings(paused_until=-1)
+        self.assertTrue(settings.paused(now=100.0))  # Until resumed.
+        self.assertTrue(hotkeys.ClipboardSettings(paused_until=200.0).paused(now=100.0))
+        self.assertFalse(hotkeys.ClipboardSettings(paused_until=200.0).paused(now=300.0))
+        self.assertFalse(hotkeys.ClipboardSettings().paused(now=100.0))
 
     def test_helpers(self):
         with patch("webbrowser.open") as browser:
