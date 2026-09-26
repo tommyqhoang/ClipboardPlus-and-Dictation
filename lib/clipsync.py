@@ -197,7 +197,12 @@ class Engine:
             self._store.mark_pushed(
                 local.id, key, cloud_favorite=cloud_item.favorite, updated_at=local.updated_at
             )
-        if local.cloud_id != cloud_item.id or local.cloud_favorite != cloud_item.favorite:
+        if local.cloud_id != cloud_item.id:
+            # The account's copy may carry another time or text than this device's
+            # (an upload refused as a duplicate, a rewritten link): its key is the
+            # one a later deletion will name.
+            self._store.link(local.id, cloud_item.id, cloud_item.favorite, key)
+        elif local.cloud_favorite != cloud_item.favorite:
             self._store.link(local.id, cloud_item.id, cloud_item.favorite)
         # A pending local change wins only when it is the newer one.
         keep_local = pending and local.updated_at >= cloud_item.updated_at

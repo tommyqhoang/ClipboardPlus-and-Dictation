@@ -563,12 +563,22 @@ class Store:
                 (cloud_key, int(held), 0 if current else 1, item_id),
             )
 
-    def link(self, item_id: int, cloud_id: str, cloud_favorite: bool) -> None:
+    def link(
+        self, item_id: int, cloud_id: str, cloud_favorite: bool, cloud_key: str | None = None
+    ) -> None:
+        """Tie an item to the account's copy. `cloud_key` is that copy's key (its time
+        and text as the account holds them), which may differ from the local item's."""
         with self._transaction() as db:
-            db.execute(
-                "UPDATE items SET cloud_id = ?, cloud_favorite = ? WHERE id = ?",
-                (cloud_id, int(cloud_favorite), item_id),
-            )
+            if cloud_key is None:
+                db.execute(
+                    "UPDATE items SET cloud_id = ?, cloud_favorite = ? WHERE id = ?",
+                    (cloud_id, int(cloud_favorite), item_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE items SET cloud_id = ?, cloud_favorite = ?, cloud_key = ? WHERE id = ?",
+                    (cloud_id, int(cloud_favorite), cloud_key, item_id),
+                )
 
     def add_cloud(self, item: CloudItem, cloud_key: str) -> Item | None:
         """Insert an item the account has and this device does not (never sent back)."""

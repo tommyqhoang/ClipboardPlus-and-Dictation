@@ -78,6 +78,14 @@ class FakeCloud:
                 continue
             if (item.kind, cp.created_ms(item.created_at), item.text[:200]) in known:
                 continue
+            # The real account skips identical content from another source within 10 minutes.
+            if any(
+                other.text == item.text
+                and other.source != cp.SOURCE
+                and abs(other.created_ms - cp.created_ms(item.created_at)) <= 600_000
+                for other in self.items.values()
+            ):
+                continue
             self.add(
                 item.text,
                 ts=item.created_at,
@@ -304,8 +312,8 @@ class PullTests(SyncCase):
         # The extension captured the same copy 3 minutes earlier, so the account
         # refuses the app's own upload and hands back the extension's item.
         remote = self.cloud.add("same copy", ts=START - 100 - 3 * MINUTE, source="Chrome")
-        self.cloud.push = lambda items: None  # type: ignore[method-assign]
         self.engine.run_once()
+        self.assertEqual(len(self.cloud.items), 1)
         self.assertEqual(self.store.count(), 1)
         linked = self.store.get(local.id)
         assert linked is not None
@@ -436,6 +444,19 @@ class DeleteTests(SyncCase):
         self.assertEqual(self.texts(), [])
         self.assertEqual(report.deleted, 1)
         self.assertEqual(self.store.tombstones(), [])
+
+    def test_a_deletion_of_the_accounts_own_copy_removes_the_linked_local_item(self):
+        # The account kept the extension's copy (older time); this device's own upload was
+        # refused as a duplicate. Deleting the account's copy must still find our item.
+        self.store.add_text("same copy", now=START - 100)
+        remote = self.cloud.add("same copy", ts=START - 100 - 3 * MINUTE, source="Chrome")
+        self.engine.run_once()
+        self.assertEqual(self.local("same copy").cloud_id, remote.id)
+        del self.cloud.items[remote.id]
+        self.cloud.removed.append(cp.Removed("text", remote.created_ms, "same copy"))
+        self.advance(MINUTE)
+        self.engine.run_once()
+        self.assertEqual(self.texts(), [])
 
     def test_a_remote_deletion_of_an_unknown_item_is_ignored(self):
         self.store.add_text("keep", now=START - 100)
