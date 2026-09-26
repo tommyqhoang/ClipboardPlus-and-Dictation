@@ -513,7 +513,7 @@ def main() -> int:
         elif args.uninstall:
             uninstall(prefix)
             print(
-                "Removed desktop application files. Settings, models and transcripts were retained."
+                "Removed desktop application files. Settings, models, transcripts and clipboard history were retained."
             )
         else:
             launcher = install(prefix, not args.no_shortcut)

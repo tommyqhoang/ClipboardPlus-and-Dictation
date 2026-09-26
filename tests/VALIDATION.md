@@ -39,6 +39,63 @@ isolated Linux container. The latest verified scope is:
 CI defines Linux/macOS/Windows checks and Windows PowerShell parsing. These local
 results are not a completed GitHub Actions run or an actual Windows installation.
 
+## Clipboard history and Clipboard+ sync
+
+Evidence for the clipboard manager and account sync, kept apart because it has
+different limits from the dictation evidence above.
+
+- 465 tests pass (2 skipped) under a virtual X server with Python 3.11 and 3.14;
+  383 (29 to 30 skipped because they need Tk, an X server or Pillow) pass without a
+  display on Python 3.10 and 3.14. `ruff`, `ruff format`, `mypy --strict`, ShellCheck
+  and shfmt are clean.
+- Combined statement and branch coverage across `lib` is 93% (4,426 statements, 1,304
+  branches): sync engine 98%, store 93%, service 94%, account client 94%, Clipboard
+  tab and account card 96%, Linux watcher 85%, macOS watcher 88%, **Windows watcher
+  62%** (its Win32 calls only run on Windows), tray 84%.
+- The Linux watcher runs against a real X server (text, large INCR transfers, images,
+  a password-manager copy that is never requested, an owner that disappears
+  mid-request, rapid copies). The whole service process is started against a private
+  X server: text and an image are stored, a password-manager copy is not, and it quits
+  cleanly. The same check was repeated from an installed copy of the application
+  (all modules resolve from the install folder, and uninstall leaves nothing behind
+  but the kept history).
+- On a real GNOME Wayland session the watcher captured text with accents and emoji
+  and a PNG image; `wl-paste --watch` was correctly found unsupported there, so the
+  X11 path was used.
+- The sync engine has 42 offline tests against a real SQLite store and a fake account
+  that models the service's duplicate rule (idempotent retries, interruptions, offline
+  backoff, refused key, cursor overlap, conflicts, deletions, clear, size limits).
+  Deliberate breakages of the engine (no tombstone guard, wrong conflict rule, no
+  cursor overlap, unskipped refusals, no content match, no auth stop) are each caught
+  by a test.
+- The account client and engine were also run end to end against a local copy of the
+  real Clipboard+ backend (Postgres in Docker, behind a temporary TLS proxy):
+  registration, sign-in errors, key creation and verification, two devices plus an
+  extension-style client, duplicate handling, deletions, favorites on and off,
+  clear-everywhere and a refused key. That run found and fixed one bug the fakes
+  could not (a linked item kept its own time key, so a later remote deletion missed
+  it). The client's item key matches the server's own function byte for byte for
+  shared fixtures that both repositories test.
+- In the `clipboardplus` repository (committed there, not pushed or deployed): 161
+  unit tests and 9 Docker-Postgres integration tests pass, including the new
+  cross-client duplicate window for `POST /api/clipboard` and `/sync`.
+- The window and account card were rendered under a virtual display and checked
+  visually (not connected with an error, connected, reconnect needed).
+
+Not verified, and to be treated as untested until it is:
+
+- The macOS and Windows watchers, and copy-back of images on those systems, have never
+  run on real hardware; they are tested against fakes and type-checked. The
+  Windows-only smoke tests have not run.
+- A real password manager on any platform. On Linux the skip is verified with a
+  crafted X selection, because this `wl-copy` has no `--sensitive`.
+- The production Clipboard+ service (the backend change is not deployed), the
+  extension merge in a real browser (only its logic is unit tested), and Google
+  Docs' in-page shortcuts against the default dictation shortcut.
+- The two test failures that occur only inside `tests/Dockerfile` (the whisper.cpp
+  source fallback, which needs cmake, and a GNOME-shortcut test that needs gsettings)
+  are identical on the commit this work started from.
+
 ## Real transcription
 
 Built whisper.cpp CLI and server from commit

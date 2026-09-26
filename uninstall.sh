@@ -36,4 +36,4 @@ VENV="${HOME}/.local/share/whisper-dictation/venv"
 if [[ -f "${VENV}/pyvenv.cfg" ]]; then
   rm -rf -- "$VENV"
 fi
-echo "Removed the command and runtime module. Models, settings, and saved transcripts were retained."
+echo "Removed the command and runtime module. Models, settings, saved transcripts and clipboard history were retained."

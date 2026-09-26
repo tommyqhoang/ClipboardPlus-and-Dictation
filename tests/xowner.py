@@ -24,7 +24,7 @@ class XOwner(threading.Thread):
         self.requests: list[str] = []  # Target names the requestor asked for.
         self._commands: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._ready = threading.Event()
-        self._stop = threading.Event()
+        self._closing = threading.Event()
         self.start()
         self._ready.wait(5)
 
@@ -40,7 +40,7 @@ class XOwner(threading.Thread):
         self._sync()
 
     def close(self) -> None:
-        self._stop.set()
+        self._closing.set()
         self.join(5)
 
     def _sync(self) -> None:
@@ -58,7 +58,7 @@ class XOwner(threading.Thread):
         self.targets: dict[str, bytes] = {}
         self.transfers: dict[tuple[int, int], tuple[int, list[bytes]]] = {}
         self._ready.set()
-        while not self._stop.is_set():
+        while not self._closing.is_set():
             try:
                 command, argument = self._commands.get_nowait()
             except queue.Empty:

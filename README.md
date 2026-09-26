@@ -1,22 +1,29 @@
-# Whisper Dictation
+# Whisper Dictation & Clipboard+
 
-Free, local dictation for Linux, macOS, and Windows. Install it once, then
-**press a shortcut → speak → press it again → paste** in any app.
+Free desktop app for Linux, macOS, and Windows with two features you can use
+separately or together:
+
+- **Dictation**: install it once, then **press a shortcut → speak → press it
+  again → paste** in any app. Local Whisper by default.
+- **Clipboard history**: remembers what you copy (text, links and images) so you can
+  search it, star favorites and copy things back. Everything stays on your computer
+  unless you choose to sync it with a [Clipboard+](https://clipboardplus.apercallc.com)
+  account.
 
 The same icon, menu and workflow on every platform: the app lives in the macOS
 menu bar, the Windows system tray, or the Linux top bar and starts at login.
-Press **Super+Shift+D** (**Win+Shift+D** on Windows, **⇧⌘D** on a Mac) in any app, talk, press it again, and
+Press **Super+Shift+D** (**Win+Shift+D** on Windows, **⌃⌥⇧D** on a Mac) in any app, talk, press it again, and
 notifications tell you it is recording, transcribing, and then ready to paste.
 
 Linux remains the original platform. macOS and Windows support
 is new; there is no signed app bundle or MSI installer yet. See
 [desktop setup](docs/DESKTOPS.md) for dependencies, permissions, and validation limits.
 
-| Platform | Installed launcher | Microphone | Clipboard |
-| --- | --- | --- | --- |
-| Linux/Wayland | Top bar icon + GNOME shortcut | ALSA/PipeWire via arecord | wl-copy |
-| macOS | Menu bar (`~/Applications/Whisper Dictation.app`) | FFmpeg AVFoundation | pbcopy |
-| Windows x64 | System tray + Start Menu | FFmpeg DirectShow | Windows clipboard |
+| Platform | Installed launcher | Microphone | Clipboard (dictation) | Clipboard history capture |
+| --- | --- | --- | --- | --- |
+| Linux/Wayland | Top bar icon + GNOME shortcut | ALSA/PipeWire via arecord | wl-copy | `wl-paste --watch` where the desktop allows it, otherwise X11 selection events (also under XWayland) |
+| macOS | Menu bar (`~/Applications/Whisper Dictation.app`) | FFmpeg AVFoundation | pbcopy | Pasteboard change count, polled twice a second |
+| Windows x64 | System tray + Start Menu | FFmpeg DirectShow | Windows clipboard | Clipboard sequence number, polled four times a second |
 
 Local Whisper is the default. You can select your own compatible local model,
 use a local transcription server, or explicitly enable an external transcription
@@ -51,46 +58,45 @@ Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching relea
 and commit. Git is only needed for that Linux fallback. Dependencies and model
 downloads need internet access.
 
-When installation finishes, **Whisper Dictation opens automatically**. The
+When installation finishes, **Whisper Dictation & Clipboard+ opens automatically**. The
 first-run screens help the user:
 
-1. Choose English or multilingual transcription and select a microphone
-   (microphones are found automatically).
-2. Choose the transcription AI:
+1. Choose what to use: **Dictation**, **Clipboard history**, or **Both**. Only the
+   steps for what you chose follow, and you can change it later in Settings.
+2. For dictation: choose English or multilingual transcription and select a
+   microphone (microphones are found automatically), then choose the transcription AI:
    - **Free on-device AI** (recommended): a verified 148 MB Whisper model,
      downloaded once; audio never leaves the computer.
    - **A Whisper model file you already have.**
    - **Your own AI service**: OpenAI, Groq, or any OpenAI-compatible
      `/audio/transcriptions` endpoint, with your API key. Audio is sent to that
      service, which may charge.
-3. A short walkthrough of the shortcut workflow, and an optional card to connect
-   [Clipboard+](https://clipboardplus.apercallc.com) so every transcript is also
-   kept in your Clipboard+ history (also available later in Settings).
+3. For clipboard history: an opt-in screen. Nothing is captured until you
+   press **Turn on**; **Not now** leaves it off.
+4. A short walkthrough, and (for clipboard history) an optional card to connect a
+   [Clipboard+](https://clipboardplus.apercallc.com) account so the history also
+   shows on the website and in the browser extension.
+
+The walkthrough does not begin recording. The microphone starts only when you
+press the shortcut.
 
 The walkthrough does not begin recording. The microphone starts only when you
 press the shortcut.
 
 ### Everyday use (all platforms)
 
-- **Super+Shift+D** (Win+Shift+D on Windows, ⇧⌘D on macOS) starts recording from any app. Press it again
+- **Super+Shift+D** (Win+Shift+D on Windows, ⌃⌥⇧D on macOS) starts recording from any app. Press it again
   to stop. Notifications show *Recording*, *Transcribing…*, and
   *Transcript copied*; then paste with Ctrl+V (⌘V). The icon turns red while
   recording.
-- The icon's menu is the same everywhere: Start/Stop, Cancel Recording, Copy
-  Last Transcript, **Shortcut** (presets or *Record New Shortcut…*),
-  **Open at Login**, **Clipboard History (Clipboard+)…**, and **Settings…**
-  (language, microphone, and AI).
+- The icon's menu is the same everywhere: a status line, Start/Stop, Cancel Recording,
+  Copy Last Transcript (dictation items appear only while Dictation is on),
+  **Clipboard History…**, **Pause Clipboard Capture** (for an hour, or until you
+  resume), **Shortcut** (presets or *Record New Shortcut…*), **Open at Login**,
+  **Clipboard+ Website…**, and **Settings…**.
 - Your own service's API key is stored in the settings folder as
   `transcription-key`, readable only by your user account. An environment
   variable named by `api_key_env` still takes precedence.
-- **Clipboard+ (optional).** In Settings, paste a Clipboard+ API key (Developer
-  API in your Clipboard+ account, with clipboard write access) and each transcript
-  is also saved to your Clipboard+ history, to search on the website or in the
-  browser extension. Nothing is sent until you connect, only the transcript text
-  is sent (never audio), and **Disconnect** stops it. The key is stored as
-  `clipboard-plus-key` in the settings folder, readable only by you. The
-  Clipboard+ service skips an item identical to your latest history entry, so a
-  transcript captured by both the extension and this app is stored once.
 
 Platform details:
 
@@ -107,7 +113,7 @@ Platform details:
   The top bar icon needs AppIndicator support (built into Ubuntu; an extension
   on stock GNOME). Open at login is `~/.config/autostart/whisper-dictation.desktop`.
 
-The menu bar/tray component (PyObjC on macOS; pystray and Pillow elsewhere) is
+The menu bar/tray component (PyObjC and Pillow on macOS; pystray, Pillow and, on Linux, python-xlib elsewhere) is
 installed into `~/.local/share/whisper-dictation/venv` (Windows: under the app
 folder in `%LOCALAPPDATA%`), so the system Python is not modified. No shell
 profile or system `PATH` is silently changed.
@@ -115,6 +121,84 @@ profile or system `PATH` is silently changed.
 For reproducible deployment, download bootstrap from a reviewed commit and set
 `DICTATION_REF` to that commit (Windows: pass `-Ref`). The quick commands track
 `main`; app snapshots are HTTPS downloads, not signed application releases.
+
+## Clipboard history
+
+The window has **Clipboard**, **Dictation** and **Settings** tabs (only for the
+features you turned on). The Clipboard tab lists what you copied, newest first,
+with a preview or thumbnail, how long ago, and where it came from (Desktop,
+Dictation or Cloud). Search it, filter by All / Favorites / Images / Text, star an
+item, click a row to copy it back, or delete it. *Clear history* asks whether to
+clear **this device only** or **everywhere** (when a Clipboard+ account is
+connected) and whether to keep favorites (the default). Dictation transcripts join
+the history too.
+
+A small background service, started and restarted by the tray or menu bar app,
+does the capturing; the window and dictation only read the shared database.
+
+### What is stored, and where
+
+- Text and links up to 1 MB each, and images up to 10 MB each (500 MB in total; the
+  oldest non-favorite images go first). Files and other formats are ignored.
+- By default the newest 1,000 items for up to 30 days are kept; favorites are never
+  removed. Change both in Settings, or turn images off.
+- Everything lives in the settings folder under `clipboard/`: a SQLite database
+  (`clips.db`) and image files, readable only by you. It is **not** encrypted, so
+  anything you copy that is not marked secret is stored in plain form.
+- Nothing is captured until you turn Clipboard history on. **Pause Clipboard
+  Capture** stops it for an hour or until you resume.
+- Anything a password manager marks secret is skipped and never read: the
+  `x-kde-passwordManagerHint` target on Linux, `org.nspasteboard.ConcealedType` /
+  `TransientType` / `AutoGeneratedType` on macOS, and
+  `ExcludeClipboardContentFromMonitorProcessing` / `CanIncludeInClipboardHistory = 0`
+  on Windows. A password manager that does not set these cannot be recognised.
+- Images never leave the computer, even with an account connected.
+- **Settings → Delete all clipboard data** erases the database and images on this
+  computer (the Clipboard+ account is not touched). Uninstalling keeps your history,
+  like every other setting.
+
+### Clipboard+ account (optional)
+
+Connect an account in Settings (or during setup) and the history is mirrored with
+your Clipboard+ account, so the website and the browser extension show the same
+items without duplicates.
+
+- **Create account** or **Sign in** with email and password. The app uses them for
+  one request to create a key limited to clipboard read and write, then discards
+  the password and the session; only the key is kept, as `clipboard-plus-key`
+  (readable only by you), plus the address for display. Accounts that use Google
+  sign-in can paste a key made on the website (**Use an API key instead**).
+- Text and links are sent (up to 50,000 bytes each); images and audio never are.
+  Requests go over HTTPS only and redirects are never followed, so the key cannot
+  be forwarded elsewhere.
+- Sync runs about every minute, five seconds after a new copy, and on **Sync now**.
+  Items made elsewhere appear here (never written to your clipboard); favorites and
+  labels follow whichever side changed last; deleting an item deletes it in both
+  places, and *Clear history → Everywhere* clears the account too.
+- The same copy captured by the app and by the extension (a few seconds apart) is
+  one item: the Clipboard+ service skips identical content from a different source
+  within ten minutes, and the extension merges such an item on pull. That needs the
+  updated Clipboard+ service and extension.
+- If the account refuses the key, the card says **Reconnect needed** and syncing
+  stops until you sign in again. Being offline just retries with a growing delay
+  (30 seconds up to 10 minutes). **Disconnect** asks whether to keep the history on
+  this computer; the account keeps its own copy either way.
+- Existing installs that had connected a key only for dictation no longer upload
+  transcripts on their own: turn on Clipboard history and syncing continues.
+
+### Shortcuts
+
+| Platform | Dictation shortcut |
+| --- | --- |
+| Linux | Super+Shift+D (GNOME keybinding) |
+| Windows | Win+Shift+D |
+| macOS | ⌃⌥⇧D |
+
+These were checked against Chrome's published shortcut list, which uses Alt, Ctrl,
+Ctrl+Shift and (on a Mac) ⌘ combinations with D but no Win/Super or ⌃⌥ ones. That
+list does not cover the in-page shortcuts of web apps such as Google Docs, or the
+shortcuts of other software you run; pick any preset or record your own from the
+menu. `Ctrl+Alt+D`, the earlier default, is still one click away.
 
 ## Why use this instead of built-in dictation?
 
@@ -304,7 +388,7 @@ delete audio unless `keep_audio: true`. Retained audio must be retried or
 explicitly discarded before starting another recording. Silence preserves the
 previous transcript and clipboard.
 
-Unix runtime files, audio, and settings use private permissions. Windows uses
+Unix runtime files, audio, settings and the clipboard history use private permissions. Windows uses
 per-user LocalAppData directories and their inherited access controls; do not
 override the data directories to a shared location. Transcript text and
 provider responses are not written to logs; user-facing errors are in
@@ -320,8 +404,9 @@ Environment overrides still work: `DICTATION_MODEL`, `DICTATION_LANGUAGE`,
 XDG config/cache/runtime paths are respected.
 
 Uninstall with `./uninstall.sh` after the active session finishes. It removes
-the installed command/module and GNOME binding, retaining models, settings,
-transcripts, and recoverable audio.
+the installed command/module and GNOME binding, and stops the clipboard service,
+retaining models, settings, transcripts, recoverable audio and the clipboard history
+(use **Delete all clipboard data** first to erase it).
 
 ## Architecture and development
 
@@ -329,11 +414,20 @@ transcripts, and recoverable audio.
 in `lib/dictation.py`. `lib/desktop.py` owns OS-specific commands, paths, and locks.
 `lib/app.py` provides the graphical workflow and `lib/app_service.py` keeps its
 setup and action logic separate from Tk rendering.
+The clipboard history is a separate headless process (`lib/clipservice.py`) that the
+tray starts and restarts: `lib/clipwatch*.py` are the per-OS watchers behind one
+`Watcher` interface, `lib/clipstore.py` is the only code that touches the SQLite
+database and image files, `lib/clipsync.py` is the two-way account sync (pure logic
+over the store and a cloud client, tested offline), `lib/clipboardplus.py` is the
+account/API client, `lib/clipui.py` the Tk pages, and `lib/clipcontrol.py` the shared
+tray/menu-bar supervision. The window and dictation reach the service through the
+database, `clip-status.json` and small runtime signal files.
 `lib/rewriting.py` owns opt-in text-model requests and review/copy locking;
 `lib/workflow.py` provides the read-only session monitor and safe terminal display.
 Each recording starts one detached supervisor, which owns
 the recorder, control state, optional preview task, and final transcription.
-There is no always-running dictation daemon. Local CLI and HTTP transcription
+There is no always-running dictation daemon (only the clipboard service runs
+continuously, and only while Clipboard history is on). Local CLI and HTTP transcription
 share normalization, recovery, and clipboard delivery.
 
 ```bash
