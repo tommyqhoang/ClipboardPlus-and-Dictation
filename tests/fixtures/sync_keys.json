@@ -1,0 +1,38 @@
+[
+ {
+  "kind": "text",
+  "created_ms": 1790424000000,
+  "primary": "hello",
+  "key": "text|2026-09-26T12:00:00.000Z|hello"
+ },
+ {
+  "kind": "text",
+  "created_ms": 1790424000123,
+  "primary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "key": "text|2026-09-26T12:00:00.123Z|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+ },
+ {
+  "kind": "url",
+  "created_ms": 1790424000999,
+  "primary": "https://example.com/a?b=1",
+  "key": "url|2026-09-26T12:00:00.999Z|https://example.com/a?b=1"
+ },
+ {
+  "kind": "text",
+  "created_ms": 1790424001000,
+  "primary": "line one\nline two ünï café",
+  "key": "text|2026-09-26T12:00:01.000Z|line one\nline two ünï café"
+ },
+ {
+  "kind": "text",
+  "created_ms": 1790424002000,
+  "primary": "emoji 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+  "key": "text|2026-09-26T12:00:02.000Z|emoji 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+ },
+ {
+  "kind": "text",
+  "created_ms": 0,
+  "primary": "epoch",
+  "key": "text|1970-01-01T00:00:00.000Z|epoch"
+ }
+]

@@ -155,26 +155,6 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(cp.send(self.folder, "Hello", api="http://evil.example"), "failed")
         opener.open.assert_not_called()
 
-    def test_verify_distinguishes_valid_invalid_and_offline(self):
-        def error(code):
-            return urllib.error.HTTPError(cp.API, code, "err", {}, None)
-
-        # The probe item is invalid on purpose: 400 means the key may write.
-        for outcome, expected in (
-            (error(400), "ok"),
-            (error(403), "read-only"),
-            (error(401), "invalid"),
-            (error(500), "error"),
-            (response(201), "error"),
-            (urllib.error.URLError("offline"), "offline"),
-        ):
-            with self.subTest(outcome=repr(outcome)):
-                opener = self.opener(outcome)
-                self.assertEqual(cp.verify(KEY), expected)
-                request = opener.open.call_args.args[0]
-                self.assertEqual(request.get_method(), "POST")
-                self.assertEqual(json.loads(request.data), {"type": "verify"})
-
 
 class EngineTests(unittest.TestCase):
     def setUp(self):

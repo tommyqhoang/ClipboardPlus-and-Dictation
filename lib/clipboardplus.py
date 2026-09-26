@@ -1,9 +1,11 @@
 """Optional link to a Clipboard+ account.
 
-When the user pastes a Clipboard+ API key in Settings, each transcript is also
-saved to their Clipboard+ history (source "Whisper Dictation & Clipboard+"), so it shows in
-the web dashboard and the browser extension. Nothing is sent unless a key is
-saved, and the key is never used for anything else. Standard library only.
+The user creates an account or signs in from the app (the password and session token
+are used for one request each and discarded; only a key limited to clipboard read and
+write is kept) or pastes a key made on the website. With a key saved, the sync engine
+mirrors the clipboard history with the account, so it shows in the web dashboard and
+the browser extension. Nothing is sent unless a key is saved, and the key is never
+used for anything else. Standard library only.
 """
 
 from __future__ import annotations
@@ -11,12 +13,19 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from clipstore import Item
 
 API = "https://backend-production-74d4.up.railway.app"
 SITE = "https://clipboardplus.apercallc.com"
@@ -26,6 +35,27 @@ SOURCE = "Whisper Dictation & Clipboard+"
 KEY_PREFIX = "cp_live_"
 # The service rejects larger items, so do not upload them.
 MAX_BYTES = 50_000
+BATCH = 100  # Items per /sync request.
+MAX_REPLY = 16 * 1024 * 1024
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+SCOPES = ["clipboard:read", "clipboard:write"]
+GOOGLE_ONLY = (
+    "This account signs in with Google. Get a key from the website and paste it here instead."
+)
+TROUBLE = "Clipboard+ is having trouble right now. Try again shortly."
+OFFLINE = "Couldn’t reach Clipboard+. Check your internet connection and try again."
+
+
+class AuthError(Exception):
+    """The account, password or key was refused. Messages are safe to show."""
+
+
+class SyncError(Exception):
+    """A request failed for another reason; `status` is None when offline."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -82,41 +112,82 @@ def remove_key(config_dir: Path) -> None:
     key_path(config_dir).unlink(missing_ok=True)
 
 
-def request(key: str, method: str, route: str, body: dict[str, Any] | None, api: str) -> int | None:
-    """The HTTP status, or None when the service could not be reached."""
+def _send(
+    bearer: str,
+    method: str,
+    route: str,
+    body: dict[str, Any] | None,
+    api: str,
+    *,
+    timeout: float = 6.0,
+    limit: int = 64 * 1024,
+) -> tuple[int | None, bytes]:
+    """(HTTP status, body), or (None, b"") when the service could not be reached."""
     if not api.startswith("https://"):
-        return None  # The key only ever travels over TLS.
-    headers = {"Authorization": "Bearer " + key, "Accept": "application/json"}
+        return None, b""  # Credentials only ever travel over TLS.
+    headers = {"Accept": "application/json"}
+    if bearer:
+        headers["Authorization"] = "Bearer " + bearer
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     call = urllib.request.Request(api + route, data=data, headers=headers, method=method)
     try:
-        with urllib.request.build_opener(NoRedirect()).open(call, timeout=6) as reply:
-            reply.read(64 * 1024)
-            return int(reply.status)
+        with urllib.request.build_opener(NoRedirect()).open(call, timeout=timeout) as reply:
+            return int(reply.status), bytes(reply.read(limit + 1))
     except urllib.error.HTTPError as exc:
-        exc.close()
-        return int(exc.code)
+        try:
+            return int(exc.code), bytes(exc.read(64 * 1024))
+        except (OSError, http.client.HTTPException, AttributeError, ValueError):
+            return int(exc.code), b""
+        finally:
+            exc.close()
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
+        return None, b""
+
+
+def request(key: str, method: str, route: str, body: dict[str, Any] | None, api: str) -> int | None:
+    """The HTTP status, or None when the service could not be reached."""
+    return _send(key, method, route, body, api)[0]
+
+
+def _document(data: bytes) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def verify(key: str, api: str = API) -> str:
-    """ok, invalid, read-only, offline or error.
+    """ok, invalid, read-only, write-only, no-access, offline or error.
 
-    Posts an item of an unknown type: the service checks the key and its write
+    Write: posts an item of an unknown type; the service checks the key and its write
     permission first, then rejects the item (400) without saving anything.
+    Read: fetches one item.
     """
     status = request(key, "POST", "/api/clipboard", {"type": "verify"}, api)
     if status is None:
         return "offline"
-    if status == 400:
-        return "ok"
     if status == 401:
         return "invalid"
-    return "read-only" if status == 403 else "error"
+    if status not in (400, 403):
+        return "error"
+    can_write = status == 400
+    status = request(key, "GET", "/api/clipboard?limit=1", None, api)
+    if status is None:
+        return "offline"
+    if status == 401:
+        return "invalid"
+    if status not in (200, 403):
+        return "error"
+    can_read = status == 200
+    if can_read and can_write:
+        return "ok"
+    if can_read:
+        return "read-only"
+    return "write-only" if can_write else "no-access"
 
 
 def send(config_dir: Path, text: str, api: str = API) -> str:
@@ -131,3 +202,287 @@ def send(config_dir: Path, text: str, api: str = API) -> str:
     if status is not None and 200 <= status < 300:
         return "sent"
     return "rejected" if status in (401, 403) else "failed"
+
+
+# -- account ---------------------------------------------------------------
+def _account(
+    route: str, bearer: str, payload: dict[str, Any], api: str, refused: dict[int, str]
+) -> dict[str, Any]:
+    """One account request. Failures never echo the server's text or any credential."""
+    status, data = _send(bearer, "POST", route, payload, api, timeout=15.0)
+    if status is None:
+        raise AuthError(OFFLINE)
+    document = _document(data) or {}
+    if 200 <= status < 300:
+        if not document:
+            raise AuthError(TROUBLE)
+        return document
+    code = document.get("code")
+    if code == "GOOGLE_ACCOUNT_ONLY" or code == "GOOGLE_ACCOUNT_EXISTS":
+        raise AuthError(GOOGLE_ONLY)
+    if status == 400:
+        error = str(document.get("error", ""))
+        if "at least 8" in error:
+            message = "Use a password with at least 8 characters."
+        elif "email address" in error:
+            message = "That email address doesn’t look right."
+        elif "length" in error:
+            message = "That email or password is too long."
+        else:
+            message = "Check your email and password and try again."
+        raise AuthError(message)
+    if status == 429:
+        raise AuthError("Too many attempts. Wait a few minutes and try again.")
+    raise AuthError(refused.get(status, TROUBLE))
+
+
+def _session(route: str, email: str, password: str, api: str, refused: dict[int, str]) -> str:
+    document = _account(route, "", {"email": email, "password": password}, api, refused)
+    token = document.get("token")
+    if not isinstance(token, str) or not token:
+        raise AuthError(TROUBLE)
+    return token
+
+
+def register(email: str, password: str, api: str = API) -> str:
+    """Create an account; returns the session token (use it once, then drop it)."""
+    return _session(
+        "/api/auth/register",
+        email,
+        password,
+        api,
+        {409: "That email already has an account. Sign in instead."},
+    )
+
+
+def login(email: str, password: str, api: str = API) -> str:
+    """Sign in; returns the session token (use it once, then drop it)."""
+    return _session("/api/auth/login", email, password, api, {401: "Wrong email or password."})
+
+
+def create_key(token: str, name: str, api: str = API) -> str:
+    """A key limited to clipboard read and write, made with a session token."""
+    document = _account(
+        "/api/keys",
+        token,
+        {"name": name, "scopes": SCOPES},
+        api,
+        {
+            401: "Clipboard+ signed you out. Sign in again.",
+            403: "Clipboard+ signed you out. Sign in again.",
+            409: "You already have 10 keys. Remove one on the Clipboard+ website, then try again.",
+        },
+    )
+    try:
+        return clean_key(str(document.get("token", "")))
+    except ValueError:
+        raise AuthError(TROUBLE) from None
+
+
+# -- matching --------------------------------------------------------------
+def created_ms(created_at: float) -> int:
+    """Epoch seconds as the whole milliseconds the service stores."""
+    return int(round(created_at * 1000))
+
+
+def sync_key(kind: str, created_ms: int, primary: str) -> str:
+    """The service's own item key: `type|ISO time|first 200 characters`.
+
+    The service (and the browser extension) count characters as JavaScript does, in
+    UTF-16 units, so this does too; a cut through a surrogate pair drops the half.
+    """
+    moment = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=created_ms)
+    stamp = f"{moment:%Y-%m-%dT%H:%M:%S}.{moment.microsecond // 1000:03d}Z"
+    head = primary.encode("utf-16-le", "surrogatepass")[:400].decode("utf-16-le", "surrogatepass")
+    if head and 0xD800 <= ord(head[-1]) <= 0xDBFF:
+        head = head[:-1]
+    return f"{kind}|{stamp}|{head}"
+
+
+# -- cloud -----------------------------------------------------------------
+@dataclass(frozen=True)
+class CloudItem:
+    id: str
+    kind: str  # text or url
+    text: str  # the text, or the link
+    label: str
+    favorite: bool
+    source: str
+    created_ms: int
+    updated_at: float  # epoch seconds
+
+
+@dataclass(frozen=True)
+class Removed:
+    """A deletion made elsewhere: found by kind and timestamp, since ids are gone."""
+
+    kind: str
+    created_ms: int
+    prefix: str
+
+
+@dataclass(frozen=True)
+class Pull:
+    items: list[CloudItem]
+    deleted: list[Removed]
+
+
+def _epoch(stamp: object, fallback: float) -> float:
+    if isinstance(stamp, str):
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return fallback
+
+
+def _cloud_item(raw: object) -> CloudItem | None:
+    if not isinstance(raw, dict):
+        return None
+    identifier, kind = raw.get("id"), raw.get("type")
+    if not isinstance(identifier, str) or not UUID.fullmatch(identifier):
+        return None
+    if kind not in ("text", "url"):
+        return None
+    text = raw.get("content" if kind == "text" else "url")
+    stamp = raw.get("ts")
+    if not isinstance(text, str) or not text or not isinstance(stamp, (int, float)) or stamp <= 0:
+        return None
+    label, source = raw.get("label"), raw.get("source")
+    return CloudItem(
+        id=identifier,
+        kind=str(kind),
+        text=text,
+        label=label if isinstance(label, str) else "",
+        favorite=raw.get("isFavorite") is True,
+        source=source if isinstance(source, str) else "",
+        created_ms=int(stamp),
+        updated_at=_epoch(raw.get("updatedAt"), stamp / 1000),
+    )
+
+
+def _removed(raw: object) -> Removed | None:
+    if not isinstance(raw, dict) or raw.get("type") not in ("text", "url"):
+        return None
+    stamp, prefix = raw.get("ts"), raw.get("contentPrefix")
+    if not isinstance(stamp, (int, float)) or stamp <= 0:
+        return None
+    return Removed(str(raw["type"]), int(stamp), prefix if isinstance(prefix, str) else "")
+
+
+class Cloud:
+    """The account's clipboard history over HTTPS with a scoped key."""
+
+    def __init__(self, key: str, api: str = API) -> None:
+        self._key = clean_key(key)
+        self._api = api
+
+    def _call(
+        self,
+        method: str,
+        route: str,
+        body: dict[str, Any] | None = None,
+        *,
+        accept: tuple[int, ...] = (),
+        parse: bool = False,
+    ) -> dict[str, Any]:
+        """The parsed reply ({} when not parsed or accepted-missing)."""
+        status, data = _send(
+            self._key, method, route, body, self._api, timeout=30.0, limit=MAX_REPLY
+        )
+        if status is None:
+            raise SyncError("Couldn’t reach Clipboard+.")
+        if status in (401, 403):
+            raise AuthError("Clipboard+ no longer accepts this key.")
+        if status in accept:
+            return {}
+        if not 200 <= status < 300:
+            raise SyncError(f"Clipboard+ answered with an error ({status}).", status)
+        if not parse:
+            return {}
+        document = _document(data) if len(data) <= MAX_REPLY else None
+        if document is None:
+            raise SyncError("Clipboard+ sent a reply that could not be read.", status)
+        return document
+
+    @staticmethod
+    def _id(cloud_id: str) -> str:
+        if not UUID.fullmatch(cloud_id):
+            raise SyncError("That is not a Clipboard+ item id.")
+        return cloud_id
+
+    def pull(self, since: float | None) -> Pull:
+        route = "/api/clipboard/pull"
+        if since is not None:
+            moment = datetime.fromtimestamp(since, tz=timezone.utc)
+            stamp = f"{moment:%Y-%m-%dT%H:%M:%S}.{moment.microsecond // 1000:03d}Z"
+            route += "?" + urllib.parse.urlencode({"since": stamp})
+        document = self._call("GET", route, parse=True)
+        items, deleted = document.get("items", []), document.get("deletedItems", [])
+        if not isinstance(items, list) or not isinstance(deleted, list):
+            raise SyncError("Clipboard+ sent a reply that could not be read.")
+        return Pull(
+            [item for item in map(_cloud_item, items) if item],
+            [gone for gone in map(_removed, deleted) if gone],
+        )
+
+    def push(self, items: list[Item]) -> None:
+        """Upload text and links (images never leave the device), 100 per request."""
+        entries: list[dict[str, Any]] = []
+        for item in items:
+            if item.kind not in ("text", "url"):
+                continue
+            entry: dict[str, Any] = {
+                "type": item.kind,
+                "url" if item.kind == "url" else "content": item.text,
+                "ts": created_ms(item.created_at),
+                "isFavorite": item.favorite,
+                "source": SOURCE,
+            }
+            if item.favorite and item.label:
+                entry["label"] = item.label
+            entries.append(entry)
+        for start in range(0, len(entries), BATCH):
+            self._call("POST", "/api/clipboard/sync", {"items": entries[start : start + BATCH]})
+
+    def toggle_favorite(self, cloud_id: str) -> bool | None:
+        """The new favorite state, or None when the item no longer exists."""
+        document = self._call(
+            "PATCH", f"/api/clipboard/{self._id(cloud_id)}/favorite", accept=(404,), parse=True
+        )
+        if not document:
+            return None
+        item = document.get("item")
+        if isinstance(item, dict) and isinstance(item.get("isFavorite"), bool):
+            return bool(item["isFavorite"])
+        raise SyncError("Clipboard+ sent a reply that could not be read.")
+
+    def delete(self, cloud_id: str) -> None:
+        """404 is success: it is already gone."""
+        self._call("DELETE", f"/api/clipboard/{self._id(cloud_id)}", accept=(404,))
+
+    def clear(self, *, favorites: bool) -> None:
+        """Delete the history (starred items stay unless `favorites`)."""
+        self._call("DELETE", "/api/clipboard")
+        if not favorites:
+            return
+        starred: list[str] = []
+        offset = 0
+        while offset < 100_000:
+            page = self._call("GET", f"/api/clipboard?limit=200&offset={offset}", parse=True)
+            rows = page.get("items", [])
+            if not isinstance(rows, list):
+                raise SyncError("Clipboard+ sent a reply that could not be read.")
+            starred += [
+                row["id"]
+                for row in rows
+                if isinstance(row, dict)
+                and row.get("isFavorite") is True
+                and isinstance(row.get("id"), str)
+                and UUID.fullmatch(row["id"])
+            ]
+            if page.get("hasMore") is not True or not rows:
+                break
+            offset += len(rows)
+        for start in range(0, len(starred), 500):
+            self._call("DELETE", "/api/clipboard/bulk", {"ids": starred[start : start + 500]})
