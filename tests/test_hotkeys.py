@@ -134,7 +134,9 @@ class HotkeyTests(unittest.TestCase):
             return Mock(returncode=0, stdout=output, stderr="")
 
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
-            self.assertTrue(hotkeys.gnome_shortcut(hotkeys.DEFAULT, PurePosixPath("/bin/toggle"), run))
+            self.assertTrue(
+                hotkeys.gnome_shortcut(hotkeys.DEFAULT, PurePosixPath("/bin/toggle"), run)
+            )
             self.assertIn(
                 ["set", *hotkeys.GNOME_LIST, f"['/other/', {hotkeys.GNOME_PATH!r}]"], calls
             )
