@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import http.client
 import json
@@ -12,6 +13,7 @@ import ssl
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -109,9 +111,8 @@ def download_model(
                 digest.update(block)
         if digest.hexdigest() == expected:
             return destination
-        raise dictation.DictationError(
-            "Existing model failed verification; move it aside and retry."
-        )
+        # Damaged or replaced: keep it aside (never delete a user's file) and fetch anew.
+        os.replace(destination, destination.with_name(destination.name + ".damaged"))
     for stale in folder.glob("model-*.part"):
         if time.time() - stale.stat().st_mtime > STALE_PARTIAL_SECONDS:
             stale.unlink(missing_ok=True)
@@ -122,16 +123,30 @@ def download_model(
         url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{destination.name}"
         print("Downloading the free base model (about 148 MB)...", flush=True)
         with os.fdopen(fd, "wb") as output:
-            with open_url(url) as response:
-                size = int(response.headers.get("Content-Length") or 0)
-                while block := response.read(1024 * 1024):
-                    total += len(block)
-                    if total > 160_000_000:
-                        raise dictation.DictationError("Model download exceeded the expected size.")
-                    digest.update(block)
-                    output.write(block)
-                    if progress:
-                        progress(total, size)
+            try:
+                with open_url(url) as response:
+                    size = int(response.headers.get("Content-Length") or 0)
+                    while block := response.read(1024 * 1024):
+                        total += len(block)
+                        if total > 160_000_000:
+                            raise dictation.DictationError(
+                                "Model download exceeded the expected size."
+                            )
+                        digest.update(block)
+                        output.write(block)
+                        if progress:
+                            progress(total, size)
+            except (urllib.error.URLError, http.client.HTTPException, TimeoutError) as exc:
+                raise dictation.DictationError(
+                    "Couldn’t download the speech model. Check your internet connection and "
+                    "try again, or choose a model file or your own AI service instead."
+                ) from exc
+            except OSError as exc:
+                if exc.errno == errno.ENOSPC:
+                    raise dictation.DictationError(
+                        "Not enough free disk space for the speech model (about 150 MB)."
+                    ) from exc
+                raise
         if digest.hexdigest() != expected:
             raise dictation.DictationError("Model checksum mismatch; download was not activated.")
         os.replace(partial, destination)
@@ -143,7 +158,7 @@ def download_model(
 def run(paths: dictation.Paths) -> None:
     if dictation.busy(paths):
         raise dictation.DictationError("Finish the current recording before setup.")
-    print("Welcome to Whisper Dictation. Setup never starts recording.")
+    print(f"Welcome to {hotkeys.APP_NAME}. Setup never starts recording.")
     print("Local transcription is free and offline after the model download.")
     values = dictation.Config(paths).values.copy()
     existing = dictation.read_json(paths.config)
@@ -205,10 +220,10 @@ def run(paths: dictation.Paths) -> None:
     print("--watch displays live drafts when enabled. Nothing has been recorded by setup.")
     if desktop.platform_name() == "macos":
         print(
-            f"Open Whisper Dictation from Applications; it registers {hotkeys.DEFAULT.label()} itself."
+            f"Open {hotkeys.APP_NAME} from Applications; it registers {hotkeys.DEFAULT.label()} itself."
         )
     elif desktop.platform_name() == "windows":
-        print(f"Use the Start Menu Whisper Dictation shortcut or {hotkeys.DEFAULT.label()}.")
+        print(f"Use the Start Menu {hotkeys.APP_NAME} shortcut or {hotkeys.DEFAULT.label()}.")
     else:
         print(
             f"GNOME installer shortcut: {hotkeys.DEFAULT.label()}. Other desktops: bind dictate-toggle."

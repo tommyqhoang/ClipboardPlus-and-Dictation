@@ -37,7 +37,7 @@ main() (
       return 1
       ;;
   esac
-  echo "Installs Whisper Dictation and dependencies for your user. Package managers may request administrator access."
+  echo "Installing Clipboard+ Desktop for your user. Your package manager may ask for your password."
   if [[ "$platform" == Darwin ]]; then
     # Homebrew may be installed without being on PATH (non-login shells).
     if ! command -v brew >/dev/null 2>&1; then
@@ -74,12 +74,15 @@ main() (
     "https://github.com/tommyqhoang/wayland-whisper-dictation/archive/${ref}.tar.gz" -o "$archive"
   mkdir "$work/app"
   tar -xzf "$archive" --strip-components=1 -C "$work/app"
+  # The installers leave the closing words to this script.
+  export DICTATION_QUICK_INSTALL=1
   if [[ "$platform" == Linux ]]; then
     bash "$work/app/install.sh" --no-model
   else
     "$python" "$work/app/setup-desktop.py"
   fi
-  echo "Opening Whisper Dictation. Finish setup in the app window."
+  echo
+  echo "Done. Clipboard+ Desktop is opening: finish setup in its window."
   "$python" "$work/app/setup-desktop.py" --launch-only
 )
 

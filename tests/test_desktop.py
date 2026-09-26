@@ -242,6 +242,14 @@ class DesktopTests(unittest.TestCase):
             for name in ("tray.py", "tray-recording.png", "whisper-dictation.png", "app.py"):
                 self.assertTrue((library / name).is_file(), f"{name} was not installed")
 
+    def test_notifications_carry_the_product_name(self):
+        import hotkeys
+
+        self.assertEqual(desktop.NOTIFY_NAME, hotkeys.APP_NAME)
+        with patch.object(desktop, "platform_name", return_value="linux"):
+            command = desktop.notification_command({"notify": ""})
+        self.assertEqual(command[:3], ["notify-send", "-a", hotkeys.APP_NAME])
+
     def test_application_launchers_and_launch(self):
         setup = setup_module()
         with tempfile.TemporaryDirectory() as folder:
@@ -265,6 +273,9 @@ class DesktopTests(unittest.TestCase):
                 self.assertIn("Terminal=false", entry)
                 self.assertIn(f"Icon={prefix / 'lib/whisper-dictation.png'}", entry)
                 with patch.object(setup.subprocess, "Popen") as process:
+                    # Still running when the check ends: it started.
+                    running = setup.subprocess.TimeoutExpired("app", 3)
+                    process.return_value.wait.side_effect = running
                     setup.launch(prefix)  # No private environment yet: the window.
                     self.assertIn(str(prefix / "lib/app.py"), process.call_args.args[0])
                     windowed = setup.gui_python(prefix)[1]
@@ -274,7 +285,13 @@ class DesktopTests(unittest.TestCase):
                     self.assertEqual(
                         process.call_args.args[0], [str(windowed), str(prefix / "lib/tray.py")]
                     )
-                self.assertEqual(stop.call_count, 2)
+                    process.return_value.wait.side_effect = None
+                    process.return_value.wait.return_value = 0  # A second copy handing over.
+                    setup.launch(prefix)
+                    process.return_value.wait.return_value = 1  # It died: say so.
+                    with self.assertRaisesRegex(setup.dictation.DictationError, "didn't start"):
+                        setup.launch(prefix)
+                self.assertEqual(stop.call_count, 4)
             with (
                 patch.object(setup.desktop, "platform_name", return_value="macos"),
                 patch.object(setup, "gui_environment", return_value=venv),

@@ -411,11 +411,13 @@ main() {
   install_script
   install_gnome_shortcut
 
+  if [[ -n "${DICTATION_QUICK_INSTALL:-}" ]]; then
+    return 0 # The quick installer opens the app and says so.
+  fi
   echo
-  echo "Installed. Whisper Dictation will open automatically when using the quick installer."
-  echo "It is also available from your application menu."
+  echo "Installed. Open Clipboard+ Desktop from your application menu to finish setup."
   if [[ "$SKIP_MODEL" == 1 ]]; then
-    echo "Set backend=http and your transcription endpoint in config.json before recording."
+    echo "No speech model was installed: choose one (or your own AI service) during setup."
   fi
 }
 

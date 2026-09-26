@@ -696,7 +696,12 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
             paths.audio.unlink(missing_ok=True)
             print("Retained audio discarded. Saved transcript kept.")
             return
-        config.check(recording=action in ("toggle", "start"))
+        try:
+            config.check(recording=action in ("toggle", "start"))
+        except DictationError:
+            if action in ("toggle", "start"):
+                open_app(config)  # Most often setup is unfinished: show where to finish it.
+            raise
         fd = lock(paths.runtime / "session.lock")
         if fd is None:
             raise DictationError("Session is busy.")

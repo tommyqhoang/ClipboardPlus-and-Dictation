@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -115,12 +117,28 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(onboarding.download_model(folder, "en"), path)
             self.assertEqual(request.call_count, 1)
             path.write_bytes(b"corrupt")
-            with self.assertRaises(dictation.DictationError):
-                onboarding.download_model(folder, "en")
+            request.return_value = Response(data)
+            # A damaged model is kept aside and downloaded again, not a dead end.
+            self.assertEqual(onboarding.download_model(folder, "en").read_bytes(), data)
+            damaged = path.with_name(path.name + ".damaged")
+            self.assertEqual(damaged.read_bytes(), b"corrupt")
             path.unlink()
+            damaged.unlink()
         with patch.object(onboarding, "open_url", return_value=Response(b"bad", length=False)):
             with self.assertRaises(dictation.DictationError):
                 onboarding.download_model(folder, "en")
+        self.assertEqual(list(folder.iterdir()), [])
+
+    def test_download_failures_say_what_to_do(self):
+        folder = Path(self.temp.name) / "models"
+        offline = urllib.error.URLError("Name or service not known")
+        with patch.object(onboarding, "open_url", side_effect=offline):
+            with self.assertRaisesRegex(dictation.DictationError, "internet connection"):
+                onboarding.download_model(folder, "auto")
+        full = OSError(errno.ENOSPC, "No space left on device")
+        with patch.object(onboarding, "open_url", side_effect=full):
+            with self.assertRaisesRegex(dictation.DictationError, "disk space"):
+                onboarding.download_model(folder, "auto")
         self.assertEqual(list(folder.iterdir()), [])
 
     def test_download_network_failure_cleans_partial(self):

@@ -300,7 +300,7 @@ def install_app_launcher(prefix: Path) -> None:
             != "org.whisperdictation.desktop"
         ):
             raise dictation.DictationError(
-                "An unrelated app already uses the Whisper Dictation name."
+                f"An unrelated app already uses the name of {hotkeys.APP_NAME}'s app bundle."
             )
         executable = bundle / "Contents/MacOS/WhisperDictation"
         executable.parent.mkdir(parents=True, exist_ok=True)
@@ -359,6 +359,9 @@ def install_app_launcher(prefix: Path) -> None:
         )
 
 
+LAUNCH_CHECK_SECONDS = 3.0
+
+
 def launch(prefix: Path) -> None:
     module = prefix / "lib/app.py"
     if not module.is_file():
@@ -374,13 +377,23 @@ def launch(prefix: Path) -> None:
             if windowed.exists()
             else [hotkeys.python_for_gui(), str(module)]  # Installed with --no-shortcut.
         )
-        subprocess.Popen(
+        started = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **desktop.process_options(detached=True),
         )
+        # A missing display or library ends it at once; say so instead of "opening…".
+        try:
+            code = started.wait(timeout=LAUNCH_CHECK_SECONDS)
+        except subprocess.TimeoutExpired:
+            return
+        if code:
+            raise dictation.DictationError(
+                f"{hotkeys.APP_NAME} didn't start. Open it from your application menu, or "
+                f"run: {shlex.join(command)}"
+            )
 
 
 def stop_clipboard_service(paths: dictation.Paths) -> None:
@@ -523,11 +536,13 @@ def main() -> int:
             )
         else:
             launcher = install(prefix, not args.no_shortcut)
-            print(f"Installed: {launcher}")
-            print(f"Settings: {dictation.Paths().config}")
-            print(
-                "Open Whisper Dictation from Applications or your application menu to finish setup."
-            )
+            if not os.environ.get("DICTATION_QUICK_INSTALL"):  # It says what happens next.
+                print(f"Installed: {launcher}")
+                print(f"Settings: {dictation.Paths().config}")
+                print(
+                    f"Open {hotkeys.APP_NAME} from Applications or your application menu "
+                    "to finish setup."
+                )
         return 0
     except (OSError, dictation.DictationError, subprocess.SubprocessError) as exc:
         print(f"Setup did not complete: {exc}", file=sys.stderr)

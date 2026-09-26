@@ -134,6 +134,7 @@ class App:
         self.api_key = tk.StringVar(value="")
         self.account: clipui.AccountCard | None = None
         self.setup_mode = ""
+        self.setup_steps: list[str] = []  # The first-run screens this setup shows.
         self.clipboard_page: clipui.ClipboardPage | None = None
         # Opened by the history shortcut or menu: like a picker, it closes once you copy.
         self.quick = page == "clipboard"
@@ -599,6 +600,7 @@ class App:
             "clipboard-optin",
             "Keep a history of what you copy?",
             "Search it, star favorites and copy things back, on every computer you use.",
+            self.step_label("clipboard"),
         )
         card = self.card(
             "How it works",
@@ -680,8 +682,8 @@ class App:
         self.reset(
             "welcome",
             "Your voice. Your clipboard.",
-            "Dictate anywhere and keep a searchable history of what you copy. "
-            "Setup takes about a minute.",
+            "Dictate anywhere and keep a searchable history of what you copy. Setup takes "
+            "a few minutes, including a one-time speech model download.",
         )
         if self.icon is not None:
             self.hero_icon = self.icon.subsample(4)
@@ -735,9 +737,22 @@ class App:
             "right",
         )
 
+    def step_label(self, name: str) -> str:
+        """ "Step 2 of 4" for a first-run screen, counted over the steps this setup needs."""
+        if self.service.completed() or name not in self.setup_steps:
+            return ""
+        return f"Step {self.setup_steps.index(name) + 1} of {len(self.setup_steps)}"
+
     def after_features(self, mode: str) -> None:
         """Start only the setup steps the chosen features need."""
         self.setup_mode = mode
+        dictation = mode != "clipboard"
+        self.setup_steps = [
+            "features",
+            *(("dictation",) if dictation and not self.service.ready() else ()),
+            *(("clipboard",) if mode != "dictation" else ()),
+            "done",
+        ]
         if mode == "clipboard":
             self.clipboard_optin(self.after_optin)
             return
@@ -922,8 +937,8 @@ class App:
 
     def clipboard_settings(self) -> None:
         self.reset("settings", "", "")
-        self.features_card()
-        if self.service.completed():
+        if self.service.completed():  # During setup the choice was just made.
+            self.features_card()
             self.shortcuts_card()
         self.clipboard_options_card()
         self.clipboard_plus_card()
@@ -934,7 +949,7 @@ class App:
             "tutorial",
             "You’re all set",
             "Copy things as usual. We keep them for you.",
-            "Step 2 of 2",
+            self.step_label("done"),
         )
         place = {"macos": "menu bar", "windows": "system tray"}.get(
             desktop.platform_name(), "top bar"
@@ -968,7 +983,7 @@ class App:
                 "settings",
                 "Set up dictation",
                 "Choose how you’ll speak. You can change this anytime.",
-                "Step 1 of 2",
+                self.step_label("dictation"),
             )
         else:
             self.reset("settings", "", "")
@@ -1073,8 +1088,8 @@ class App:
         if not remote:
             self.choose_provider()
         self.show_choice()
-        self.features_card()
-        if not setup:
+        if not setup:  # During setup the choice was just made; changing it here strands it.
+            self.features_card()
             self.shortcuts_card()
         if self.features().clipboard:
             self.clipboard_options_card()
@@ -1220,7 +1235,7 @@ class App:
             "tutorial",
             "You’re ready to speak",
             "Three steps, no commands to learn.",
-            "Step 2 of 2",
+            self.step_label("done"),
         )
         paste = "Command + V" if desktop.platform_name() == "macos" else "Ctrl + V"
         place = {"macos": "menu bar", "windows": "system tray"}.get(
@@ -1233,11 +1248,12 @@ class App:
             [
                 (
                     f"Press {shortcut} in any app and speak",
-                    f"A notification confirms it’s recording; the icon in the {place} turns red.",
+                    "A small bar at the bottom of your screen shows it’s listening; "
+                    f"the icon in the {place} turns red.",
                 ),
                 (
                     f"Press {shortcut} again to stop",
-                    "You’ll see “Transcribing…”, then a notification when it’s ready.",
+                    "The bar shows “Transcribing…”, then “Copied” when your text is ready.",
                 ),
                 ("Paste anywhere", f"Your words are already copied. Press {paste}."),
             ],
@@ -1251,7 +1267,8 @@ class App:
         ).pack(anchor="w")
         ttk.Label(
             tips,
-            text=f"Change the shortcut, microphone, or AI anytime from the {place} icon."
+            text="Change the shortcut, microphone, or AI anytime in Settings, from this "
+            f"window or the {place} icon."
             + (
                 " Not on GNOME? Assign the shortcut to ~/.local/bin/dictate-toggle in your"
                 " keyboard settings."

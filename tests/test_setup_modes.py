@@ -94,6 +94,22 @@ class SetupFlowTests(ModeCase):
         self.assertEqual(self.prefs.features(), hotkeys.Features(True, True))
         self.assertEqual(self.window.page, "tutorial")
 
+    def test_every_setup_screen_counts_the_same_steps(self):
+        self.window.after_features("both")
+        self.assertEqual(self.window.step.get(), "Step 2 of 4")
+        # The feature choice was just made; offering it again here stranded setup.
+        self.assertNotIn("What you use", self.texts())
+        self.window.after_dictation_setup()
+        self.assertEqual(self.window.step.get(), "Step 3 of 4")
+        self.press("Turn on")
+        self.assertEqual(self.window.step.get(), "Step 4 of 4")
+
+    def test_a_clipboard_only_setup_counts_three_steps(self):
+        self.window.after_features("clipboard")
+        self.assertEqual(self.window.step.get(), "Step 2 of 3")
+        self.press("Turn on")
+        self.assertEqual(self.window.step.get(), "Step 3 of 3")
+
     def test_dictation_only_has_no_clipboard_step(self):
         self.window.after_features("dictation")
         self.assertEqual(self.window.page, "settings")

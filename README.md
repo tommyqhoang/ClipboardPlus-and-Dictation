@@ -33,10 +33,8 @@ API. External services may charge; no subscription is required for local use.
 
 ## Quick install (no Git checkout)
 
-**Publication status:** these commands work once this version is published to
-the repository's `main` branch. They are not a claim that the current local
-changes have been released. Windows automatic installation is x64 only and
-still needs real-machine acceptance testing.
+Windows automatic installation is x64 only and still needs real-machine
+acceptance testing.
 
 macOS or Linux (Debian/Ubuntu, Fedora, Arch, openSUSE), in Terminal:
 
@@ -60,7 +58,7 @@ Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching relea
 and commit. Git is only needed for that Linux fallback. Dependencies and model
 downloads need internet access.
 
-When installation finishes, **Whisper Dictation & Clipboard+ opens automatically**. The
+When installation finishes, **Clipboard+ Desktop opens automatically**. The
 first-run screens help the user:
 
 1. Choose what to use: **Dictation**, **Clipboard history**, or **Both**. Only the
@@ -80,28 +78,31 @@ first-run screens help the user:
    shows on the website and in the browser extension.
 
 The walkthrough does not begin recording. The microphone starts only when you
-press the shortcut.
-
-The walkthrough does not begin recording. The microphone starts only when you
-press the shortcut.
+press the shortcut (or **Test** next to the microphone, which listens for three
+seconds and keeps nothing).
 
 ### Everyday use (all platforms)
 
 - **Super+Shift+D** (Win+Shift+D on Windows, ⌃⌥⇧D on macOS) starts recording from any app. Press it again
-  to stop. Notifications show *Recording*, *Transcribing…*, and
-  *Transcript copied*; then paste with Ctrl+V (⌘V). The icon turns red while
-  recording.
+  to stop. A small bar at the bottom of the screen shows your voice level while
+  it listens, then *Transcribing…* and *Copied*; paste with Ctrl+V (⌘V). Click
+  its ■ to stop or ✕ to cancel. The icon turns red while recording. (Set
+  `"overlay": false` in `config.json` for plain notifications instead.)
 - **Super+Shift+F** (Win+Shift+F on Windows, ⌃⌥⇧F on macOS) opens the clipboard
   history with the search box ready, from any app. Choose another shortcut or turn
   it off in *Settings → Keyboard shortcuts*.
 - In the window, Ctrl+F (⌘F) searches the clipboard history, Ctrl+, (⌘,) opens
-  Settings and Ctrl+W (⌘W) closes it. In the search box, Enter copies the first
-  result and Esc clears the search.
-- The icon's menu is the same everywhere: a status line, Start/Stop, Cancel Recording,
+  Settings and Ctrl+W (⌘W) closes it. In the search box, ↑/↓ choose a result,
+  Enter copies it and Esc clears the search. Opened by the history shortcut, the
+  window closes as soon as you copy something (or press Esc), ready to paste.
+- The icon's menu: a status line, Start/Stop, Cancel Recording (while recording),
   Copy Last Transcript (dictation items appear only while Dictation is on),
   **Clipboard History…**, **Pause Clipboard Capture** (for an hour, or until you
-  resume), **Shortcut** (presets or *Record New Shortcut…*), **Open at Login**,
-  **Clipboard+ Website…**, and **Settings…**.
+  resume), **Settings…**, and under **More**: **Shortcut** (presets or *Record New
+  Shortcut…*), **Open at Login** and **Clipboard+ Website…**. (The macOS menu bar
+  keeps these at the top level.)
+- If another shortcut already uses your keys (GNOME gives them to the first one),
+  the Dictation tab says which one and offers to take the keys back.
 - Your own service's API key is stored in the settings folder as
   `transcription-key`, readable only by your user account. An environment
   variable named by `api_key_env` still takes precedence.
@@ -241,7 +242,7 @@ Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 ```
 
 The installer detects your package manager (apt, dnf, pacman or zypper), installs only the dependencies that are missing (asking for administrator access only then), downloads the base English model,
-builds whisper.cpp if necessary, adds Whisper Dictation to the application menu,
+builds whisper.cpp if necessary, adds Clipboard+ Desktop to the application menu,
 and requests the optional GNOME shortcut Super+Shift+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations
 skip GNOME registration. Use `--no-packages` when dependencies are already installed.
