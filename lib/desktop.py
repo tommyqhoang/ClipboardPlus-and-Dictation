@@ -24,6 +24,11 @@ def platform_name() -> str:
     return "linux"
 
 
+def user_id() -> int:
+    """Return a stable per-user suffix on Unix without breaking Windows typing."""
+    return int(getattr(os, "getuid", os.getpid)())
+
+
 def roots() -> tuple[Path, Path, Path]:
     home = Path.home()
     system = platform_name()
@@ -36,13 +41,13 @@ def roots() -> tuple[Path, Path, Path]:
         defaults = (
             home / "Library/Application Support/WhisperDictation",
             home / "Library/Caches/WhisperDictation",
-            Path(tempfile.gettempdir()) / f"dictation-{os.getuid()}",
+            Path(tempfile.gettempdir()) / f"dictation-{user_id()}",
         )
     else:
         defaults = (
             home / ".config/dictation",
             home / ".cache/dictation",
-            Path(tempfile.gettempdir()) / f"dictation-{os.getuid()}",
+            Path(tempfile.gettempdir()) / f"dictation-{user_id()}",
         )
     # Explicit XDG overrides keep existing integrations and isolated tests usable.
     return (
@@ -53,7 +58,7 @@ def roots() -> tuple[Path, Path, Path]:
         if "XDG_CACHE_HOME" in os.environ
         else defaults[1],
         Path(os.environ["XDG_RUNTIME_DIR"])
-        / ("dictation" if sys.platform == "win32" else f"dictation-{os.getuid()}")
+        / ("dictation" if sys.platform == "win32" else f"dictation-{user_id()}")
         if "XDG_RUNTIME_DIR" in os.environ
         else defaults[2],
     )

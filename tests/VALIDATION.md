@@ -10,7 +10,7 @@ isolated Linux container. The latest verified scope is:
   HTTP multipart requests, redirect rejection, graphical workflows, and installer
   regression tests.
 - 95% combined statement/branch coverage across the seven `lib` runtime modules
-  (1,077 statements, 368 branch destinations): graphical app 99%, app service
+  (1,079 statements, 368 branch destinations): graphical app 99%, app service
   95%, dictation 91%, desktop adapters 95%, onboarding 98%, and rewriting/workflow
   100%.
   Coverage includes subprocesses. This is critical-core coverage,
