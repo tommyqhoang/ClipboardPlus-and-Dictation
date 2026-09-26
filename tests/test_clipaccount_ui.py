@@ -452,18 +452,18 @@ class ClearDialogTests(AccountCase):
         dialog.confirm()
         self.assertEqual(dialog.result, (False, True))
 
-    def test_with_an_account_the_scope_is_asked_and_defaults_to_everywhere(self):
+    def test_with_an_account_the_scope_is_asked_and_defaults_to_this_device(self):
         dialog = self.make(linked=True)
         labels = " | ".join(self.labels(dialog))
         self.assertIn("This device only", labels)
         self.assertIn("Everywhere", labels)
         self.assertIn("images", labels)
         dialog.confirm()
-        self.assertEqual(dialog.result, (True, True))
+        self.assertEqual(dialog.result, (False, True))  # The account is cleared only by choice.
         dialog = self.make(linked=True)
-        dialog.scope.set("device")
+        dialog.scope.set("everywhere")
         dialog.confirm()
-        self.assertEqual(dialog.result, (False, True))
+        self.assertEqual(dialog.result, (True, True))
 
     def test_everywhere_without_favorites_is_returned_as_chosen(self):
         dialog = self.make(linked=True)

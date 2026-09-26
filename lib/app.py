@@ -135,6 +135,8 @@ class App:
         self.account: clipui.AccountCard | None = None
         self.setup_mode = ""
         self.clipboard_page: clipui.ClipboardPage | None = None
+        # Opened by the history shortcut or menu: like a picker, it closes once you copy.
+        self.quick = page == "clipboard"
         self.clipboard_store: clipstore.Store | None = None
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         # The tray/menu bar app owns everyday use; this window is for setup.
@@ -200,6 +202,7 @@ class App:
         self.colors = {
             "surface": SURFACE,
             "hover": HOVER,
+            "selected": ACCENT_SOFT,  # The row Enter copies.
             "border": BORDER,
             "text": TEXT,
             "muted": MUTED,
@@ -216,6 +219,7 @@ class App:
         style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
         style.configure("Title.TLabel", font=self.fonts["title"])
         style.configure("Hint.TLabel", foreground=MUTED, font=self.fonts["small"])
+        style.configure("Error.TLabel", foreground=DANGER, font=self.fonts["small"])
         style.configure("Subtitle.TLabel", foreground=MUTED, font=self.fonts["body"])
         style.configure("Card.TLabel", background=SURFACE)
         style.configure("CardHeading.TLabel", background=SURFACE, font=self.fonts["heading"])
@@ -562,6 +566,7 @@ class App:
         )
 
     def tab(self, name: str) -> None:
+        self.quick = False  # Browsing now: copying no longer closes the window.
         if name == "clipboard":
             self.clipboard()
         elif name == "dictation":
@@ -1594,6 +1599,8 @@ class App:
 
     def open_page(self, request: str) -> None:
         """Honor a page request from the tray or a shortcut when it is safe to leave."""
+        if request == "clipboard":
+            self.quick = True  # Opened to pick something: copying closes the window.
         if request == "clipboard" and self.page == "clipboard" and self.clipboard_page:
             self.clipboard_page.focus_search()
             return

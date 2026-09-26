@@ -114,6 +114,7 @@ class PageCase(ServiceCase):
             self.window = app.App(self.root, self.service, "clipboard")
         self.addCleanup(self.close_window)
         self.page = self.window.clipboard_page
+        self.window.quick = False  # Browsing, not picking: copying keeps the window open.
 
     def close_window(self):
         if self.window.page != "closed":
@@ -157,7 +158,7 @@ class PageTests(PageCase):
         self.assertEqual(self.window.page, "clipboard")
 
     def test_an_empty_history_explains_what_will_appear(self):
-        self.assertTrue(any("Copy something" in t for t in self.texts()))
+        self.assertIn("Nothing copied yet", self.texts())
 
     def test_rows_show_text_links_and_images(self):
         self.store.add_text("meeting notes", now=1.0)
@@ -185,7 +186,7 @@ class PageTests(PageCase):
         self.page.set_filter("text")
         self.assertEqual(len(self.page.rows), 2)
         self.page.set_query("nothing matches this")
-        self.assertTrue(any("No matches" in t for t in self.texts()))
+        self.assertTrue(any("Nothing matches" in t for t in self.texts()))
 
     def test_typing_in_the_search_box_waits_before_searching(self):
         self.store.add_text("alpha", now=1.0)
@@ -212,7 +213,7 @@ class PageTests(PageCase):
         with patch.object(self.service, "copy_item") as copy:
             self.page.copy(item.id)
         copy.assert_called_once()
-        self.assertEqual(self.window.status.get(), "Copied to the clipboard.")
+        self.assertEqual(self.window.status.get(), "Copied. Paste it anywhere.")
 
     def test_a_failed_copy_reports_instead_of_crashing(self):
         item = self.store.add_text("copy me", now=1.0)
@@ -331,13 +332,96 @@ class PageTests(PageCase):
                 getattr(dialog, action)()
                 self.assertEqual(dialog.result, expected)
 
+    def test_arrow_keys_choose_the_row_enter_copies(self):
+        for number in range(4):
+            self.store.add_text(f"item {number}", now=float(number))
+        self.page.reload()
+        self.assertEqual(self.page.selected, 0)
+        self.page.move(1)
+        self.page.move(1)
+        self.page.move(-1)
+        self.assertEqual(self.page.selected, 1)
+        selected = self.window.colors["selected"]
+        self.assertEqual(self.page.rows[1].frame.cget("background"), selected)
+        self.assertNotEqual(self.page.rows[0].frame.cget("background"), selected)
+        for _ in range(10):
+            self.page.move(1)
+        self.assertEqual(self.page.selected, 3)  # Stops at the end.
+        with patch.object(self.page, "copy") as copy:
+            self.page.copy_selected()
+        copy.assert_called_once_with(self.page.rows[3].item.id)
+        self.page.set_query("item 2")
+        self.assertEqual(self.page.selected, 0)  # A new search starts at the top.
+        self.store.add_text("newest", now=10.0)
+        self.page.set_query("")
+        self.page.move(2)
+        self.store.add_text("even newer", now=11.0)
+        self.page.refresh()  # A new copy arriving keeps a valid selection.
+        self.assertLess(self.page.selected, len(self.page.rows))
+
+    def test_a_picker_window_closes_after_copying_and_on_escape(self):
+        item = self.store.add_text("paste me", now=1.0)
+        self.page.reload()
+        self.window.quick = True
+        with (
+            patch.object(self.service, "copy_item"),
+            patch.object(self.window, "close") as close,
+            patch.object(self.root, "after", side_effect=lambda _ms, f: f()),
+        ):
+            self.page.copy(item.id)
+        close.assert_called_once()
+        with patch.object(self.window, "close") as close:
+            self.page.query.set("paste")
+            self.page.escape()  # First Escape clears the search.
+            close.assert_not_called()
+            self.assertEqual(self.page.query.get(), "")
+            self.page.escape()
+        close.assert_called_once()
+        self.window.quick = False
+        with patch.object(self.window, "close") as close:
+            self.page.escape()
+        close.assert_not_called()  # A window opened to browse stays open.
+        self.window.tab("settings")
+        self.assertFalse(self.window.quick)
+
+    def test_a_broken_capture_is_announced(self):
+        broken = {"state": "error", "message": "wl-paste is missing."}
+        with patch.object(clipui.clipservice, "read_status", return_value=broken):
+            self.page.refresh()
+        self.assertTrue(any("isn’t working: wl-paste is missing." in t for t in self.texts()))
+
+    def test_deleting_a_favorite_asks_first(self):
+        item = self.store.add_text("precious", now=1.0)
+        self.store.set_favorite(item.id, True)
+        self.page.reload()
+        with patch.object(clipui.messagebox, "askyesno", return_value=False) as ask:
+            self.page.delete(item.id)
+        ask.assert_called_once()
+        self.assertIsNotNone(self.store.get(item.id))
+        with patch.object(clipui.messagebox, "askyesno", return_value=True):
+            self.page.delete(item.id)
+        self.assertIsNone(self.store.get(item.id))
+
+    def test_an_empty_search_offers_a_way_back(self):
+        self.store.add_text("alpha", now=1.0)
+        self.page.set_query("zzz")
+        self.assertIn("Nothing matches “zzz”.", self.texts())
+        self.buttons("Show everything")[0].invoke()
+        self.assertEqual(len(self.page.rows), 1)
+        self.assertEqual(self.page.query.get(), "")
+
+    def test_clearing_defaults_to_this_device_only(self):
+        dialog = clipui.ClearDialog(self.root, linked=True)
+        self.assertEqual(dialog.scope.get(), "device")
+        dialog.cancel()
+
     def test_unstarring_under_the_favorites_filter_drops_the_row(self):
         item = self.store.add_text("fav", now=1.0)
         self.store.set_favorite(item.id, True)
         self.page.set_filter("favorites")
         self.page.toggle_favorite(item.id)
         self.assertEqual(self.page.rows, [])
-        self.assertTrue(any("No matches" in t for t in self.texts()))
+        self.assertTrue(any("Nothing matches" in t for t in self.texts()))
 
     def test_load_more_keeps_the_rows_already_drawn(self):
         for number in range(clipui.PAGE_SIZE + 3):
@@ -361,7 +445,7 @@ class PageTests(PageCase):
         self.page.reload()
         with patch.object(self.page, "copy") as copy:
             self.page.query.set("old")
-            self.page.copy_first()  # Runs the waiting search first.
+            self.page.copy_selected()  # Runs the waiting search first.
             self.assertEqual(copy.call_args.args[0], self.page.rows[0].item.id)
             self.page.set_query("")
             label = self.row_text(self.page.rows[0])

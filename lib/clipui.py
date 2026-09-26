@@ -11,6 +11,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 import clipboardplus
+import clipservice
 import clipstore
 import dictation as d
 import hotkeys
@@ -53,6 +54,7 @@ class Row:
     title: tk.Label  # A favorite's label, above its text; hidden when it has none.
     rename: tk.Label  # The "Add label" / "Edit label" action, offered on favorites only.
     body: tk.Label  # The item's text (or "Image W×H").
+    paint: Callable[[str], None]  # Recolors the whole row.
 
 
 def _same_look(old: clipstore.Item, new: clipstore.Item) -> bool:
@@ -76,6 +78,7 @@ class ClipboardPage:
         self.filter = "all"
         self.limit = PAGE_SIZE
         self.pending_search: str | None = None
+        self.selected = 0  # The row Enter copies; the arrow keys move it.
         # Decoded once per image and kept while shown (Tk drops unreferenced images).
         self._thumbs: dict[str, tk.PhotoImage | None] = {}
         self._signature: tuple[Any, ...] | None = None
@@ -94,12 +97,14 @@ class ClipboardPage:
         search.pack(fill="x")
         entry = self.entry = ttk.Entry(search, textvariable=self.query)
         entry.pack(fill="x")
-        entry.bind("<Return>", lambda _: self.copy_first())
-        entry.bind("<Escape>", lambda _: self.set_query(""))
+        entry.bind("<Return>", lambda _: self.copy_selected())
+        entry.bind("<Escape>", lambda _: self.escape())
+        entry.bind("<Down>", lambda _: self.move(1))
+        entry.bind("<Up>", lambda _: self.move(-1))
         # A placeholder (ttk has none): shown while the box is empty.
         self.placeholder = ttk.Label(
             search,
-            text="Search your clipboard   ·   Enter copies the top result",
+            text="Search your clipboard   ·   ↑ ↓ to choose, Enter to copy",
             style="Placeholder.TLabel",
         )
         self.placeholder.bind("<Button-1>", lambda _: entry.focus_set())
@@ -173,6 +178,7 @@ class ClipboardPage:
             self.app.root.after_cancel(self.pending_search)
             self.pending_search = None
         self.limit = PAGE_SIZE
+        self.selected = 0
         self.reload()
 
     def set_query(self, text: str) -> None:
@@ -182,7 +188,55 @@ class ClipboardPage:
     def set_filter(self, name: str) -> None:
         self.filter = name
         self.limit = PAGE_SIZE
+        self.selected = 0
         self.reload()
+
+    def show_all(self) -> None:
+        """Leave a search or filter that found nothing."""
+        self.query.set("")
+        self.set_filter("all")
+
+    # -- keyboard ----------------------------------------------------------
+    def move(self, step: int) -> str:
+        """Arrow keys: move the selection through the list, keeping it in view."""
+        if self.pending_search is not None:
+            self.run_pending_search()
+        if self.rows:
+            self.selected = max(0, min(len(self.rows) - 1, self.selected + step))
+            self._paint_selection()
+            self._reveal(self.rows[self.selected])
+        return "break"
+
+    def escape(self) -> str:
+        """Escape clears a search; with nothing typed it closes a picker window."""
+        if self.query.get():
+            self.set_query("")
+        elif getattr(self.app, "quick", False):
+            self.app.close()
+        return "break"
+
+    def _paint_selection(self) -> None:
+        for index, row in enumerate(self.rows):
+            row.paint(self._resting(index))
+
+    def _resting(self, index: int) -> str:
+        colors = self.app.colors
+        return str(colors["selected"] if index == self.selected else colors["surface"])
+
+    def _reveal(self, row: Row) -> None:
+        canvas, frame = self.app.canvas, self.app.frame
+        self.app.root.update_idletasks()
+        top = row.frame.winfo_rooty() - canvas.winfo_rooty()
+        bottom = top + row.frame.winfo_height()
+        if top >= 0 and bottom <= canvas.winfo_height():
+            return
+        offset = row.frame.winfo_rooty() - frame.winfo_rooty()
+        height = max(1, frame.winfo_height())
+        if top < 0:
+            canvas.yview_moveto(max(0.0, (offset - 8) / height))
+        else:
+            spare = canvas.winfo_height() - row.frame.winfo_height() - 8
+            canvas.yview_moveto(max(0.0, (offset - spare) / height))
 
     # -- data --------------------------------------------------------------
     def _items(self) -> list[clipstore.Item]:
@@ -198,10 +252,19 @@ class ClipboardPage:
         settings = hotkeys.Preferences(self.app.service.paths).clipboard()
         return settings.paused(self._clock())
 
+    def _capture_problem(self) -> str:
+        """What stops capture from working, as the clipboard service reported it."""
+        status = clipservice.read_status(self.app.service.paths, self._clock)
+        if status.get("state") != "error":
+            return ""
+        return str(status.get("message") or "Copies aren’t being saved right now.")
+
     def _current_signature(self) -> tuple[Any, ...]:
         newest = self.store.list(limit=1)
         marker = (newest[0].id, newest[0].updated_at) if newest else (0, 0.0)
-        return (self.store.count(), marker, self._paused())
+        # The minute makes "5 min ago" keep up; unchanged rows are only relabeled.
+        minute = int(self._clock() // 60)
+        return (self.store.count(), marker, self._paused(), self._capture_problem(), minute)
 
     def refresh(self) -> None:
         """Redraw only when the history or the pause state changed."""
@@ -223,8 +286,16 @@ class ClipboardPage:
             chip.configure(
                 style="Small.Primary.TButton" if name == self.filter else "Small.TButton"
             )
-        if self._paused():
-            ttk.Label(self.banner, text="Capture is paused.", style="Hint.TLabel").pack(
+        problem = self._capture_problem()
+        if problem:
+            ttk.Label(
+                self.banner,
+                text=f"Clipboard capture isn’t working: {problem}",
+                style="Error.TLabel",
+                wraplength=self.app.wraplength,
+            ).pack(anchor="w", pady=(0, 8))
+        elif self._paused():
+            ttk.Label(self.banner, text=self._pause_text(), style="Hint.TLabel").pack(
                 side="left", pady=(0, 8)
             )
             ttk.Button(self.banner, text="Resume", style="Small.TButton", command=self.resume).pack(
@@ -251,7 +322,15 @@ class ClipboardPage:
         if not self.rows and self.card is not None:
             self.card.destroy()  # An empty outline would sit above the hint.
             self.card = None
+        self.selected = max(0, min(self.selected, len(self.rows) - 1))
+        self._paint_selection()
         self._finish(len(items))
+
+    def _pause_text(self) -> str:
+        until = hotkeys.Preferences(self.app.service.paths).clipboard().paused_until
+        if until and until < self._clock() + 86400:
+            return f"Capture is paused until {time.strftime('%H:%M', time.localtime(until))}."
+        return "Capture is paused until you resume it."
 
     def _order(self) -> None:
         """Pack the rows in list order, touching the layout only when it changed."""
@@ -269,15 +348,7 @@ class ClipboardPage:
     def _finish(self, shown: int) -> None:
         """The empty-list hint and the footer, which depend on how many rows there are."""
         if not shown:
-            searching = bool(self.query.get().strip()) or self.filter != "all"
-            text = (
-                "No matches."
-                if searching
-                else "Copy something and it will appear here. Images stay on this computer."
-            )
-            ttk.Label(
-                self.list_frame, text=text, style="Hint.TLabel", wraplength=self.app.wraplength
-            ).pack(anchor="w", pady=20)
+            self._empty()
         for child in self.footer.winfo_children():
             child.destroy()
         if shown >= self.limit:
@@ -295,6 +366,30 @@ class ClipboardPage:
                     self.clear_button.pack(side="right")
         else:
             self.clear_button.pack_forget()
+
+    def _empty(self) -> None:
+        """What an empty list says: a search that found nothing, or how to begin."""
+        empty = ttk.Frame(self.list_frame)
+        empty.pack(fill="x", pady=(28, 8))
+        if self.query.get().strip() or self.filter != "all":
+            what = f"“{self.query.get().strip()}”" if self.query.get().strip() else "this filter"
+            ttk.Label(empty, text=f"Nothing matches {what}.", style="Subtitle.TLabel").pack()
+            ttk.Button(
+                empty, text="Show everything", style="Small.TButton", command=self.show_all
+            ).pack(pady=(10, 0))
+            return
+        images = hotkeys.Preferences(self.app.service.paths).clipboard().images
+        ttk.Label(empty, text="Nothing copied yet", style="Title.TLabel").pack()
+        ttk.Label(
+            empty,
+            text="Copy some text, a link"
+            + (" or an image" if images else "")
+            + " in any app and it shows up here, ready to search and paste again."
+            + (" Images stay on this computer." if images else ""),
+            style="Subtitle.TLabel",
+            wraplength=min(460, self.app.wraplength),
+            justify="center",
+        ).pack(pady=(6, 0))
 
     def load_more(self) -> None:
         """Add the next page below the rows already drawn instead of redrawing them all."""
@@ -391,11 +486,12 @@ class ClipboardPage:
             # Moving onto a child also "leaves" the row: only repaint once really out.
             under = self.app.root.winfo_containing(*self.app.root.winfo_pointerxy())
             if under is None or not str(under).startswith(str(row)):
-                paint(surface)
+                index = self.rows.index(drawn) if drawn in self.rows else -1
+                paint(self._resting(index))
 
         row.bind("<Enter>", lambda _: paint(colors["hover"]))
         row.bind("<Leave>", left)
-        drawn = Row(item, row, star, hint, title, rename, label)
+        drawn = Row(item, row, star, hint, title, rename, label, paint)
         self._show_label(drawn)
         self.rows.append(drawn)
 
@@ -502,11 +598,13 @@ class ClipboardPage:
             row.item = self.store.get(item_id) or row.item
             self._show_label(row)
 
-    def copy_first(self) -> None:
+    def copy_selected(self) -> str:
+        """Enter: copy the chosen row (the top one until the arrow keys move)."""
         if self.pending_search is not None:
             self.run_pending_search()
         if self.rows:
-            self.copy(self.rows[0].item.id)
+            self.copy(self.rows[min(self.selected, len(self.rows) - 1)].item.id)
+        return "break"
 
     def copy(self, item_id: int) -> None:
         item = self.store.get(item_id)
@@ -516,10 +614,21 @@ class ClipboardPage:
             self.app.service.copy_item(item, self.store)
         except d.DictationError as exc:
             self.app.status.set(str(exc))
+            return
+        if getattr(self.app, "quick", False):
+            # Opened to pick something: get out of the way so it can be pasted.
+            self.app.root.after(120, self.app.close)
         else:
-            self.app.status.set("Copied to the clipboard.")
+            self.app.status.set("Copied. Paste it anywhere.")
 
     def delete(self, item_id: int) -> None:
+        item = self.store.get(item_id)
+        if item is not None and item.favorite:
+            what = f"“{item.label}”" if item.label else "this favorite"
+            if not messagebox.askyesno(
+                "Delete favorite?", f"Delete {what}? This can’t be undone.", parent=self.app.root
+            ):
+                return
         self.store.delete(item_id)
         self._signature = self._current_signature()
         row = self._row(item_id)
@@ -558,8 +667,8 @@ class ClearDialog:
         window.resizable(False, False)
         window.transient(parent)  # type: ignore[call-overload]
         window.configure(background=ttk.Style(window).lookup("TFrame", "background"))
-        # Linked: clearing here clears the account too, unless the user says otherwise.
-        self.scope = tk.StringVar(master=window, value="everywhere" if linked else "device")
+        # The narrower choice is the default: clearing the account too is a deliberate pick.
+        self.scope = tk.StringVar(master=window, value="device")
         self.keep_favorites = tk.BooleanVar(master=window, value=True)
         body = ttk.Frame(window, padding=22)
         body.pack(fill="both", expand=True)
@@ -586,9 +695,17 @@ class ClearDialog:
         ttk.Button(row, text="Clear history", style="Danger.TButton", command=self.confirm).pack(
             side="right"
         )
-        ttk.Button(row, text="Cancel", command=self.cancel).pack(side="right", padx=(0, 8))
+        cancel = ttk.Button(row, text="Cancel", command=self.cancel)
+        cancel.pack(side="right", padx=(0, 8))
+        cancel.focus_set()  # Enter on its own never deletes anything.
         window.protocol("WM_DELETE_WINDOW", self.cancel)
         window.bind("<Escape>", lambda _: self.cancel())
+        window.bind("<Return>", lambda _: self._press())
+
+    def _press(self) -> None:
+        focused = self.window.focus_get()
+        if isinstance(focused, ttk.Button):
+            focused.invoke()
 
     def confirm(self) -> None:
         self.result = (self.scope.get() == "everywhere", bool(self.keep_favorites.get()))

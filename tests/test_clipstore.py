@@ -172,6 +172,14 @@ class QueryTests(StoreCase):
         self.store.set_favorite(item.id, False)
         self.assertFalse(self.store.get(item.id).favorite)
 
+    def test_search_finds_every_word_in_any_order(self):
+        wanted = self.store.add_text("Acme Corp invoice #4711", now=1.0)
+        self.store.add_text("Invoice for someone else", now=2.0)
+        self.assertEqual([i.id for i in self.store.list(query="invoice acme")], [wanted.id])
+        self.assertEqual([i.id for i in self.store.list(query="  ACME   4711 ")], [wanted.id])
+        self.assertEqual(len(self.store.list(query="invoice")), 2)
+        self.assertEqual(self.store.list(query="acme unrelated"), [])
+
     def test_only_favorites_take_a_label_and_unstarring_drops_it(self):
         item = self.store.add_text("wifi", now=1.0)
         self.store.set_label(item.id, "home")

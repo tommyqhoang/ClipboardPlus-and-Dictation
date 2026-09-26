@@ -295,8 +295,9 @@ class Store:
             args.append(kind)
         if favorites:
             where.append("favorite = 1")
-        if query.strip():
-            pattern = "%" + _escape_like(query.strip().casefold()) + "%"
+        # Every word must appear, in any order ("invoice acme" finds "Acme Corp invoice").
+        for word in query.casefold().split():
+            pattern = "%" + _escape_like(word) + "%"
             where.append("(fold(text) LIKE ? ESCAPE '\\' OR fold(label) LIKE ? ESCAPE '\\')")
             args += [pattern, pattern]
         if before is not None:
