@@ -1026,6 +1026,18 @@ class App:
         self.mic_button = self.button("Test", self.test_microphone, parent=row, side="right")
         # A live level meter while testing (hidden otherwise).
         self.meter = tk.Canvas(voice, height=10, background=SURFACE, highlightthickness=0)
+        for key, text in (
+            ("overlay", "Show the recording bar (voice levels, then “Copied”)"),
+            ("live", "Show a live draft while recording (uses more processing)"),
+        ):
+            switch = tk.BooleanVar(master=self.root, value=config.b(key))
+            ttk.Checkbutton(
+                voice,
+                text=text,
+                variable=switch,
+                style="Card.TCheckbutton",
+                command=functools.partial(self.set_option, key, switch),
+            ).pack(anchor="w", pady=(10 if key == "overlay" else 4, 0))
         ai = self.card("Transcription AI", "What turns your voice into text.")
         self.choices: dict[str, tuple[ttk.Frame, ttk.Widget]] = {}
         for value, title, hint in (
@@ -1133,6 +1145,10 @@ class App:
             return
         self.status.set("Looking for microphones…")
         self.background(self.service.microphones, self.show_microphones)
+
+    def set_option(self, key: str, value: tk.BooleanVar) -> None:
+        self.service.set_option(key, bool(value.get()))
+        self.status.set("Saved. It applies to your next recording.")
 
     def test_microphone(self) -> None:
         """Listen for three seconds with a live meter, then say how it sounded."""
@@ -1372,6 +1388,8 @@ class App:
         shortcut = hotkeys.Preferences(self.service.paths).shortcut().label()
         platform = desktop.platform_name()
         paste = "Command\u00a0+\u00a0V" if platform == "macos" else "Ctrl\u00a0+\u00a0V"
+        if platform == "linux":
+            paste += " (Ctrl\u00a0+\u00a0Shift\u00a0+\u00a0V in a terminal)"
         place = {"macos": "menu bar", "windows": "system tray"}.get(platform, "top bar")
         conflict = hotkeys.shortcut_conflict(self.service.paths)
         if conflict is not None:
@@ -1430,11 +1448,11 @@ class App:
             command=lambda: self.action("toggle"),
             style="Record.TButton",
         )
-        self.record.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.record.pack(side="left", fill="x", expand=True)
         self.cancel = ttk.Button(
             controls, text="Cancel recording", command=lambda: self.action("cancel")
         )
-        self.cancel.pack(side="left", fill="y")
+        self.cancel.pack(side="left", fill="y", padx=(10, 0))
         self.buttons.extend([self.record, self.cancel])
         line = ttk.Frame(self.frame)
         line.pack(fill="x", pady=(14, 8))
@@ -1476,6 +1494,15 @@ class App:
         self.discard = ttk.Button(row, text="Discard", command=self.discard_audio)
         self.discard.pack(side="right", padx=(0, 8))
         self.buttons.extend([self.copy, self.retry, self.discard])
+        # Shown only when they apply: Cancel while recording, Retry/Discard for saved audio.
+        # (Retry is shown before Discard, so Discard lands to its left as designed.)
+        self.situational: dict[ttk.Button, Callable[[], None]] = {
+            self.cancel: lambda: self.cancel.pack(side="left", fill="y", padx=(10, 0)),
+            self.retry: lambda: self.retry.pack(side="right"),
+            self.discard: lambda: self.discard.pack(side="right", padx=(0, 8)),
+        }
+        for button in self.situational:
+            button.pack_forget()
         self.help_button = self.button(
             "How it works", self.tutorial, parent=self.bar_actions, side="right"
         )
@@ -1493,6 +1520,13 @@ class App:
             self.status.set(f"Done. The shortcut belongs to {hotkeys.APP_NAME} now.")
         else:
             self.status.set("Couldn’t change the keyboard settings. Try your desktop’s settings.")
+
+    def situate(self, button: ttk.Button, wanted: bool) -> None:
+        """Show or hide one of the Dictation tab's situational buttons."""
+        if wanted and not button.winfo_manager():
+            self.situational[button]()
+        elif not wanted and button.winfo_manager():
+            button.pack_forget()
 
     def show_transcript(self, text: str) -> None:
         self.transcript.configure(state="normal")
@@ -1565,8 +1599,10 @@ class App:
             ["!disabled"] if recording or (not active and not retained) else ["disabled"]
         )
         self.cancel.state(["!disabled"] if recording else ["disabled"])
+        self.situate(self.cancel, recording)
         for button in (self.retry, self.discard):
             button.state(["!disabled"] if retained and not active else ["disabled"])
+            self.situate(button, bool(retained) and not active)
         self.help_button.state(["disabled"] if active else ["!disabled"])
         self.copy.state(["!disabled"] if self.service.paths.text.exists() else ["disabled"])
         color = ACCENT

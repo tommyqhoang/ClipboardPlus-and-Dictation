@@ -843,6 +843,55 @@ class WindowTests(ServiceCase):
         self.assertIn("Something went wrong", self.window.status.get())
         self.assertIn(self.window.timer, self.root.tk.call("after", "info"))
 
+    def test_home_shows_cancel_retry_and_discard_only_when_they_apply(self):
+        self.window.home()
+
+        def shown():
+            names = ("cancel", "retry", "discard")
+            return {n for n in names if getattr(self.window, n).winfo_manager()}
+
+        def state(**current):
+            base = {"active": False, "phase": "idle", "retained_audio": False, "message": ""}
+            with patch.object(self.gui.workflow, "snapshot", return_value=base | current):
+                self.window.refresh()
+
+        state()
+        self.assertEqual(shown(), set())
+        state(active=True, phase="recording")
+        self.assertEqual(shown(), {"cancel"})
+        state(retained_audio=True)
+        self.assertEqual(shown(), {"retry", "discard"})
+        # Retry stays rightmost, Discard to its left.
+        self.root.update_idletasks()
+        self.assertLess(self.window.discard.winfo_x(), self.window.retry.winfo_x())
+        state()
+        self.assertEqual(shown(), set())
+
+    def test_recording_bar_and_live_draft_switches_save_at_once(self):
+        with patch.object(self.service, "microphones", return_value=["default"]):
+            self.window.settings()
+        switches = [
+            w
+            for w in self.all_widgets()
+            if w.winfo_class() == "TCheckbutton" and "recording bar" in str(w.cget("text"))
+        ]
+        self.assertEqual(len(switches), 1)
+        switches[0].invoke()  # On by default: this turns it off.
+        self.assertFalse(d.read_json(self.paths.config)["overlay"])
+        self.assertIn("next recording", self.window.status.get())
+        self.service.set_option("live", True)
+        self.assertTrue(d.Config(self.paths).b("live"))
+        with self.assertRaises(ValueError):
+            self.service.set_option("backend", True)
+
+    def all_widgets(self):
+        found, stack = [], [self.window.root]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            found.append(widget)
+        return found
+
     def test_home_explains_a_shortcut_that_could_not_be_set(self):
         hotkeys.record_status(self.paths, False)
         with patch.object(desktop, "platform_name", return_value="linux"):

@@ -383,6 +383,15 @@ class Service:
         saved.update(language=language, device=device.strip(), **settings)
         d.atomic(self.paths.config, json.dumps(saved, indent=2))
 
+    def set_option(self, key: str, value: bool) -> None:
+        """Save one on/off dictation option at once (the recording bar, live drafts)."""
+        if key not in ("overlay", "live"):
+            raise ValueError(key)
+        d.private_dir(self.paths.config.parent)
+        saved = d.DEFAULTS | d.read_json(self.paths.config)
+        saved[key] = value
+        d.atomic(self.paths.config, json.dumps(saved, indent=2))
+
     def action(self, action: str) -> None:
         config = d.Config(self.paths)
         if action == "copy":
