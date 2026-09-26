@@ -105,14 +105,14 @@ class TrayTests(unittest.TestCase):
             "Copy Last Transcript",
             "Record New Shortcut…",
             "Open at Login",
-            "Clipboard History (Clipboard+)…",
+            "Clipboard+ Website…",
             "Settings…",
             f"Quit {hotkeys.APP_NAME}",
         ):
             self.assertIn(expected, labels)
         self.assertEqual(self.tray.icon.icon, "whisper-dictation.png")
         with patch("webbrowser.open") as browser:
-            self.item("Clipboard History").action()
+            self.item("Clipboard+ Website").action()
         browser.assert_called_once_with(hotkeys.CLIPBOARD_PLUS)
 
     def test_shortcut_runs_engine_or_opens_setup(self):
@@ -221,6 +221,122 @@ class TrayTests(unittest.TestCase):
     def test_main_refuses_macos(self):
         with patch.object(tray.desktop, "platform_name", return_value="macos"):
             self.assertEqual(tray.main(), 1)
+
+    def use_features(self, dictation, clipboard):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(dictation, clipboard))
+        stamp = self.tray.preferences.path.stat().st_mtime
+        os.utime(self.tray.preferences.path, (stamp + 5, stamp + 5))
+
+    def visible(self, text):
+        """Whether any menu entry with this label is shown (some labels have two variants)."""
+        entries = [
+            entry
+            for entry in self.items()
+            if isinstance(entry.text, str)
+            and entry.text.startswith(text)
+            or callable(entry.text)
+            and entry.text(None).startswith(text)
+        ]
+        return any(entry.options.get("visible", lambda _: True)(None) for entry in entries)
+
+    def test_menu_shows_only_the_chosen_features(self):
+        dictation_items = ("Cancel Recording", "Copy Last Transcript", "Shortcut:")
+        clipboard_items = ("Clipboard History…", "Pause Clipboard Capture")
+        self.use_features(True, False)
+        self.assertTrue(all(self.visible(t) for t in dictation_items))
+        self.assertFalse(any(self.visible(t) for t in clipboard_items))
+        self.use_features(False, True)
+        self.assertFalse(any(self.visible(t) for t in dictation_items))
+        self.assertTrue(all(self.visible(t) for t in clipboard_items))
+        self.use_features(True, True)
+        self.assertTrue(all(self.visible(t) for t in dictation_items + clipboard_items))
+
+    def test_pause_and_resume_from_the_menu(self):
+        self.use_features(False, True)
+        pause = self.item("Pause Clipboard Capture")
+        self.assertFalse(self.visible("Resume Clipboard Capture"))
+        one_hour, until_resumed = [entry for entry in pause.action]
+        self.tray.clip._wall = lambda: 1000.0
+        one_hour.action()
+        self.assertEqual(self.tray.preferences.clipboard().paused_until, 4600.0)
+        self.assertFalse(self.visible("Pause Clipboard Capture"))
+        self.assertTrue(self.visible("Resume Clipboard Capture"))
+        self.item("Resume Clipboard Capture").action()
+        self.assertEqual(self.tray.preferences.clipboard().paused_until, 0.0)
+        until_resumed.action()
+        self.assertEqual(self.tray.preferences.clipboard().paused_until, -1)
+
+    def test_clipboard_history_opens_the_window_on_that_page(self):
+        self.use_features(False, True)
+        self.item("Clipboard History…").action()
+        self.assertEqual(self.popen.call_args.args[0][-1], "--clipboard")
+        self.assertTrue(self.popen.call_args.args[0][-2].endswith("app.py"))
+
+    def test_tick_keeps_the_clipboard_service_running(self):
+        self.use_features(True, True)
+        started = Mock()
+        started.poll.return_value = None
+        self.tray.clip._popen = Mock(return_value=started)
+        with patch.object(self.tray.service, "ready", return_value=True):
+            for _ in range(3):
+                self.tray.tick()
+        self.assertEqual(self.tray.clip._popen.call_count, 1)
+        self.assertTrue(self.tray.clip._popen.call_args.args[0][1].endswith("clipservice.py"))
+
+    def test_quitting_the_tray_asks_its_clipboard_service_to_quit(self):
+        self.use_features(True, True)
+        started = Mock()
+        started.poll.return_value = None
+        self.tray.clip._popen = Mock(return_value=started)
+        self.tray.clip.supervise()
+        self.tray.quit()
+        self.assertTrue((self.paths.runtime / "clip-quit").exists())
+
+    def test_the_dictation_shortcut_follows_the_chosen_features(self):
+        self.tray.hotkey_ok = True
+        self.tray.dictation_registered = True
+        self.use_features(False, True)
+        self.tray.sync_dictation_shortcut()
+        self.assertIsNone(self.tray.hotkey.registered[-1])
+        self.assertFalse(self.tray.dictation_registered)
+        self.tray.sync_dictation_shortcut()  # Idempotent.
+        self.assertEqual(len(self.tray.hotkey.registered), 1)
+        self.use_features(True, True)
+        self.tray.sync_dictation_shortcut()
+        self.assertEqual(self.tray.hotkey.registered[-1], self.tray.shortcut)
+        self.assertTrue(self.tray.dictation_registered)
+
+    def test_status_shows_the_clipboard_when_dictation_is_off(self):
+        self.use_features(False, True)
+        with patch.object(self.tray.clip, "status_line", return_value="Clipboard: 3 items"):
+            self.assertEqual(self.tray.status_text(), "Clipboard: 3 items")
+        self.use_features(True, True)
+        with patch.object(self.tray.clip, "status_line", return_value="Clipboard: 3 items"):
+            self.assertEqual(self.tray.clipboard_text(), "Clipboard: 3 items")
+            self.assertTrue(self.visible("Clipboard:"))
+
+    def test_the_menu_is_rebuilt_only_when_something_changed(self):
+        self.use_features(True, True)
+        self.tray.clip._popen = Mock(return_value=Mock(poll=Mock(return_value=None)))
+        with patch.object(self.tray.service, "ready", return_value=True):
+            self.tray.tick()
+            baseline = self.tray.icon.updates
+            for _ in range(5):
+                self.tray.tick()
+            self.assertEqual(self.tray.icon.updates, baseline)
+            self.tray.clip.pause(3600)
+            self.tray.tick()
+        self.assertEqual(self.tray.icon.updates, baseline + 1)
+
+    def test_changing_another_preference_does_not_reregister_the_shortcut(self):
+        self.tray.hotkey_ok = True
+        with patch.object(self.tray.service, "ready", return_value=True):
+            self.tray.tick()
+            before = len(self.tray.hotkey.registered)
+            self.tray.preferences.save(open_at_login=False)
+            os.utime(self.tray.preferences.path, (10**9, 10**9 + 5))
+            self.tray.tick()
+        self.assertEqual(len(self.tray.hotkey.registered), before)
 
     def test_the_tray_is_named_after_the_app(self):
         self.assertEqual(self.tray.icon.title, hotkeys.APP_NAME)

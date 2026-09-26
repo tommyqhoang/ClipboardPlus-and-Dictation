@@ -85,7 +85,7 @@ class Service:
                 "Couldn’t save the Clipboard+ key. Check that your settings folder is writable."
             ) from exc
 
-    def open_clipboard_history(self) -> None:
+    def open_clipboard_website(self) -> None:
         """The user's history once linked; otherwise the Clipboard+ site."""
         import webbrowser
 

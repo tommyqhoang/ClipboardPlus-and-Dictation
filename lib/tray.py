@@ -17,6 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import clipcontrol
 import desktop
 import dictation as d
 import hotkeys
@@ -88,6 +89,9 @@ class Tray:
         self.paths = d.Paths()
         self.service = Service(self.paths)
         self.preferences = hotkeys.Preferences(self.paths)
+        self.clip = clipcontrol.ClipboardControl(self.paths, self.preferences)
+        self.clip.changed()  # The first look is not a change.
+        self.dictation_registered = False
         self.shortcut = self.preferences.shortcut()
         self.stamp = self.preferences.stamp()
         self.hotkey_ok = False
@@ -101,6 +105,10 @@ class Tray:
         }
         self.place = "system tray" if desktop.platform_name() == "windows" else "top bar"
         item, menu = pystray.MenuItem, pystray.Menu
+
+        def dictation_on(_: Any) -> bool:
+            return self.clip.features().dictation
+
         presets = [
             item(
                 preset.label(),
@@ -116,27 +124,67 @@ class Tray:
             hotkeys.APP_NAME,
             menu(
                 item(lambda _: self.status_text(), None, enabled=False),
+                item(
+                    lambda _: self.clipboard_text(),
+                    None,
+                    enabled=False,
+                    visible=lambda _: self.showing_clipboard_line(),
+                ),
                 menu.SEPARATOR,
-                item(lambda _: self.toggle_text(), self.toggle, default=True),
-                item("Cancel Recording", self.cancel, enabled=lambda _: self.phase == "recording"),
+                item(
+                    lambda _: self.toggle_text(),
+                    self.toggle,
+                    default=True,
+                    visible=dictation_on,
+                ),
+                item(
+                    "Cancel Recording",
+                    self.cancel,
+                    enabled=lambda _: self.phase == "recording",
+                    visible=dictation_on,
+                ),
                 item(
                     "Copy Last Transcript",
                     self.copy_last,
                     enabled=lambda _: self.phase == "idle" and self.paths.text.exists(),
+                    visible=dictation_on,
+                ),
+                item(
+                    "Clipboard History…",
+                    lambda: self.open_window("--clipboard"),
+                    default=True,
+                    visible=lambda _: self.clip.features().clipboard and not dictation_on(None),
+                ),
+                item(
+                    "Clipboard History…",
+                    lambda: self.open_window("--clipboard"),
+                    visible=lambda _: self.clip.features().clipboard and dictation_on(None),
+                ),
+                item(
+                    "Pause Clipboard Capture",
+                    menu(
+                        item("For 1 Hour", lambda: self.clip.pause(3600)),
+                        item("Until I Resume", lambda: self.clip.pause(None)),
+                    ),
+                    visible=lambda _: self.clip.features().clipboard and not self.clip.paused(),
+                ),
+                item(
+                    "Resume Clipboard Capture",
+                    self.clip.resume,
+                    visible=lambda _: self.clip.features().clipboard and self.clip.paused(),
                 ),
                 menu.SEPARATOR,
                 item(
                     lambda _: f"Shortcut: {self.shortcut.label()}",
                     menu(*presets, menu.SEPARATOR, item("Record New Shortcut…", self.record)),
+                    visible=dictation_on,
                 ),
                 item(
                     "Open at Login",
                     self.toggle_login,
                     checked=lambda _: self.preferences.open_at_login(),
                 ),
-                item(
-                    "Clipboard History (Clipboard+)…", lambda: self.service.open_clipboard_history()
-                ),
+                item("Clipboard+ Website…", lambda: self.service.open_clipboard_website()),
                 item("Settings…", lambda: self.open_window("--settings")),
                 menu.SEPARATOR,
                 item(f"Quit {hotkeys.APP_NAME}", self.quit),
@@ -206,6 +254,7 @@ class Tray:
         hotkeys.set_login_item(self.preferences.open_at_login(), command)
 
     def quit(self) -> None:
+        self.clip.stop()
         self.running = False
         self.icon.stop()
 
@@ -216,7 +265,16 @@ class Tray:
             pass
 
     # -- state ------------------------------------------------------------
+    def showing_clipboard_line(self) -> bool:
+        features = self.clip.features()
+        return features.clipboard and features.dictation
+
+    def clipboard_text(self) -> str:
+        return self.clip.status_line()
+
     def status_text(self) -> str:
+        if not self.clip.features().dictation:
+            return self.clip.status_line() or "Clipboard history is off"
         if self.phase == "recording":
             return "Recording…"
         if self.phase != "idle":
@@ -240,10 +298,12 @@ class Tray:
             if desktop.platform_name() == "windows"
             else GnomeHotKey(self.pressed)
         )
-        self.hotkey_ok = self.hotkey.register(self.shortcut)
-        hotkeys.record_status(self.paths, self.hotkey_ok)
-        if not self.hotkey_ok and desktop.platform_name() == "windows":
-            self.notify(f"{self.shortcut.label()} is in use by another app. Pick another.")
+        if self.clip.features().dictation:
+            self.hotkey_ok = self.hotkey.register(self.shortcut)
+            self.dictation_registered = True
+            hotkeys.record_status(self.paths, self.hotkey_ok)
+            if not self.hotkey_ok and desktop.platform_name() == "windows":
+                self.notify(f"{self.shortcut.label()} is in use by another app. Pick another.")
         self.sync_login()
         if not self.service.completed():
             self.open_window("--setup")
@@ -252,7 +312,22 @@ class Tray:
             self.tick()
             time.sleep(0.5)
 
+    def sync_dictation_shortcut(self) -> None:
+        """Only the dictation feature owns a global shortcut; follow the chosen features."""
+        wanted = self.clip.features().dictation
+        if wanted and not self.dictation_registered:
+            self.hotkey_ok = self.hotkey.register(self.shortcut)
+            self.dictation_registered = True
+            hotkeys.record_status(self.paths, self.hotkey_ok)
+        elif not wanted and self.dictation_registered:
+            self.hotkey.register(None)
+            self.dictation_registered = False
+
     def tick(self) -> None:
+        self.clip.supervise()
+        if self.clip.changed():
+            self.sync_dictation_shortcut()
+            self.icon.update_menu()
         if (self.paths.runtime / "menubar-quit").exists():
             (self.paths.runtime / "menubar-quit").unlink(missing_ok=True)
             self.quit()
@@ -272,12 +347,15 @@ class Tray:
             self.hotkey.register(None)
             self.suspended = True
         elif not capturing and (self.suspended or changed):
-            self.suspended = False
-            if changed:
-                self.apply(self.preferences.shortcut())  # Chosen in the shortcut window.
-            else:
+            was_suspended, self.suspended = self.suspended, False
+            chosen = self.preferences.shortcut()
+            if changed and chosen != self.shortcut:
+                self.apply(chosen)  # Chosen in the shortcut window.
+            elif was_suspended and self.clip.features().dictation:
+                # The shortcut window closed without a new choice: use the old one again.
                 self.hotkey_ok = self.hotkey.register(self.shortcut)
                 hotkeys.record_status(self.paths, self.hotkey_ok)
+            self.stamp = self.preferences.stamp()
         try:
             current = workflow.snapshot(self.paths)
         except (d.DictationError, OSError, ValueError):

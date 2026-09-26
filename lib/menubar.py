@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import clipcontrol
 import desktop
 import dictation as d
 import hotkeys
@@ -131,6 +132,11 @@ class Controller(NSObject):  # type: ignore[misc]
         self.paths = d.Paths()
         self.service = Service(self.paths)
         self.preferences = hotkeys.Preferences(self.paths)
+        self.clip = clipcontrol.ClipboardControl(
+            self.paths, self.preferences, python=sys.executable
+        )
+        self.dictation_registered = False
+        self.view: tuple[Any, ...] | None = None
         self.shortcut = self.preferences.shortcut()
         self.phase = ""
         return self
@@ -144,8 +150,11 @@ class Controller(NSObject):  # type: ignore[misc]
         self.item.button().setToolTip_(hotkeys.APP_NAME)
         self.build_menu()
         self.hotkey = GlobalHotKey(self.pressed)
-        self.hotkey_ok = self.hotkey.register(self.shortcut)
-        hotkeys.record_status(self.paths, self.hotkey_ok)
+        self.hotkey_ok = True
+        if self.clip.features().dictation:
+            self.hotkey_ok = self.hotkey.register(self.shortcut)
+            self.dictation_registered = True
+            hotkeys.record_status(self.paths, self.hotkey_ok)
         if not self.hotkey_ok:
             self.warn(
                 "Shortcut unavailable",
@@ -153,6 +162,8 @@ class Controller(NSObject):  # type: ignore[misc]
                 "Choose a different shortcut from the menu bar icon.",
             )
         self.sync_login_item()
+        self.clip.changed()  # The first look is not a change.
+        self.apply_features()
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.5, self, "refresh:", None, True
         )
@@ -166,6 +177,16 @@ class Controller(NSObject):  # type: ignore[misc]
         menu.setAutoenablesItems_(False)
         self.status_line = self.add(menu, "Ready", None)
         self.status_line.setEnabled_(False)
+        self.clipboard_line = self.add(menu, "", None)
+        self.clipboard_line.setEnabled_(False)
+        menu.addItem_(NSMenuItem.separatorItem())
+        self.history_item = self.add(menu, "Clipboard History…", "openClipboard:")
+        self.pause_item = self.add(menu, "Pause Clipboard Capture", None)
+        pause_menu = NSMenu.alloc().init()
+        self.add(pause_menu, "For 1 Hour", "pauseHour:")
+        self.add(pause_menu, "Until I Resume", "pauseUntilResumed:")
+        self.pause_item.setSubmenu_(pause_menu)
+        self.resume_item = self.add(menu, "Resume Clipboard Capture", "resumeCapture:")
         menu.addItem_(NSMenuItem.separatorItem())
         self.toggle_item = self.add(menu, "Start Dictation", "toggle:")
         self.cancel_item = self.add(menu, "Cancel Recording", "cancel:")
@@ -180,7 +201,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.add(submenu, "Record New Shortcut…", "recordShortcut:")
         self.shortcut_item.setSubmenu_(submenu)
         self.login_item = self.add(menu, "Open at Login", "toggleLogin:")
-        self.add(menu, "Clipboard History (Clipboard+)…", "clipboardPlus:")
+        self.add(menu, "Clipboard+ Website…", "clipboardPlus:")
         self.add(menu, "Settings…", "openSettings:")
         menu.addItem_(NSMenuItem.separatorItem())
         self.add(menu, f"Quit {hotkeys.APP_NAME}", "quit:")
@@ -310,9 +331,22 @@ class Controller(NSObject):  # type: ignore[misc]
         self.login_item.setState_(1 if enabled else 0)
 
     def clipboardPlus_(self, _sender: Any) -> None:
-        self.service.open_clipboard_history()
+        self.service.open_clipboard_website()
+
+    def openClipboard_(self, _sender: Any) -> None:
+        self.open_window("--clipboard")
+
+    def pauseHour_(self, _sender: Any) -> None:
+        self.clip.pause(3600)
+
+    def pauseUntilResumed_(self, _sender: Any) -> None:
+        self.clip.pause(None)
+
+    def resumeCapture_(self, _sender: Any) -> None:
+        self.clip.resume()
 
     def quit_(self, _sender: Any) -> None:
+        self.clip.stop()
         NSApplication.sharedApplication().terminate_(self)
 
     @objc.python_method
@@ -333,6 +367,26 @@ class Controller(NSObject):  # type: ignore[misc]
         self.refresh_(None)
 
     @objc.python_method
+    def apply_features(self) -> None:
+        """Show only the chosen features' menu items and own the shortcut accordingly."""
+        features = self.clip.features()
+        paused = self.clip.paused()
+        for item in (self.toggle_item, self.cancel_item, self.copy_item, self.shortcut_item):
+            item.setHidden_(not features.dictation)
+        for item in (self.clipboard_line, self.history_item):
+            item.setHidden_(not features.clipboard)
+        self.pause_item.setHidden_(not features.clipboard or paused)
+        self.resume_item.setHidden_(not features.clipboard or not paused)
+        if features.dictation and not self.dictation_registered:
+            self.hotkey_ok = self.hotkey.register(self.shortcut)
+            self.dictation_registered = True
+            hotkeys.record_status(self.paths, self.hotkey_ok)
+        elif not features.dictation and self.dictation_registered:
+            self.hotkey.unregister()
+            self.dictation_registered = False
+        self.view = None  # Redraw the status lines.
+
+    @objc.python_method
     def ready(self) -> bool:
         """Setup state, re-checked every few seconds rather than on every tick."""
         now = time.monotonic()
@@ -346,6 +400,9 @@ class Controller(NSObject):  # type: ignore[misc]
             quit_request.unlink(missing_ok=True)
             self.quit_(None)
             return
+        self.clip.supervise()
+        if self.clip.changed():
+            self.apply_features()
         try:
             current = workflow.snapshot(self.paths)
         except (d.DictationError, OSError, ValueError):
@@ -362,11 +419,13 @@ class Controller(NSObject):  # type: ignore[misc]
             self.hotkey_ok,
             ready,
             self.paths.text.exists(),
+            self.clip.status_line(),
         )
-        if view == getattr(self, "view", None):
+        if view == self.view:
             return
         self.view = view
         label = self.shortcut.label()
+        self.clipboard_line.setTitle_(self.clip.status_line())
         button = self.item.button()
         if phase == "recording":
             button.setImage_(self.recording_image)
