@@ -178,6 +178,61 @@ class OwnWriteTests(ServiceCase):
         self.assertTrue((self.paths.runtime / "clip-ignore.json").is_file())
 
 
+class TranscriptTests(ServiceCase):
+    def test_a_transcript_joins_the_history_and_is_marked_as_the_apps_own_write(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        clipservice.record_transcript(self.paths, "spoken words", clock=lambda: self.now)
+        item = self.store.list()[0]
+        self.assertEqual((item.text, item.source), ("spoken words", "dictation"))
+        service = self.service(clipwatch.Clip(text="spoken words"))
+        service.step(0)  # The watcher then sees the copy the engine made.
+        self.assertEqual(self.store.count(), 1)
+
+    def test_nothing_is_recorded_when_the_clipboard_feature_is_off(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, False))
+        clipservice.record_transcript(self.paths, "spoken words")
+        self.assertFalse(self.paths.clipboard.exists() and self.store.count())
+
+    def test_a_broken_history_never_fails_a_dictation(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        with patch.object(
+            clipservice.clipstore, "Store", side_effect=sqlite3.OperationalError("x")
+        ):
+            clipservice.record_transcript(self.paths, "spoken words")
+        with patch.object(clipservice.clipstore, "Store", side_effect=clipstore.StoreError("new")):
+            clipservice.record_transcript(self.paths, "spoken words")
+
+    def test_finishing_a_dictation_records_the_transcript_before_copying_it(self):
+        order: list[str] = []
+        paths = self.paths
+        paths.audio.write_bytes(b"pcm")
+        config = d.Config(paths)
+        with (
+            patch.object(d, "transcribe", return_value="spoken words"),
+            patch.object(d, "copy_text", side_effect=lambda *a, **k: order.append("copy")),
+            patch.object(d, "notify"),
+            patch.object(d, "share_transcript"),
+            patch.object(
+                clipservice, "record_transcript", side_effect=lambda p, t: order.append("record")
+            ),
+        ):
+            d.finish(config, paths)
+        self.assertEqual(order, ["record", "copy"])
+
+    def test_dictation_still_works_when_the_history_module_is_missing(self):
+        paths = self.paths
+        paths.audio.write_bytes(b"pcm")
+        with (
+            patch.object(d, "transcribe", return_value="spoken words"),
+            patch.object(d, "copy_text") as copy,
+            patch.object(d, "notify"),
+            patch.object(d, "share_transcript"),
+            patch.dict(sys.modules, {"clipservice": None}),
+        ):
+            d.finish(d.Config(paths), paths)
+        copy.assert_called_once()
+
+
 class ResilienceTests(ServiceCase):
     def test_a_watcher_error_is_reported_and_capture_continues(self):
         service = self.service(OSError("display closed"), clipwatch.Clip(text="later"))

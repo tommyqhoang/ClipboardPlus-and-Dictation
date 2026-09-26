@@ -48,6 +48,24 @@ def mark_own_write(paths: d.Paths, text: str, clock: Callable[[], float] = time.
     )
 
 
+def record_transcript(paths: d.Paths, text: str, clock: Callable[[], float] = time.time) -> None:
+    """Keep a dictation transcript in the clipboard history (only while Clipboard is on).
+
+    Never raises: a broken history must not cost the user their dictation.
+    """
+    try:
+        if not hotkeys.Preferences(paths).features().clipboard:
+            return
+        mark_own_write(paths, text, clock)  # Before the copy, so the watcher skips it.
+        store = clipstore.Store(paths.clipboard)
+        try:
+            store.add_text(text, "dictation", clock())
+        finally:
+            store.close()
+    except (OSError, sqlite3.Error, clipstore.StoreError, d.DictationError):
+        return
+
+
 def write_status(
     paths: d.Paths,
     state: str,

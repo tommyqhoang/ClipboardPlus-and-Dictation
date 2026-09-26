@@ -393,6 +393,15 @@ def copy_text(config: Config, paths: Paths, text: str | None = None) -> None:
         ) from exc
 
 
+def record_transcript(paths: Paths, text: str) -> None:
+    """Keep the transcript in the clipboard history; it never affects the dictation."""
+    try:
+        import clipservice
+    except ImportError:  # An older partial install: dictation still works.
+        return
+    clipservice.record_transcript(paths, text)
+
+
 def share_transcript(config: Config, text: str) -> threading.Thread | None:
     """Also save the transcript to a linked Clipboard+ account.
 
@@ -425,6 +434,7 @@ def finish(config: Config, paths: Paths) -> None:
         # A new original invalidates the previous review draft and avoids
         # retaining older rewritten content after a successful transcription.
         (paths.cache / "concise.json").unlink(missing_ok=True)
+        record_transcript(paths, text)
         copy_text(config, paths)
         notify(
             config,
