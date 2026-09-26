@@ -132,14 +132,9 @@ class Tray:
             "whisper-dictation",
             self.images["idle"],
             hotkeys.APP_NAME,
+            # Kept short: everyday actions on top, rarely changed options under More.
             menu(
                 item(lambda _: self.status_text(), None, enabled=False),
-                item(
-                    lambda _: self.clipboard_text(),
-                    None,
-                    enabled=False,
-                    visible=lambda _: self.showing_clipboard_line(),
-                ),
                 menu.SEPARATOR,
                 item(
                     lambda _: self.toggle_text(),
@@ -150,8 +145,7 @@ class Tray:
                 item(
                     "Cancel Recording",
                     self.cancel,
-                    enabled=lambda _: self.phase == "recording",
-                    visible=dictation_on,
+                    visible=lambda _: dictation_on(None) and self.phase == "recording",
                 ),
                 item(
                     "Copy Last Transcript",
@@ -184,19 +178,25 @@ class Tray:
                     visible=lambda _: self.clip.features().clipboard and self.clip.paused(),
                 ),
                 menu.SEPARATOR,
-                item(
-                    lambda _: f"Shortcut: {self.shortcut.label()}",
-                    menu(*presets, menu.SEPARATOR, item("Record New Shortcut…", self.record)),
-                    visible=dictation_on,
-                ),
-                item(
-                    "Open at Login",
-                    self.toggle_login,
-                    checked=lambda _: self.preferences.open_at_login(),
-                ),
-                item("Clipboard+ Website…", lambda: self.service.open_clipboard_website()),
                 item("Settings…", lambda: self.open_window("--settings")),
-                menu.SEPARATOR,
+                item(
+                    "More",
+                    menu(
+                        item(
+                            lambda _: f"Shortcut: {self.shortcut.label()}",
+                            menu(
+                                *presets, menu.SEPARATOR, item("Record New Shortcut…", self.record)
+                            ),
+                            visible=dictation_on,
+                        ),
+                        item(
+                            "Open at Login",
+                            self.toggle_login,
+                            checked=lambda _: self.preferences.open_at_login(),
+                        ),
+                        item("Clipboard+ Website…", lambda: self.service.open_clipboard_website()),
+                    ),
+                ),
                 item(f"Quit {hotkeys.APP_NAME}", self.quit),
             ),
         )
@@ -278,16 +278,9 @@ class Tray:
             pass
 
     # -- state ------------------------------------------------------------
-    def showing_clipboard_line(self) -> bool:
-        features = self.clip.features()
-        return features.clipboard and features.dictation
-
     def history_text(self) -> str:
         shortcut = self.clip.history_shortcut()
         return f"Clipboard History…  ({shortcut.label()})" if shortcut else "Clipboard History…"
-
-    def clipboard_text(self) -> str:
-        return self.clip.status_line()
 
     def status_text(self) -> str:
         if not self.clip.features().dictation:

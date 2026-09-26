@@ -111,6 +111,9 @@ class TrayTests(unittest.TestCase):
             f"Quit {hotkeys.APP_NAME}",
         ):
             self.assertIn(expected, labels)
+        top = [entry.text for entry in self.tray.icon.menu if isinstance(entry, Item)]
+        for tucked in ("Open at Login", "Clipboard+ Website…"):
+            self.assertNotIn(tucked, top)  # Under More, keeping the menu short.
         self.assertEqual(self.tray.icon.icon, "whisper-dictation.png")
         with patch("webbrowser.open") as browser:
             self.item("Clipboard+ Website").action()
@@ -150,6 +153,7 @@ class TrayTests(unittest.TestCase):
             self.tray.tick()
             self.assertIn("anywhere to dictate", self.tray.status_text())
             self.assertIn("Start Dictation", self.tray.toggle_text())
+            self.assertFalse(self.visible("Cancel Recording"))
             d.atomic(self.paths.state, '{"phase":"recording","started_at":0}')
             with patch.object(d, "busy", return_value=True):
                 self.tray.tick()
@@ -157,7 +161,7 @@ class TrayTests(unittest.TestCase):
             self.assertIn("recording", self.tray.icon.title)
             self.assertEqual(self.tray.status_text(), "Recording…")
             self.assertIn("Stop and Transcribe", self.tray.toggle_text())
-            self.assertTrue(self.item("Cancel Recording").options["enabled"](None))
+            self.assertTrue(self.visible("Cancel Recording"))
             d.atomic(self.paths.state, '{"phase":"transcribing"}')
             with patch.object(d, "busy", return_value=True):
                 self.tray.tick()
@@ -255,7 +259,7 @@ class TrayTests(unittest.TestCase):
         return any(entry.options.get("visible", lambda _: True)(None) for entry in entries)
 
     def test_menu_shows_only_the_chosen_features(self):
-        dictation_items = ("Cancel Recording", "Copy Last Transcript", "Shortcut:")
+        dictation_items = ("Start Dictation", "Copy Last Transcript", "Shortcut:")
         clipboard_items = ("Clipboard History…", "Pause Clipboard Capture")
         self.use_features(True, False)
         self.assertTrue(all(self.visible(t) for t in dictation_items))
@@ -325,10 +329,6 @@ class TrayTests(unittest.TestCase):
         self.use_features(False, True)
         with patch.object(self.tray.clip, "status_line", return_value="Clipboard: 3 items"):
             self.assertEqual(self.tray.status_text(), "Clipboard: 3 items")
-        self.use_features(True, True)
-        with patch.object(self.tray.clip, "status_line", return_value="Clipboard: 3 items"):
-            self.assertEqual(self.tray.clipboard_text(), "Clipboard: 3 items")
-            self.assertTrue(self.visible("Clipboard:"))
 
     def test_the_menu_is_rebuilt_only_when_something_changed(self):
         self.use_features(True, True)

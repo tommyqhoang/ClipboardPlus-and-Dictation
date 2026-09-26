@@ -47,8 +47,18 @@ def preview(text: str) -> str:
 @dataclasses.dataclass
 class Row:
     item: clipstore.Item
-    frame: tk.Misc  # The row; destroying it removes the whole item from the list.
+    frame: tk.Frame  # The row; destroying it removes the whole item from the list.
     star: tk.Label
+    when: tk.Label  # "5 min ago · Desktop": the only part that changes with time.
+    title: tk.Label  # A favorite's label, above its text; hidden when it has none.
+    rename: tk.Label  # The "Add label" / "Edit label" action, offered on favorites only.
+    body: tk.Label  # The item's text (or "Image W×H").
+
+
+def _same_look(old: clipstore.Item, new: clipstore.Item) -> bool:
+    """Whether a drawn row still shows `new` correctly, apart from its time."""
+    fields = ("kind", "text", "thumb_file", "favorite", "label", "source")
+    return all(getattr(old, name) == getattr(new, name) for name in fields)
 
 
 class ClipboardPage:
@@ -120,6 +130,7 @@ class ClipboardPage:
         self.list_frame = ttk.Frame(frame)
         self.list_frame.pack(fill="x")
         self.card: tk.Frame | None = None
+        self.rows = []  # Any earlier rows went with the page.
         self.footer = ttk.Frame(frame)
         self.footer.pack(fill="x", pady=(8, 0))
         self.reload()
@@ -198,11 +209,16 @@ class ClipboardPage:
             self.reload()
 
     def reload(self) -> None:
+        """Show the current history.
+
+        Rows that still show the same item are kept and only moved into place, so a
+        redraw never blanks the list: copying an item puts it back on top without the
+        whole list flashing.
+        """
         self._signature = self._current_signature()
         for child in self.banner.winfo_children() + self.list_frame.winfo_children():
-            child.destroy()
-        self.rows = []
-        self.card = None
+            if child is not self.card:
+                child.destroy()  # The paused banner and the empty-list hint.
         for name, chip in self._chips.items():
             chip.configure(
                 style="Small.Primary.TButton" if name == self.filter else "Small.TButton"
@@ -217,9 +233,38 @@ class ClipboardPage:
         items = self._items()
         shown = {item.image_file for item in items if item.kind == "image"}
         self._thumbs = {name: photo for name, photo in self._thumbs.items() if name in shown}
+        drawn = {row.item.id: row for row in self.rows}
+        self.rows = []
         for item in items:
-            self._add_row(item)
+            row = drawn.pop(item.id, None)
+            if row is not None and _same_look(row.item, item):
+                row.item = item
+                row.when.configure(text=self._meta(item))
+                self.rows.append(row)
+            else:
+                if row is not None:
+                    row.frame.destroy()
+                self._add_row(item)
+        for row in drawn.values():
+            row.frame.destroy()
+        self._order()
+        if not self.rows and self.card is not None:
+            self.card.destroy()  # An empty outline would sit above the hint.
+            self.card = None
         self._finish(len(items))
+
+    def _order(self) -> None:
+        """Pack the rows in list order, touching the layout only when it changed."""
+        if self.card is None or not self.rows:
+            return
+        wanted = [str(row.frame) for row in self.rows]
+        packed = [str(widget) for widget in self.card.pack_slaves()]
+        if [name for name in packed if name in set(wanted)] == wanted:
+            return
+        for row in self.rows:
+            row.frame.pack_forget()
+        for row in self.rows:
+            row.frame.pack(fill="x", pady=(1, 0))
 
     def _finish(self, shown: int) -> None:
         """The empty-list hint and the footer, which depend on how many rows there are."""
@@ -304,27 +349,39 @@ class ClipboardPage:
             cursor="hand2",
         )
         label.pack(anchor="w", fill="x")
-        meta = f"{relative_time(item.created_at, self._clock())} · {SOURCES.get(item.source, item.source)}"
+        # Made after the text (so it is not taken for it) but shown above it.
+        title = tk.Label(
+            info,
+            background=surface,
+            foreground=colors["text"],
+            font=fonts["heading"],
+            justify="left",
+            anchor="w",
+            wraplength=self.app.wraplength - 170,
+            cursor="hand2",
+        )
         hint = tk.Label(
             info,
-            text=meta,
+            text=self._meta(item),
             background=surface,
             foreground=colors["muted"],
             font=fonts["small"],
             cursor="hand2",
         )
         hint.pack(anchor="w")
-        painted += [actions, info, label, hint]
-        clickable += [info, label, hint]
+        painted += [actions, info, label, title, hint]
+        clickable += [info, label, title, hint]
         for widget in clickable:
             widget.bind("<Button-1>", lambda _: self.copy(item.id))
         star = self._action(actions, "★" if item.favorite else "☆", colors["star"], "icon")
         star.bind("<Button-1>", lambda _: self.toggle_favorite(item.id))
+        rename = self._action(actions, "Label", colors["muted"])
+        rename.bind("<Button-1>", lambda _: self.edit_label(item.id))
         copy = self._action(actions, "Copy", colors["accent"])
         copy.bind("<Button-1>", lambda _: self.copy(item.id))
         delete = self._action(actions, "Delete", colors["muted"], hover=colors["danger"])
         delete.bind("<Button-1>", lambda _: self.delete(item.id))
-        painted += [star, copy, delete]
+        painted += [star, rename, copy, delete]
 
         def paint(color: str) -> None:
             for widget in painted:
@@ -338,7 +395,29 @@ class ClipboardPage:
 
         row.bind("<Enter>", lambda _: paint(colors["hover"]))
         row.bind("<Leave>", left)
-        self.rows.append(Row(item, row, star))
+        drawn = Row(item, row, star, hint, title, rename, label)
+        self._show_label(drawn)
+        self.rows.append(drawn)
+
+    def _meta(self, item: clipstore.Item) -> str:
+        when = relative_time(item.created_at, self._clock())
+        return f"{when} · {SOURCES.get(item.source, item.source)}"
+
+    def _show_label(self, row: Row) -> None:
+        """A favorite's label above its text, and the Label action on favorites only."""
+        item = row.item
+        if item.favorite and item.label:
+            row.title.configure(text=item.label)
+            if not row.title.winfo_manager():
+                row.title.pack(anchor="w", fill="x", before=row.body)
+        else:
+            row.title.pack_forget()
+        if item.favorite:
+            if not row.rename.winfo_manager():
+                row.rename.pack(side="left", after=row.star)
+            row.rename.configure(text="Edit label" if item.label else "Add label")
+        else:
+            row.rename.pack_forget()
 
     def _action(
         self, parent: tk.Misc, text: str, color: str, font: str = "small", hover: str = ""
@@ -397,11 +476,31 @@ class ClipboardPage:
         self._signature = self._current_signature()  # Our own change needs no redraw.
         if row is None:
             return
-        row.item = dataclasses.replace(row.item, favorite=not item.favorite)
+        # Unstarring also drops the label (only favorites have one).
+        row.item = self.store.get(item_id) or row.item
         if self.filter == "favorites" and not row.item.favorite:
             self._remove_row(row)
         else:
             row.star.configure(text="★" if row.item.favorite else "☆")
+            self._show_label(row)
+
+    def ask_label(self, current: str) -> str | None:
+        """The new label ("" removes it), or None when the user cancels."""
+        return LabelDialog(self.app.root, current).show()
+
+    def edit_label(self, item_id: int) -> None:
+        item = self.store.get(item_id)
+        if item is None or not item.favorite:
+            return
+        label = self.ask_label(item.label)
+        if label is None:
+            return
+        self.store.set_label(item_id, label)
+        self._signature = self._current_signature()
+        row = self._row(item_id)
+        if row is not None:
+            row.item = self.store.get(item_id) or row.item
+            self._show_label(row)
 
     def copy_first(self) -> None:
         if self.pending_search is not None:
@@ -500,6 +599,56 @@ class ClearDialog:
         self.window.destroy()
 
     def show(self) -> tuple[bool, bool] | None:
+        self.window.grab_set()
+        self.window.wait_window()
+        return self.result
+
+
+class LabelDialog:
+    """Asks for a favorite's label: add, change or remove it."""
+
+    def __init__(self, parent: tk.Misc, current: str) -> None:
+        self.result: str | None = None
+        window = self.window = tk.Toplevel(parent)
+        window.title("Edit label" if current else "Add label")
+        window.resizable(False, False)
+        window.transient(parent)  # type: ignore[call-overload]
+        window.configure(background=ttk.Style(window).lookup("TFrame", "background"))
+        self.text = tk.StringVar(master=window, value=current)
+        body = ttk.Frame(window, padding=22)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text="A short name for this favorite. Search finds it by its label too.",
+            wraplength=360,
+        ).pack(anchor="w", pady=(0, 8))
+        entry = ttk.Entry(body, textvariable=self.text, width=44)
+        entry.pack(fill="x", pady=(0, 14))
+        entry.select_range(0, "end")
+        entry.focus_set()
+        entry.bind("<Return>", lambda _: self.save())
+        row = ttk.Frame(body)
+        row.pack(fill="x")
+        ttk.Button(row, text="Save", style="Primary.TButton", command=self.save).pack(side="right")
+        ttk.Button(row, text="Cancel", command=self.cancel).pack(side="right", padx=(0, 8))
+        if current:
+            ttk.Button(row, text="Remove label", command=self.remove).pack(side="left")
+        window.protocol("WM_DELETE_WINDOW", self.cancel)
+        window.bind("<Escape>", lambda _: self.cancel())
+
+    def save(self) -> None:
+        self.result = self.text.get().strip()
+        self.window.destroy()
+
+    def remove(self) -> None:
+        self.result = ""
+        self.window.destroy()
+
+    def cancel(self) -> None:
+        self.result = None
+        self.window.destroy()
+
+    def show(self) -> str | None:
         self.window.grab_set()
         self.window.wait_window()
         return self.result

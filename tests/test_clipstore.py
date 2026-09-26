@@ -172,6 +172,22 @@ class QueryTests(StoreCase):
         self.store.set_favorite(item.id, False)
         self.assertFalse(self.store.get(item.id).favorite)
 
+    def test_only_favorites_take_a_label_and_unstarring_drops_it(self):
+        item = self.store.add_text("wifi", now=1.0)
+        self.store.set_label(item.id, "home")
+        self.assertEqual(self.store.get(item.id).label, "")
+        self.store.set_favorite(item.id, True)
+        self.store.set_label(item.id, "  Home   wifi  ")
+        self.assertEqual(self.store.get(item.id).label, "Home wifi")
+        self.assertEqual([i.id for i in self.store.list(query="home")], [item.id])
+        self.store.set_label(item.id, "x" * 500)
+        self.assertEqual(len(self.store.get(item.id).label), clipstore.MAX_LABEL_CHARS)
+        self.store.set_label(item.id, "")
+        self.assertEqual(self.store.get(item.id).label, "")
+        self.store.set_label(item.id, "again")
+        self.store.set_favorite(item.id, False)
+        self.assertEqual(self.store.get(item.id).label, "")
+
     def test_clearing_only_this_device_leaves_no_tombstones(self):
         keep = self.store.add_text("star", now=1.0)
         gone = self.store.add_text("gone", now=2.0)
@@ -369,6 +385,24 @@ class ConcurrencyAndSchemaTests(StoreCase):
         store = clipstore.Store(directory)
         self.addCleanup(store.close)
         self.assertIsNotNone(store.add_text("works"))
+
+    def test_a_version_1_database_gains_the_account_label_column(self):
+        directory = self.directory.parent / "v1"
+        directory.mkdir()
+        schema = clipstore._SCHEMA.replace(",\n    cloud_label TEXT NOT NULL DEFAULT ''", "")
+        with contextlib.closing(sqlite3.connect(directory / "clips.db")) as raw:
+            raw.executescript(schema)
+            raw.execute(
+                "INSERT INTO items (kind, text, sha, created_at, updated_at, favorite, label, "
+                "cloud_id) VALUES ('text', 'old', 'abc', 1, 1, 1, 'pinned', 'id-1')"
+            )
+            raw.execute("PRAGMA user_version = 1")
+            raw.commit()
+        store = clipstore.Store(directory)
+        self.addCleanup(store.close)
+        (item,) = store.list()
+        self.assertEqual((item.label, item.cloud_label), ("pinned", "pinned"))
+        self.assertEqual(store.pending_labels(), [])
 
     def test_a_database_from_a_newer_app_is_refused_not_damaged(self):
         directory = self.directory.parent / "newer"

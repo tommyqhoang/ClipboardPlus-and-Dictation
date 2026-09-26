@@ -480,6 +480,12 @@ class Cloud:
             return bool(item["isFavorite"])
         raise SyncError("Clipboard+ sent a reply that could not be read.")
 
+    def set_label(self, cloud_id: str, label: str) -> None:
+        """Name a favorite ("" removes the name). A missing or unstarred item is let go."""
+        self._call(
+            "PATCH", f"/api/clipboard/{self._id(cloud_id)}", {"label": label}, accept=(400, 404)
+        )
+
     def delete(self, cloud_id: str) -> None:
         """404 is success: it is already gone."""
         self._call("DELETE", f"/api/clipboard/{self._id(cloud_id)}", accept=(404,))

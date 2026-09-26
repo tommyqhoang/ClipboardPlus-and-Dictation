@@ -363,6 +363,18 @@ class CloudTests(Network):
             (delete.get_method(), delete.full_url), ("DELETE", f"{cp.API}/api/clipboard/{ITEM_ID}")
         )
 
+    def test_set_label_patches_the_item_and_lets_go_of_refusals(self):
+        opener = self.opener(reply(200, {"item": {}}), failure(400), failure(404))
+        cloud = self.cloud()
+        cloud.set_label(ITEM_ID, "Wifi")
+        cloud.set_label(ITEM_ID, "")  # No longer a favorite there: nothing to retry.
+        cloud.set_label(ITEM_ID, "")  # Gone there.
+        sent = self.sent(opener, 0)
+        self.assertEqual(
+            (sent.get_method(), sent.full_url), ("PATCH", f"{cp.API}/api/clipboard/{ITEM_ID}")
+        )
+        self.assertEqual(json.loads(sent.data), {"label": "Wifi"})
+
     def test_an_id_is_validated_before_it_reaches_a_url(self):
         opener = self.opener()
         for bad in ("../account", "", "a b", ITEM_ID + "/../x", "http://x"):

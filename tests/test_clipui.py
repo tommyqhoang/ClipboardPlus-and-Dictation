@@ -274,6 +274,63 @@ class PageTests(PageCase):
         self.page.delete(second.id)
         self.assertEqual([row.frame for row in self.page.rows], [before[first.id]])
 
+    def test_a_recopied_item_moves_to_the_top_without_redrawing_the_list(self):
+        older = self.store.add_text("older", now=1.0)
+        self.store.add_text("newer", now=2.0)
+        self.page.reload()
+        before = {row.item.id: row.frame for row in self.page.rows}
+        self.store.add_text("older", now=3.0)  # Clicking a row copies it back: it moves up.
+        self.page.refresh()
+        self.assertEqual([row.item.text for row in self.page.rows], ["older", "newer"])
+        self.assertEqual({row.item.id: row.frame for row in self.page.rows}, before)
+        packed = [w for w in self.page.card.pack_slaves() if w in before.values()]
+        self.assertEqual(packed[0], before[older.id])
+
+    def test_favorites_can_be_given_a_label_changed_and_have_it_removed(self):
+        item = self.store.add_text("hunter2", now=1.0)
+        self.page.reload()
+        row = self.page.rows[0]
+        self.assertFalse(row.rename.winfo_manager())  # Only favorites take a label.
+        self.page.toggle_favorite(item.id)
+        self.assertEqual(row.rename.cget("text"), "Add label")
+        with patch.object(self.page, "ask_label", return_value="Wifi password") as ask:
+            self.page.edit_label(item.id)
+        ask.assert_called_once_with("")
+        self.assertEqual(self.store.get(item.id).label, "Wifi password")
+        self.assertEqual(row.title.cget("text"), "Wifi password")
+        self.assertTrue(row.title.winfo_manager())
+        self.assertEqual(row.rename.cget("text"), "Edit label")
+        self.assertEqual(self.page.rows[0].frame, row.frame)
+        with patch.object(self.page, "ask_label", return_value=None):
+            self.page.edit_label(item.id)  # Cancelled: nothing changes.
+        self.assertEqual(self.store.get(item.id).label, "Wifi password")
+        self.page.set_query("wifi")
+        self.assertEqual([r.item.id for r in self.page.rows], [item.id])
+        with patch.object(self.page, "ask_label", return_value=""):
+            self.page.edit_label(item.id)
+        self.assertEqual(self.store.get(item.id).label, "")
+        self.assertFalse(self.page.rows[0].title.winfo_manager())
+
+    def test_a_label_set_elsewhere_shows_and_unstarring_drops_it(self):
+        item = self.store.add_text("address", now=1.0)
+        self.store.set_favorite(item.id, True)
+        self.store.set_label(item.id, "Home")
+        self.page.reload()
+        self.assertIn("Home", self.texts())
+        self.page.toggle_favorite(item.id)
+        row = self.page.rows[0]
+        self.assertFalse(row.title.winfo_manager())
+        self.assertFalse(row.rename.winfo_manager())
+        self.assertEqual(self.store.get(item.id).label, "")
+
+    def test_the_label_dialog_saves_removes_and_cancels(self):
+        for action, expected in (("save", "New"), ("remove", ""), ("cancel", None)):
+            with self.subTest(action=action):
+                dialog = clipui.LabelDialog(self.root, "Old")
+                dialog.text.set("  New ")
+                getattr(dialog, action)()
+                self.assertEqual(dialog.result, expected)
+
     def test_unstarring_under_the_favorites_filter_drops_the_row(self):
         item = self.store.add_text("fav", now=1.0)
         self.store.set_favorite(item.id, True)

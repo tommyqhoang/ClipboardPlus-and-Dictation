@@ -26,11 +26,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from clipboardplus import CloudItem
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 META_CURSOR = "sync_cursor"  # When the account last synced fine.
 META_CLEAR = "clear_pending"  # A clear-everywhere the account has not been told about.
 META_CLEARED = "cleared_at"  # When the history was last cleared: older account items stay out.
 MAX_TEXT_BYTES = 1_000_000
+MAX_LABEL_CHARS = 100
 MAX_IMAGE_BYTES = 10_000_000
 MAX_IMAGE_PIXELS = 50_000_000  # Refuses decompression bombs before any decoding.
 THUMBNAIL_PIXELS = 256
@@ -64,7 +65,8 @@ CREATE TABLE IF NOT EXISTS items (
     cloud_key TEXT NOT NULL DEFAULT '',
     cloud_favorite INTEGER NOT NULL DEFAULT 0,
     dirty INTEGER NOT NULL DEFAULT 1,
-    sync_skip INTEGER NOT NULL DEFAULT 0
+    sync_skip INTEGER NOT NULL DEFAULT 0,
+    cloud_label TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS items_created ON items (created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS items_cloud_key ON items (cloud_key) WHERE cloud_key != '';
@@ -105,6 +107,7 @@ class Item:
     cloud_favorite: bool
     dirty: bool
     sync_skip: bool
+    cloud_label: str = ""  # The label the account holds.
 
 
 @dataclass(frozen=True)
@@ -216,6 +219,10 @@ class Store:
                 for statement in _SCHEMA.split(";"):
                     if statement.strip():
                         db.execute(statement)
+                if version == 1:
+                    # Version 1 only ever held the account's own labels.
+                    db.execute("ALTER TABLE items ADD COLUMN cloud_label TEXT NOT NULL DEFAULT ''")
+                    db.execute("UPDATE items SET cloud_label = label")
                 db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -255,6 +262,7 @@ class Store:
             cloud_favorite=bool(row["cloud_favorite"]),
             dirty=bool(row["dirty"]),
             sync_skip=bool(row["sync_skip"]),
+            cloud_label=row["cloud_label"],
         )
 
     def get(self, item_id: int) -> Item | None:
@@ -399,12 +407,25 @@ class Store:
 
     # -- changing ----------------------------------------------------------
     def set_favorite(self, item_id: int, value: bool, now: float | None = None) -> None:
+        """Only favorites carry a label (as on the account): unstarring drops it."""
         stamp = time.time() if now is None else now
         with self._transaction() as db:
             db.execute(
-                "UPDATE items SET favorite = ?, updated_at = ?, dirty = 1 "
+                "UPDATE items SET favorite = ?, updated_at = ?, dirty = 1, "
+                "label = CASE WHEN ? THEN label ELSE '' END "
                 "WHERE id = ? AND favorite != ?",
-                (int(value), stamp, item_id, int(value)),
+                (int(value), stamp, int(value), item_id, int(value)),
+            )
+
+    def set_label(self, item_id: int, label: str, now: float | None = None) -> None:
+        """Name a favorite; an empty label removes the name. Other items are left alone."""
+        stamp = time.time() if now is None else now
+        clean = " ".join(label.split())[:MAX_LABEL_CHARS]
+        with self._transaction() as db:
+            db.execute(
+                "UPDATE items SET label = ?, updated_at = ?, dirty = 1 "
+                "WHERE id = ? AND favorite = 1 AND label != ?",
+                (clean, stamp, item_id, clean),
             )
 
     def delete(self, item_id: int) -> None:
@@ -548,8 +569,9 @@ class Store:
         cloud_key: str,
         cloud_favorite: bool | None = None,
         updated_at: float | None = None,
+        cloud_label: str | None = None,
     ) -> None:
-        """Record that the account has this item.
+        """Record that the account has this item (holding `cloud_label`, when given).
 
         `cloud_favorite` is the favorite state the account now holds (the current one
         when omitted). The item stays dirty when it changed after `updated_at` or its
@@ -566,8 +588,9 @@ class Store:
                 row["favorite"]
             ) == held
             db.execute(
-                "UPDATE items SET cloud_key = ?, cloud_favorite = ?, dirty = ? WHERE id = ?",
-                (cloud_key, int(held), 0 if current else 1, item_id),
+                "UPDATE items SET cloud_key = ?, cloud_favorite = ?, dirty = ?, "
+                "cloud_label = COALESCE(?, cloud_label) WHERE id = ?",
+                (cloud_key, int(held), 0 if current else 1, cloud_label, item_id),
             )
 
     def link(
@@ -600,8 +623,8 @@ class Store:
                 return None
             cursor = db.execute(
                 "INSERT INTO items (kind, text, bytes, sha, created_at, updated_at, favorite, "
-                "label, source, cloud_id, cloud_key, cloud_favorite, dirty) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?, ?, ?, 0)",
+                "label, source, cloud_id, cloud_key, cloud_favorite, dirty, cloud_label) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?, ?, ?, 0, ?)",
                 (
                     kind,
                     clean,
@@ -614,6 +637,7 @@ class Store:
                     item.id,
                     cloud_key,
                     int(item.favorite),
+                    item.label,
                 ),
             )
             return self._fetch(db, int(cursor.lastrowid or 0))
@@ -622,9 +646,9 @@ class Store:
         """Adopt the account's favorite and label (a change made elsewhere)."""
         with self._transaction() as db:
             db.execute(
-                "UPDATE items SET favorite = ?, cloud_favorite = ?, label = ?, updated_at = ?, "
-                "dirty = 0 WHERE id = ?",
-                (int(favorite), int(favorite), label, updated_at, item_id),
+                "UPDATE items SET favorite = ?, cloud_favorite = ?, label = ?, cloud_label = ?, "
+                "updated_at = ?, dirty = 0 WHERE id = ?",
+                (int(favorite), int(favorite), label, label, updated_at, item_id),
             )
 
     def pending_favorites(self, limit: int = 100) -> Items:
@@ -636,6 +660,21 @@ class Store:
                 (max(1, limit),),
             ).fetchall()
         return [self._item(row) for row in rows]
+
+    def pending_labels(self, limit: int = 100) -> Items:
+        """Linked favorites (favorites on the account too) whose label differs from its."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM items WHERE cloud_id != '' AND favorite = 1 AND cloud_favorite = 1 "
+                "AND label != cloud_label ORDER BY updated_at ASC, id ASC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
+    def mark_label(self, item_id: int, cloud_label: str) -> None:
+        """Record the label the account now holds."""
+        with self._transaction() as db:
+            db.execute("UPDATE items SET cloud_label = ? WHERE id = ?", (cloud_label, item_id))
 
     def set_skip(self, item_id: int) -> None:
         """Never send this item (the account refused it or it is too large)."""
@@ -665,7 +704,7 @@ class Store:
         with self._transaction() as db:
             db.execute(
                 "UPDATE items SET cloud_id = '', cloud_key = '', cloud_favorite = 0, "
-                "sync_skip = 0, dirty = CASE WHEN kind IN ('text', 'url') THEN 1 ELSE 0 END"
+                "cloud_label = '', sync_skip = 0, dirty = CASE WHEN kind IN ('text', 'url') THEN 1 ELSE 0 END"
             )
             db.execute("DELETE FROM tombstones")
             db.execute(

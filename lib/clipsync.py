@@ -3,7 +3,7 @@
 Pure logic over a `Store` and a cloud client, so it runs (and is tested) without a
 network. One round: apply a pending "clear everywhere", send new text and links, pull
 what the account has (adding, linking and applying changes and deletions), tell the
-account about local deletions, then mirror changed favorites. Every step is safe to
+account about local deletions, then mirror changed favorites and labels. Every step is safe to
 repeat, so an interrupted round is simply run again.
 """
 
@@ -33,6 +33,7 @@ class CloudClient(Protocol):
     def pull(self, since: float | None) -> cp.Pull: ...
     def push(self, items: list[clipstore.Item]) -> None: ...
     def toggle_favorite(self, cloud_id: str) -> bool | None: ...
+    def set_label(self, cloud_id: str, label: str) -> None: ...
     def delete(self, cloud_id: str) -> None: ...
     def clear(self, *, favorites: bool) -> None: ...
 
@@ -107,6 +108,7 @@ class Engine:
         pulled = self._pull(report)
         self._deletions(report, pulled)
         self._favorites()
+        self._labels()
 
     def _clear(self) -> None:
         mode = self._store.meta_get(CLEAR_PENDING)
@@ -134,6 +136,7 @@ class Engine:
                     # An upload can switch a favorite on but never off.
                     cloud_favorite=item.cloud_favorite or item.favorite,
                     updated_at=item.updated_at,
+                    cloud_label=item.label if item.favorite else "",
                 )
                 report.pushed += 1
             if len(batch) < cp.BATCH:
@@ -199,11 +202,15 @@ class Engine:
                 return False  # Cleared here: an older copy must not come back.
             return self._store.add_cloud(cloud_item, key) is not None
 
-        pending = local.favorite != local.cloud_favorite
+        pending = local.favorite != local.cloud_favorite or local.label != local.cloud_label
         if not local.cloud_key:
             # Never sent: the account already has it, so there is nothing to send.
             self._store.mark_pushed(
-                local.id, key, cloud_favorite=cloud_item.favorite, updated_at=local.updated_at
+                local.id,
+                key,
+                cloud_favorite=cloud_item.favorite,
+                updated_at=local.updated_at,
+                cloud_label=cloud_item.label,
             )
         if local.cloud_id != cloud_item.id:
             # The account's copy may carry another time or text than this device's
@@ -261,3 +268,9 @@ class Engine:
             state = self._cloud.toggle_favorite(item.cloud_id)
             # None: the account no longer has it; a later pull removes it here.
             self._store.link(item.id, item.cloud_id, item.favorite if state is None else state)
+            self._store.mark_label(item.id, "")  # A toggle drops the account's label.
+
+    def _labels(self) -> None:
+        for item in self._store.pending_labels():
+            self._cloud.set_label(item.cloud_id, item.label)
+            self._store.mark_label(item.id, item.label)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import tempfile
 import unittest
@@ -104,7 +105,7 @@ class FakeCloud:
             item.id,
             item.kind,
             item.text,
-            item.label,
+            "",  # The real account drops the label on every toggle.
             not item.favorite,
             item.source,
             item.created_ms,
@@ -112,6 +113,12 @@ class FakeCloud:
         )
         self.items[cloud_id] = flipped
         return flipped.favorite
+
+    def set_label(self, cloud_id: str, label: str) -> None:
+        self._enter("label", cloud_id, label)
+        item = self.items.get(cloud_id)
+        if item is not None and item.favorite:
+            self.items[cloud_id] = dataclasses.replace(item, label=label, updated_at=self.clock())
 
     def delete(self, cloud_id: str) -> None:
         self._enter("delete", cloud_id)
@@ -434,6 +441,44 @@ class MergeTests(SyncCase):
         self.engine.run_once()
         self.assertTrue(self.local("note").favorite)
         self.assertNotIn("toggle", self.cloud.names())
+
+    def test_a_label_made_here_reaches_the_account(self):
+        item, remote = self.linked(favorite=True)
+        self.store.set_label(item.id, "Wifi password", now=self.now)
+        self.engine.run_once()
+        self.assertEqual(self.cloud.items[remote.id].label, "Wifi password")
+        self.assertEqual(self.local("note").cloud_label, "Wifi password")
+        self.advance(MINUTE)
+        self.cloud.calls.clear()
+        self.engine.run_once()
+        self.assertNotIn("label", self.cloud.names())
+
+    def test_a_removed_label_is_removed_on_the_account(self):
+        item, remote = self.linked(favorite=True, label="old")
+        self.assertEqual(self.local("note").label, "old")
+        self.store.set_label(item.id, "", now=self.now)
+        self.engine.run_once()
+        self.assertEqual(self.cloud.items[remote.id].label, "")
+
+    def test_a_label_on_a_newly_starred_item_follows_the_star(self):
+        item, remote = self.linked()
+        self.store.set_favorite(item.id, True, now=self.now)
+        self.store.set_label(item.id, "keep", now=self.now)
+        self.engine.run_once()
+        self.assertEqual(self.cloud.names()[-2:], ["toggle", "label"])
+        self.assertEqual(
+            (self.cloud.items[remote.id].favorite, self.cloud.items[remote.id].label),
+            (True, "keep"),
+        )
+
+    def test_a_label_changed_elsewhere_is_adopted(self):
+        item, remote = self.linked(favorite=True, label="old")
+        self.cloud.items[remote.id] = dataclasses.replace(
+            self.cloud.items[remote.id], label="new", updated_at=self.now
+        )
+        self.engine.run_once()
+        self.assertEqual(self.local("note").label, "new")
+        self.assertNotIn("label", self.cloud.names())
 
     def test_a_pulled_older_copy_never_overwrites_longer_local_text(self):
         long_text = "y" * 9000
