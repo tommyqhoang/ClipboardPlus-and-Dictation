@@ -214,6 +214,18 @@ class DeleteAndRetentionTests(StoreCase):
         self.assertEqual(self.store.count(), 0)
         self.assertEqual(list((self.directory / "images").iterdir()), [])
 
+    def test_wipe_removes_everything_locally_without_telling_the_cloud(self):
+        item = self.store.add_text("linked", now=1.0)
+        self.store.link(item.id, "cloud-1", False)
+        self.store.add_image(make_png(), now=2.0)
+        self.store.meta_set("cursor", "5")
+        self.store.wipe()
+        self.assertEqual(self.store.count(), 0)
+        self.assertEqual(self.store.tombstones(), [])
+        self.assertEqual(self.store.meta_get("cursor"), "")
+        self.assertEqual(list((self.directory / "images").iterdir()), [])
+        self.assertIsNotNone(self.store.add_text("still works"))
+
     def test_prune_by_age_and_count_spares_favorites_and_leaves_no_tombstones(self):
         day = 86400.0
         old = self.store.add_text("old", now=0.0)

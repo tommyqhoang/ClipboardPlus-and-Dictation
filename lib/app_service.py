@@ -86,6 +86,14 @@ class Service:
                 "Couldn’t save the Clipboard+ key. Check that your settings folder is writable."
             ) from exc
 
+    def delete_clipboard_data(self) -> None:
+        """Erase the clipboard history, images and sync state on this device."""
+        store = clipstore.Store(self.paths.clipboard)
+        try:
+            store.wipe()
+        finally:
+            store.close()
+
     def copy_item(self, item: clipstore.Item, store: clipstore.Store) -> None:
         """Put a history item back on the system clipboard."""
         config = d.Config(self.paths)

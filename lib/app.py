@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import functools
 import os
 import subprocess
@@ -23,6 +24,11 @@ import workflow
 from app_service import PROVIDERS, Remote, Service
 
 ICON = Path(__file__).with_name("whisper-dictation.png")
+MODES = (
+    ("dictation", "Dictation", "Press a shortcut, speak, and paste anywhere."),
+    ("clipboard", "Clipboard history", "Keep what you copy, search it, and copy it back."),
+    ("both", "Both", "Dictation and clipboard history, together."),
+)
 
 # One palette for every surface; the icon uses the same teal.
 BACKGROUND = "#f3f6f8"
@@ -85,6 +91,7 @@ class App:
         self.api_model = tk.StringVar(value="")
         self.api_key = tk.StringVar(value="")
         self.clip_key = tk.StringVar(value="")
+        self.setup_mode = ""
         self.clipboard_page: clipui.ClipboardPage | None = None
         self.clipboard_store: clipstore.Store | None = None
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -358,7 +365,7 @@ class App:
         self.clipboard_page = clipui.ClipboardPage(self, self.clipboard_store)
         self.clipboard_page.render()
 
-    def clipboard_optin(self, after: Callable[[], None]) -> None:
+    def clipboard_optin(self, after: Callable[[bool], None]) -> None:
         """Ask before anything is captured: the choice is explicit and reversible."""
         self.reset(
             "clipboard-optin",
@@ -378,7 +385,7 @@ class App:
                 prefs = hotkeys.Preferences(self.service.paths)
                 features = prefs.features()
                 prefs.save(features=hotkeys.Features(features.dictation, True))
-            after()
+            after(enabled)
 
         row = ttk.Frame(card, style="Card.TFrame")
         row.pack(fill="x")
@@ -444,8 +451,9 @@ class App:
     def welcome(self) -> None:
         self.reset(
             "welcome",
-            "Your voice. Your words.",
-            "Speak naturally, then paste anywhere. Setup takes about a minute.",
+            "Your voice. Your clipboard.",
+            "Dictate anywhere and keep a searchable history of what you copy. "
+            "Setup takes about a minute.",
         )
         if self.icon is not None:
             self.hero_icon = self.icon.subsample(4)
@@ -455,9 +463,9 @@ class App:
         self.steps(
             body,
             [
-                ("Pick your language and microphone", ""),
-                ("Get the free speech model", "A one-time 148 MB download."),
-                ("Record, stop, and paste anywhere", "Your words are copied for you."),
+                ("Choose what you want to use", "Dictation, clipboard history, or both."),
+                ("Follow a short setup", "Only the steps for your choice."),
+                ("Use it anywhere", "A shortcut and the menu icon are always there."),
             ],
         )
         privacy = self.card()
@@ -471,12 +479,167 @@ class App:
         self.button("Get started", self.begin_setup, True, self.actions(), "right")
 
     def begin_setup(self) -> None:
+        self.choose_features()
+
+    def choose_features(self, note: str = "") -> None:
+        self.reset(
+            "features",
+            "What would you like to use?",
+            "You can change this any time in Settings.",
+            "Step 1",
+        )
+        self.mode_var = tk.StringVar(value=self.setup_mode or "both")
+        card = self.card()
+        for value, title, hint in MODES:
+            ttk.Radiobutton(
+                card, text=title, value=value, variable=self.mode_var, style="Card.TRadiobutton"
+            ).pack(anchor="w", pady=(8, 0))
+            ttk.Label(
+                card, text=hint, style="CardHint.TLabel", wraplength=self.wraplength - 80
+            ).pack(anchor="w", padx=(26, 0))
+        if note:
+            ttk.Label(self.frame, text=note, style="Hint.TLabel").pack(anchor="w")
+        self.button(
+            "Continue",
+            lambda: self.after_features(self.mode_var.get()),
+            True,
+            self.actions(),
+            "right",
+        )
+
+    def after_features(self, mode: str) -> None:
+        """Start only the setup steps the chosen features need."""
+        self.setup_mode = mode
+        if mode == "clipboard":
+            self.clipboard_optin(self.after_optin)
+            return
+        if mode == "dictation":
+            hotkeys.Preferences(self.service.paths).save(features=hotkeys.Features(True, False))
         if self.service.ready():
-            self.tutorial()
+            self.after_dictation_setup()
         else:
             self.settings()
 
+    def after_dictation_setup(self) -> None:
+        if self.setup_mode == "both":
+            self.clipboard_optin(self.after_optin)
+        else:
+            self.tutorial()
+
+    def after_optin(self, enabled: bool) -> None:
+        prefs = hotkeys.Preferences(self.service.paths)
+        if self.setup_mode == "clipboard":
+            if not enabled:
+                self.choose_features("Choose at least one thing to use.")
+                return
+            prefs.save(features=hotkeys.Features(False, True))
+        else:
+            prefs.save(features=hotkeys.Features(True, enabled))
+        self.tutorial()
+
+    def apply_mode(self, mode: str) -> None:
+        features = {"dictation": (True, False), "clipboard": (False, True), "both": (True, True)}
+        dictation, clipboard = features[mode]
+        hotkeys.Preferences(self.service.paths).save(
+            features=hotkeys.Features(dictation, clipboard)
+        )
+        self.settings()
+
+    def features_card(self) -> None:
+        card = self.card("What you use", "Changes apply at once.")
+        current = self.features()
+        mode = (
+            "both"
+            if current.dictation and current.clipboard
+            else ("clipboard" if current.clipboard else "dictation")
+        )
+        self.settings_mode = tk.StringVar(value=mode)
+        for value, title, _ in MODES:
+            ttk.Radiobutton(
+                card,
+                text=title,
+                value=value,
+                variable=self.settings_mode,
+                style="Card.TRadiobutton",
+                command=lambda: self.apply_mode(self.settings_mode.get()),
+            ).pack(anchor="w", pady=(6, 0))
+
+    def save_clipboard_options(self, keep_items: int, keep_days: int, images: bool) -> None:
+        prefs = hotkeys.Preferences(self.service.paths)
+        prefs.save(
+            clipboard=dataclasses.replace(
+                prefs.clipboard(), keep_items=keep_items, keep_days=keep_days, images=images
+            )
+        )
+
+    def clipboard_options_card(self) -> None:
+        card = self.card(
+            "Clipboard history", "Saved on this computer. Favorites are never removed."
+        )
+        saved = hotkeys.Preferences(self.service.paths).clipboard()
+        items = tk.StringVar(value=str(saved.keep_items))
+        days = tk.StringVar(value=str(saved.keep_days))
+        images = tk.BooleanVar(value=saved.images)
+
+        def save(*_: object) -> None:
+            self.save_clipboard_options(int(items.get()), int(days.get()), images.get())
+
+        for label, variable, values in (
+            ("Keep the newest", items, ("100", "500", "1000", "5000", "10000")),
+            ("items for up to (days)", days, ("7", "30", "90", "365")),
+        ):
+            ttk.Label(card, text=label, style="Card.TLabel").pack(anchor="w", pady=(8, 2))
+            box = ttk.Combobox(card, textvariable=variable, values=values, state="readonly")
+            box.pack(fill="x")
+            box.bind("<<ComboboxSelected>>", save)
+        ttk.Checkbutton(
+            card, text="Save images", variable=images, style="Card.TCheckbutton", command=save
+        ).pack(anchor="w", pady=(10, 0))
+        self.button("Delete all clipboard data", self.delete_clipboard_data, parent=card)
+
+    def delete_clipboard_data(self) -> None:
+        if messagebox.askyesno(
+            "Delete all clipboard data?",
+            "This erases your clipboard history, favorites and images on this computer. "
+            "Your Clipboard+ account is not changed.",
+            parent=self.root,
+        ):
+            self.service.delete_clipboard_data()
+            self.status.set("Clipboard data deleted.")
+
+    def clipboard_settings(self) -> None:
+        self.reset("settings", "Settings", "Clipboard history and your account.")
+        self.features_card()
+        self.clipboard_options_card()
+        self.clipboard_plus_card()
+        self.button("Done", self.leave, True, self.actions(), "right")
+
+    def tutorial_clipboard(self) -> None:
+        self.reset(
+            "tutorial",
+            "You’re all set",
+            "Copy things as usual. We keep them for you.",
+            "Step 2 of 2",
+        )
+        place = {"macos": "menu bar", "windows": "system tray"}.get(
+            desktop.platform_name(), "top bar"
+        )
+        body = self.card()
+        self.steps(
+            body,
+            [
+                ("Copy anything", "Text, links and images are saved on this computer."),
+                ("Open your history", f"From the {place} icon, choose Clipboard History…"),
+                ("Search, star, copy back", "Favorites are kept when you clear the history."),
+            ],
+        )
+        self.clipboard_plus_card()
+        self.button("Done", self.finish_setup, True, self.actions(), "right")
+
     def settings(self) -> None:
+        if not self.features().dictation:
+            self.clipboard_settings()
+            return
         self.reset(
             "settings",
             "Set up dictation",
@@ -581,6 +744,9 @@ class App:
         if not remote:
             self.choose_provider()
         self.show_choice()
+        self.features_card()
+        if self.features().clipboard:
+            self.clipboard_options_card()
         self.clipboard_plus_card()
         self.button("Continue", self.prepare, True, self.actions(), "right")
         if self.service.completed():
@@ -656,13 +822,16 @@ class App:
 
         self.submit(
             lambda: self.service.prepare(language, device, model, report, remote),
-            lambda _: self.tutorial(),
+            lambda _: self.after_dictation_setup(),
             "Checking your settings. Nothing is recording."
             if remote
             else "Getting your speech model ready. Nothing is recording.",
         )
 
     def tutorial(self) -> None:
+        if not self.features().dictation:
+            self.tutorial_clipboard()
+            return
         self.reset(
             "tutorial",
             "You’re ready to speak",

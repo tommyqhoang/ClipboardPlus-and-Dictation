@@ -226,7 +226,7 @@ class WindowTests(ServiceCase):
             patch.object(self.service, "action") as record,
             patch.object(self.service, "ready", return_value=False),
         ):
-            self.window.begin_setup()
+            self.window.after_features("dictation")
             self.assertEqual(self.window.page, "settings")
             with patch.object(
                 self.gui.filedialog, "askopenfilename", return_value="/selected/model.bin"
@@ -470,7 +470,7 @@ class WindowTests(ServiceCase):
 
     def test_existing_setup_and_recording_controls(self):
         with patch.object(self.service, "ready", return_value=True):
-            self.window.begin_setup()
+            self.window.after_features("dictation")
         self.assertEqual(self.window.page, "tutorial")
         self.window.tray = False
         with patch.object(self.service, "completed", return_value=True):

@@ -405,6 +405,17 @@ class Store:
         self._remove(ids, tombstones=True)
         return len(ids)
 
+    def wipe(self) -> None:
+        """Remove all clipboard data on this device. The account is not told."""
+        self._remove(self._ids("", ()), tombstones=False)
+        with self._transaction() as db:
+            db.execute("DELETE FROM tombstones")
+            db.execute("DELETE FROM meta")
+        for folder in (self._images, self._thumbs):
+            for entry in folder.iterdir():
+                if _FILE_NAME.fullmatch(entry.name):
+                    entry.unlink(missing_ok=True)
+
     def prune(
         self,
         keep_items: int,
