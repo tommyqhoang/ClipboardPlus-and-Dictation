@@ -72,7 +72,7 @@ binaries were substituted in lifecycle tests; real Whisper inference used
 existing sample audio. No microphone was activated on the host.
 
 macOS microphone permissions, Apple Shortcuts, Windows DirectShow capture,
-clipboard/notifications and the Ctrl+Alt+D shortcut need real desktop acceptance
+clipboard/notifications and the Super+Shift+D shortcut need real desktop acceptance
 testing. Windows ARM64 automatic dependency installation is not supported.
 The one-command URLs only become usable after the implementation is published;
 no release, push, signing or notarization was performed.

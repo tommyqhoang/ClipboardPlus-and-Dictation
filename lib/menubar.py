@@ -11,6 +11,7 @@ import ctypes
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +144,9 @@ class Controller(NSObject):  # type: ignore[misc]
         self.item.button().setToolTip_("Whisper Dictation")
         self.build_menu()
         self.hotkey = GlobalHotKey(self.pressed)
-        if not self.hotkey.register(self.shortcut):
+        self.hotkey_ok = self.hotkey.register(self.shortcut)
+        hotkeys.record_status(self.paths, self.hotkey_ok)
+        if not self.hotkey_ok:
             self.warn(
                 "Shortcut unavailable",
                 f"{self.shortcut.label()} is already used by another app. "
@@ -225,13 +228,14 @@ class Controller(NSObject):  # type: ignore[misc]
 
     @objc.python_method
     def open_window(self, page: str) -> None:
-        subprocess.Popen(
-            [sys.executable, str(HERE / "app.py"), page],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        open_app_window(page)
+
+    def applicationShouldHandleReopen_hasVisibleWindows_(
+        self, _app: Any, _has_visible_windows: bool
+    ) -> bool:
+        # Clicking the app in Finder or Launchpad shows the window, not nothing.
+        self.open_window("")
+        return False
 
     def choosePreset_(self, sender: Any) -> None:
         self.apply_shortcut(hotkeys.PRESETS[sender.tag()])
@@ -274,20 +278,22 @@ class Controller(NSObject):  # type: ignore[misc]
         if saved and captured:
             self.apply_shortcut(captured[0])
         else:
-            self.hotkey.register(self.shortcut)
+            self.hotkey_ok = self.hotkey.register(self.shortcut)
+            hotkeys.record_status(self.paths, self.hotkey_ok)
 
     @objc.python_method
     def apply_shortcut(self, shortcut: hotkeys.Shortcut) -> None:
         if self.hotkey.register(shortcut):
-            self.shortcut = shortcut
+            self.shortcut, self.hotkey_ok = shortcut, True
             self.preferences.save(shortcut=shortcut)
         else:
-            self.hotkey.register(self.shortcut)
+            self.hotkey_ok = self.hotkey.register(self.shortcut)
             self.warn(
                 "Shortcut unavailable",
                 f"{shortcut.label()} is already used by another app. "
                 f"Keeping {self.shortcut.label()}.",
             )
+        hotkeys.record_status(self.paths, self.hotkey_ok)
         self.update_shortcut_menu()
 
     def toggleLogin_(self, _sender: Any) -> None:
@@ -304,7 +310,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.login_item.setState_(1 if enabled else 0)
 
     def clipboardPlus_(self, _sender: Any) -> None:
-        hotkeys.open_link()
+        self.service.open_clipboard_history()
 
     def quit_(self, _sender: Any) -> None:
         NSApplication.sharedApplication().terminate_(self)
@@ -326,6 +332,14 @@ class Controller(NSObject):  # type: ignore[misc]
                 entry.setState_(1 if hotkeys.PRESETS[entry.tag()] == self.shortcut else 0)
         self.refresh_(None)
 
+    @objc.python_method
+    def ready(self) -> bool:
+        """Setup state, re-checked every few seconds rather than on every tick."""
+        now = time.monotonic()
+        if now - getattr(self, "ready_at", -10.0) >= 5:
+            self.ready_value, self.ready_at = self.service.ready(), now
+        return bool(self.ready_value)
+
     def refresh_(self, _timer: Any) -> None:
         quit_request = self.paths.runtime / "menubar-quit"
         if quit_request.exists():
@@ -339,6 +353,19 @@ class Controller(NSObject):  # type: ignore[misc]
         active = bool(current["active"])
         phase = str(current["phase"]) if active else "idle"
         elapsed = int(current.get("elapsed_seconds", 0))
+        ready = self.ready()
+        # Redraw only when something visible changed; this runs twice a second.
+        view = (
+            phase,
+            elapsed if phase == "recording" else 0,
+            self.shortcut,
+            self.hotkey_ok,
+            ready,
+            self.paths.text.exists(),
+        )
+        if view == getattr(self, "view", None):
+            return
+        self.view = view
         label = self.shortcut.label()
         button = self.item.button()
         if phase == "recording":
@@ -354,14 +381,28 @@ class Controller(NSObject):  # type: ignore[misc]
         else:
             button.setImage_(self.idle_image)
             button.setTitle_("")
-            ready = self.service.ready()
             self.status_line.setTitle_(
-                f"Press {label} anywhere to dictate" if ready else "Finish setup to start"
+                "Finish setup to start"
+                if not ready
+                else f"Press {label} anywhere to dictate"
+                if self.hotkey_ok
+                else f"{label} is taken — choose another shortcut"
             )
             self.toggle_item.setTitle_(f"Start Dictation    {label}")
         self.toggle_item.setEnabled_(not active or phase == "recording")
         self.cancel_item.setEnabled_(phase == "recording")
         self.copy_item.setEnabled_(not active and self.paths.text.exists())
+
+
+def open_app_window(page: str = "") -> None:
+    """Start the window; a running window is asked to show itself instead."""
+    subprocess.Popen(
+        [sys.executable, str(HERE / "app.py"), *([page] if page else [])],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def main() -> int:
@@ -372,7 +413,8 @@ def main() -> int:
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "menubar.lock")
     if fd is None:
-        return 0  # Already running.
+        open_app_window()  # Already running: opening it again shows the window.
+        return 0
     try:
         (paths.runtime / "menubar-quit").unlink(missing_ok=True)
         app = NSApplication.sharedApplication()

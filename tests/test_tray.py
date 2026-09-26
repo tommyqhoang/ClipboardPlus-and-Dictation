@@ -167,6 +167,8 @@ class TrayTests(unittest.TestCase):
         with patch.object(self.tray.service, "ready", return_value=False):
             self.assertIn("Finish setup", self.tray.status_text())
         # The shortcut window pauses the old shortcut, then applies the new one.
+        window = tray.desktop.lock(self.paths.runtime / "app.lock")  # The window is open.
+        self.addCleanup(os.close, window)
         capture = self.paths.runtime / "shortcut-capture"
         capture.write_text("capturing")
         self.tray.tick()
@@ -217,6 +219,52 @@ class TrayTests(unittest.TestCase):
     def test_main_refuses_macos(self):
         with patch.object(tray.desktop, "platform_name", return_value="macos"):
             self.assertEqual(tray.main(), 1)
+
+    def test_recording_does_not_redraw_the_icon_or_menu_every_second(self):
+        # AppIndicator rewrites the icon file and builds a new GTK menu on each update,
+        # which flickers the top bar and closes an open menu.
+        def recording(seconds):
+            return {"phase": "recording", "active": True, "elapsed_seconds": seconds}
+
+        with (
+            patch.object(self.tray.service, "ready", return_value=True),
+            patch.object(tray.desktop, "platform_name", return_value="linux"),
+        ):
+            self.tray.hotkey_ok = True
+            with patch.object(tray.workflow, "snapshot", return_value=recording(1)):
+                self.tray.tick()
+            updates = self.tray.icon.updates
+            for seconds in range(2, 8):
+                with patch.object(tray.workflow, "snapshot", return_value=recording(seconds)):
+                    self.tray.tick()
+            self.assertEqual(self.tray.icon.updates, updates)
+
+    def test_capture_left_by_a_closed_window_does_not_disable_the_shortcut(self):
+        (self.paths.runtime / "shortcut-capture").write_text("capturing")
+        self.tray.tick()  # No window holds app.lock: the flag is stale.
+        self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
+        self.assertNotIn(None, self.tray.hotkey.registered)
+
+    def test_registration_result_is_shared_and_explained(self):
+        self.tray.hotkey.refuse.add(hotkeys.PRESETS[1])
+        with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),
+            patch.object(tray.shutil, "which", return_value=None),
+        ):
+            self.tray.apply(hotkeys.PRESETS[1])
+        self.assertIn("keyboard settings", self.tray.icon.notifications[-1])
+        self.tray.apply(hotkeys.PRESETS[2])
+        self.assertTrue(hotkeys.shortcut_working(self.paths))
+
+    def test_second_launch_shows_the_running_apps_window(self):
+        # Clicking the launcher while the tray runs must surface the window, not do nothing.
+        held = tray.desktop.lock(self.paths.runtime / "menubar.lock")
+        self.addCleanup(os.close, held)
+        with patch.object(tray.desktop, "platform_name", return_value="linux"):
+            self.assertEqual(tray.main(), 0)
+        self.assertEqual(
+            self.popen.call_args.args[0][1], str(Path(tray.__file__).with_name("app.py"))
+        )
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ SKIP_PACKAGES=0
 SKIP_DOWNLOAD=0
 KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
 KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
-DEFAULT_BINDING="${DICTATION_BINDING:-<Control><Alt>d}"
+DEFAULT_BINDING="${DICTATION_BINDING:-<Shift><Super>d}"
 
 PYTHON=""
 PM=""

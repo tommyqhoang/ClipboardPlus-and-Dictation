@@ -185,6 +185,9 @@ class DesktopTests(unittest.TestCase):
             subprocess.run(setup + ["--uninstall"], env=env, check=True, capture_output=True)
             self.assertFalse(module.exists())
             self.assertTrue(config.exists())
+            # Nothing of the application is left, including compiled module caches.
+            leftovers = [path for path in prefix.rglob("*") if path.is_file()]
+            self.assertEqual(leftovers, [])
 
     def test_windows_shortcut_uses_structured_paths(self):
         setup = setup_module()
@@ -201,6 +204,30 @@ class DesktopTests(unittest.TestCase):
             self.assertIn("$link.Hotkey=''", setup.SHORTCUT_SCRIPT)
             setup.windows_shortcut(Path("tray.py"))
             self.assertIn("python", json.loads(run.call_args.kwargs["input"])["python"])
+
+    def test_installer_lists_every_module_and_icon_in_lib(self):
+        # A module missing from this list installs without error and then fails at launch.
+        setup = setup_module()
+        lib = ROOT / "lib"
+        self.assertEqual({path.name for path in lib.glob("*.py")}, set(setup.MODULES))
+        shipped = {name for _, name in setup.ICONS}
+        self.assertTrue({path.name for path in lib.glob("*.png")} <= shipped)
+
+    def test_install_copies_every_file_the_launchers_run(self):
+        # A real copy, not a mock: the tray script and its icons must reach the prefix.
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with (
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(root / "run")}),
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config")}),
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup, "install_app_launcher"),
+            ):
+                setup.install(root / ".local")
+            library = root / ".local/lib"
+            for name in ("tray.py", "tray-recording.png", "whisper-dictation.png", "app.py"):
+                self.assertTrue((library / name).is_file(), f"{name} was not installed")
 
     def test_application_launchers_and_launch(self):
         setup = setup_module()

@@ -85,7 +85,8 @@ GNOME_LIST = ("org.gnome.settings-daemon.plugins.media-keys", "custom-keybinding
 
 
 def canonical(modifiers: Any) -> tuple[str, ...]:
-    return tuple(name for name in MODIFIER_ORDER if name in modifiers)
+    present = set(modifiers)  # A generator would be consumed by the first lookup.
+    return tuple(name for name in MODIFIER_ORDER if name in present)
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,9 @@ class Shortcut:
             return "".join(MAC_SYMBOLS[name] for name in self.modifiers) + self.key
         names = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift"}
         names["cmd"] = "Win" if platform == "windows" else "Super"
-        return "+".join([names[name] for name in self.modifiers] + [self.key])
+        # The Win/Super key reads first: "Super+Shift+D".
+        ordered = sorted(self.modifiers, key=lambda name: name != "cmd")
+        return "+".join([names[name] for name in ordered] + [self.key])
 
     def problem(self) -> str:
         """Why this cannot be a global shortcut, or an empty string."""
@@ -136,13 +139,16 @@ class Shortcut:
         )
 
 
-DEFAULT = Shortcut(("ctrl", "alt"), "D")
+# The same physical keys on every platform: Super (Win, ⌘) + Shift + D. Browsers
+# already use Ctrl+Alt+D-style combinations, so this avoids them.
+DEFAULT = Shortcut(("shift", "cmd"), "D")
 PRESETS = (
     DEFAULT,
     Shortcut(("alt",), "Space"),
     Shortcut(("ctrl", "alt"), "Space"),
     Shortcut(("ctrl", "shift"), "Space"),
     Shortcut(("ctrl", "alt", "shift"), "D"),
+    Shortcut(("ctrl", "alt"), "D"),  # The earlier default, one click away after upgrading.
 )
 
 
@@ -249,8 +255,24 @@ def set_login_item(
         )
 
 
-def gnome_shortcut(shortcut: Shortcut, command: Path, run: Any = subprocess.run) -> bool:
-    """Bind the shortcut in GNOME (Wayland apps cannot grab keys themselves)."""
+def record_status(paths: d.Paths, ok: bool) -> None:
+    """Share whether the tray or menu bar could register the shortcut with the window."""
+    d.private_dir(paths.runtime)
+    d.atomic(paths.runtime / "shortcut-status", "ok" if ok else "failed")
+
+
+def shortcut_working(paths: d.Paths) -> bool:
+    try:
+        return (paths.runtime / "shortcut-status").read_text(encoding="utf-8") != "failed"
+    except OSError:
+        return True
+
+
+def gnome_shortcut(shortcut: Shortcut | None, command: Path, run: Any = subprocess.run) -> bool:
+    """Bind the shortcut in GNOME (Wayland apps cannot grab keys themselves).
+
+    None pauses it (no keys) while a new shortcut is being recorded.
+    """
     if not shutil.which("gsettings"):
         return False
     schema = f"{GNOME_LIST[0]}.custom-keybinding:{GNOME_PATH}"
@@ -268,10 +290,34 @@ def gnome_shortcut(shortcut: Shortcut, command: Path, run: Any = subprocess.run)
             gsettings("set", *GNOME_LIST, "[" + ", ".join(entries + [repr(GNOME_PATH)]) + "]")
         gsettings("set", schema, "name", "Whisper Dictation")
         gsettings("set", schema, "command", shlex.quote(str(command)))
-        gsettings("set", schema, "binding", shortcut.gnome())
+        gsettings("set", schema, "binding", shortcut.gnome() if shortcut else "")
     except (OSError, subprocess.SubprocessError):
         return False
     return True
+
+
+def gnome_remove(command: Path, run: Any = subprocess.run) -> None:
+    """Remove the GNOME shortcut, but only if it runs this installation's command."""
+    if not shutil.which("gsettings"):
+        return
+    schema = f"{GNOME_LIST[0]}.custom-keybinding:{GNOME_PATH}"
+
+    def gsettings(*args: str) -> str:
+        result = run(["gsettings", *args], capture_output=True, text=True, timeout=10)
+        if result.returncode:
+            raise OSError(result.stderr)
+        return str(result.stdout).strip()
+
+    try:
+        if gsettings("get", schema, "command") != repr(shlex.quote(str(command))):
+            return
+        current = gsettings("get", *GNOME_LIST)
+        entries = [entry.strip() for entry in current.strip("[]").split(",") if entry.strip()]
+        remaining = [entry for entry in entries if entry.strip("'\"") != GNOME_PATH]
+        gsettings("set", *GNOME_LIST, "[" + ", ".join(remaining) + "]")
+        gsettings("reset-recursively", schema)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def open_link(url: str = CLIPBOARD_PLUS) -> None:

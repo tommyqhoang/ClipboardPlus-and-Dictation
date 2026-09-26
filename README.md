@@ -5,7 +5,7 @@ Free, local dictation for Linux, macOS, and Windows. Install it once, then
 
 The same icon, menu and workflow on every platform: the app lives in the macOS
 menu bar, the Windows system tray, or the Linux top bar and starts at login.
-Press **Ctrl+Alt+D** (**⌃⌥D** on a Mac) in any app, talk, press it again, and
+Press **Super+Shift+D** (**Win+Shift+D** on Windows, **⇧⌘D** on a Mac) in any app, talk, press it again, and
 notifications tell you it is recording, transcribing, and then ready to paste.
 
 Linux remains the original platform. macOS and Windows support
@@ -63,16 +63,16 @@ first-run screens help the user:
    - **Your own AI service**: OpenAI, Groq, or any OpenAI-compatible
      `/audio/transcriptions` endpoint, with your API key. Audio is sent to that
      service, which may charge.
-3. A short walkthrough of the shortcut workflow, and a recommendation for
-   [Clipboard+](https://clipboardplus.apercallc.com) to keep a history of every
-   transcript.
+3. A short walkthrough of the shortcut workflow, and an optional card to connect
+   [Clipboard+](https://clipboardplus.apercallc.com) so every transcript is also
+   kept in your Clipboard+ history (also available later in Settings).
 
 The walkthrough does not begin recording. The microphone starts only when you
 press the shortcut.
 
 ### Everyday use (all platforms)
 
-- **Ctrl+Alt+D** (⌃⌥D on macOS) starts recording from any app. Press it again
+- **Super+Shift+D** (Win+Shift+D on Windows, ⇧⌘D on macOS) starts recording from any app. Press it again
   to stop. Notifications show *Recording*, *Transcribing…*, and
   *Transcript copied*; then paste with Ctrl+V (⌘V). The icon turns red while
   recording.
@@ -83,6 +83,14 @@ press the shortcut.
 - Your own service's API key is stored in the settings folder as
   `transcription-key`, readable only by your user account. An environment
   variable named by `api_key_env` still takes precedence.
+- **Clipboard+ (optional).** In Settings, paste a Clipboard+ API key (Developer
+  API in your Clipboard+ account, with clipboard write access) and each transcript
+  is also saved to your Clipboard+ history, to search on the website or in the
+  browser extension. Nothing is sent until you connect, only the transcript text
+  is sent (never audio), and **Disconnect** stops it. The key is stored as
+  `clipboard-plus-key` in the settings folder, readable only by you. The
+  Clipboard+ service skips an item identical to your latest history entry, so a
+  transcript captured by both the extension and this app is stored once.
 
 Platform details:
 
@@ -141,7 +149,7 @@ Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 
 The installer detects your package manager (apt, dnf, pacman or zypper), installs only the dependencies that are missing (asking for administrator access only then), downloads the base English model,
 builds whisper.cpp if necessary, adds Whisper Dictation to the application menu,
-and requests the optional GNOME shortcut Ctrl+Alt+D. Open the app to complete
+and requests the optional GNOME shortcut Super+Shift+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations
 skip GNOME registration. Use `--no-packages` when dependencies are already installed.
 
@@ -151,8 +159,10 @@ overwritten by installation or `--init-config`.
 
 Other Wayland desktops can bind `~/.local/bin/dictate-toggle` themselves.
 For example, Sway: `bindsym $mod+Shift+d exec ~/.local/bin/dictate-toggle`.
-GNOME users can change the binding with
-`DICTATION_BINDING='<Super><Shift>v' ./install.sh --no-packages`.
+GNOME users change the shortcut from the top bar icon's **Shortcut** menu. The
+app re-applies its saved shortcut each time it starts, so
+`DICTATION_BINDING='<Super><Shift>v' ./install.sh --no-packages` only lasts when
+the top bar app is not used.
 
 ## Settings and accuracy
 

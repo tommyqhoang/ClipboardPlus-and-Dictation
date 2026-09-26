@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import clipboardplus
 import desktop
 import dictation as d
 import onboarding
@@ -47,6 +48,49 @@ class Service:
     def complete(self) -> None:
         d.private_dir(self.marker.parent)
         d.atomic(self.marker, json.dumps({"complete": True}))
+
+    def clipboard_plus_linked(self) -> bool:
+        return clipboardplus.linked(self.paths.config.parent)
+
+    def connect_clipboard_plus(self, key: str) -> None:
+        """Link a Clipboard+ account. The key is saved only once the service accepts it."""
+        try:
+            cleaned = clipboardplus.clean_key(key)
+        except ValueError as exc:
+            raise d.DictationError(str(exc)) from exc
+        result = clipboardplus.verify(cleaned)
+        if result == "offline":
+            raise d.DictationError(
+                "Couldn’t reach Clipboard+. Check your internet connection and try again."
+            )
+        if result == "read-only":
+            raise d.DictationError(
+                "That key can’t save to Clipboard+. Generate one with clipboard write access."
+            )
+        if result == "invalid":
+            raise d.DictationError(
+                "Clipboard+ didn’t accept that key. Copy a fresh key from your account and try again."
+            )
+        if result != "ok":
+            raise d.DictationError("Clipboard+ is having trouble right now. Try again shortly.")
+        try:
+            d.private_dir(self.paths.config.parent)
+            clipboardplus.save_key(self.paths.config.parent, cleaned)
+        except OSError as exc:
+            raise d.DictationError(
+                "Couldn’t save the Clipboard+ key. Check that your settings folder is writable."
+            ) from exc
+
+    def open_clipboard_history(self) -> None:
+        """The user's history once linked; otherwise the Clipboard+ site."""
+        import webbrowser
+
+        webbrowser.open(
+            clipboardplus.DASHBOARD_URL if self.clipboard_plus_linked() else clipboardplus.SITE
+        )
+
+    def disconnect_clipboard_plus(self) -> None:
+        clipboardplus.remove_key(self.paths.config.parent)
 
     def microphones(self) -> list[str]:
         config = d.Config(self.paths)

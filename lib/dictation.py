@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -391,6 +392,29 @@ def copy_text(config: Config, paths: Paths, text: str | None = None) -> None:
         ) from exc
 
 
+def share_transcript(config: Config, text: str) -> threading.Thread | None:
+    """Also save the transcript to a linked Clipboard+ account.
+
+    Best effort in the background: it never delays or fails a dictation, and does
+    nothing unless the user saved a Clipboard+ key in Settings.
+    """
+    try:
+        import clipboardplus
+    except ImportError:  # An older partial install: dictation still works.
+        return None
+    config_dir = config.paths.config.parent
+    if not clipboardplus.linked(config_dir):
+        return None
+
+    def upload() -> None:
+        if clipboardplus.send(config_dir, text) == "rejected":
+            notify(config, "Clipboard+ rejected the saved key. Reconnect it in Settings.")
+
+    thread = threading.Thread(target=upload)
+    thread.start()  # Not a daemon, so the upload finishes; its socket timeout is 6 seconds.
+    return thread
+
+
 def finish(config: Config, paths: Paths) -> None:
     if not paths.audio.exists():
         raise DictationError("No retained audio. Start a new recording.")
@@ -406,6 +430,7 @@ def finish(config: Config, paths: Paths) -> None:
             "Transcript copied. Paste with "
             + ("Command+V." if desktop.platform_name() == "macos" else "Ctrl+V."),
         )
+        share_transcript(config, text)
     else:
         notify(config, "No speech detected. Previous transcript and clipboard kept.")
     if not config.b("keep_audio"):

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import app_service
 import desktop
 import dictation as d
+import hotkeys
 
 
 class ServiceCase(unittest.TestCase):
@@ -146,6 +147,30 @@ class ServiceTests(ServiceCase):
             self.assertEqual(dispatch.call_args.args[-1], "toggle")
 
 
+class ClipboardPlusServiceTests(ServiceCase):
+    KEY = "cp_live_" + "a1b2c3d4" * 6
+
+    def test_connect_saves_the_key_only_after_the_service_accepts_it(self):
+        self.assertFalse(self.service.clipboard_plus_linked())
+        for result, message in (
+            ("read-only", "write access"),
+            ("invalid", "didn’t accept"),
+            ("offline", "internet"),
+            ("error", "trouble"),
+        ):
+            with patch.object(app_service.clipboardplus, "verify", return_value=result):
+                with self.assertRaisesRegex(d.DictationError, message):
+                    self.service.connect_clipboard_plus(self.KEY)
+            self.assertFalse(self.service.clipboard_plus_linked())
+        with self.assertRaisesRegex(d.DictationError, "cp_live_"):
+            self.service.connect_clipboard_plus("not-a-key")
+        with patch.object(app_service.clipboardplus, "verify", return_value="ok"):
+            self.service.connect_clipboard_plus(f"  {self.KEY}  ")
+        self.assertTrue(self.service.clipboard_plus_linked())
+        self.service.disconnect_clipboard_plus()
+        self.assertFalse(self.service.clipboard_plus_linked())
+
+
 class WindowTests(ServiceCase):
     @classmethod
     def setUpClass(cls):
@@ -265,7 +290,9 @@ class WindowTests(ServiceCase):
             stack.extend(widget.winfo_children())
             if widget.winfo_class() == "TLabel":
                 labels.append(str(widget.cget("text")))
-        self.assertTrue(any("Press ⌃⌥D in any app" in text for text in labels))
+        self.assertTrue(
+            any(f"Press {hotkeys.DEFAULT.label('macos')} in any app" in text for text in labels)
+        )
         self.assertEqual(self.window.bar_actions.winfo_children()[0].cget("text"), "Done")
         self.window.finish_setup()
         self.finish()
@@ -324,12 +351,12 @@ class WindowTests(ServiceCase):
         with patch.object(desktop, "platform_name", return_value="windows"):
             self.window.tutorial()
             texts = self.texts()
-        self.assertTrue(any("Press Ctrl+Alt+D in any app" in text for text in texts))
+        self.assertTrue(
+            any(f"Press {hotkeys.DEFAULT.label('windows')} in any app" in text for text in texts)
+        )
         self.assertTrue(any("system tray" in text for text in texts))
         button = next(
-            widget
-            for widget in self.window.buttons
-            if widget.cget("text") == "Get Clipboard+ (recommended)"
+            widget for widget in self.window.buttons if widget.cget("text") == "Get Clipboard+"
         )
         with patch("webbrowser.open") as browser:
             button.invoke()
@@ -346,6 +373,42 @@ class WindowTests(ServiceCase):
             if widget.winfo_class() == "TLabel":
                 found.append(str(widget.cget("text")))
         return found
+
+    def test_home_leads_with_the_shortcut_and_makes_recording_optional(self):
+        self.window.home()
+        texts = self.texts()
+        shortcut = hotkeys.Preferences(self.paths).shortcut().label()
+        self.assertTrue(any(f"Press {shortcut} to dictate" in text for text in texts))
+        self.assertTrue(any("don’t need this window" in text for text in texts))
+        self.assertTrue(any("Optional" in text for text in texts))
+        self.assertNotIn("What’s on your mind?", texts)
+
+    def test_clipboard_plus_card_connects_and_disconnects(self):
+        key = ClipboardPlusServiceTests.KEY
+        self.window.tutorial()
+        self.assertTrue(any("Clipboard+" in text for text in self.texts()))
+        self.assertFalse(any(text.startswith("Connected") for text in self.texts()))
+        self.window.clip_key.set(key)
+        with patch.object(self.gui.clipboardplus, "verify", return_value="ok"):
+            self.window.connect_clipboard_plus()
+            self.finish()
+        self.assertTrue(self.service.clipboard_plus_linked())
+        self.assertEqual(self.window.clip_key.get(), "")  # The key is not left on screen.
+        self.assertTrue(any(text.startswith("Connected") for text in self.texts()))
+        self.window.disconnect_clipboard_plus()
+        self.finish()
+        self.assertFalse(self.service.clipboard_plus_linked())
+        self.assertFalse(any(text.startswith("Connected") for text in self.texts()))
+
+    def test_clipboard_plus_rejected_key_reports_and_stays_unlinked(self):
+        self.window.tutorial()
+        self.window.clip_key.set(ClipboardPlusServiceTests.KEY)
+        with patch.object(self.gui.clipboardplus, "verify", return_value="invalid"):
+            self.window.connect_clipboard_plus()
+            self.window.pending.exception(timeout=5)
+            self.tick()
+        self.assertIn("didn’t accept", self.window.status.get())
+        self.assertFalse(self.service.clipboard_plus_linked())
 
     def test_shortcut_window_captures_keys(self):
         self.window.shortcut_page()
@@ -480,6 +543,48 @@ class WindowTests(ServiceCase):
             self.root.withdraw()
             self.window = self.gui.App(self.root, self.service)
         self.assertEqual(self.window.page, "home")
+
+    def test_second_launch_opens_the_requested_page_in_the_running_window(self):
+        fd = desktop.lock(self.paths.runtime / "app.lock")
+        try:
+            self.assertEqual(self.gui.main(["--shortcut"]), 0)
+        finally:
+            os.close(fd)
+        self.assertEqual((self.paths.runtime / "show-window").read_text(), "shortcut")
+        self.tick()
+        self.assertEqual(self.window.page, "shortcut")
+        self.window.destroy()
+        self.root = self.gui.tk.Tk()
+        self.root.withdraw()
+        with patch.object(self.service, "completed", return_value=True):
+            self.window = self.gui.App(self.root, self.service)
+            d.atomic(self.paths.runtime / "show-window", "settings")
+            with patch.object(self.service, "microphones", return_value=[]):
+                self.tick()
+        self.assertEqual(self.window.page, "settings")
+
+    def test_leaving_the_shortcut_page_resumes_the_shortcut(self):
+        self.window.shortcut_page()
+        self.assertTrue((self.paths.runtime / "shortcut-capture").exists())
+        self.window.home()
+        self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
+        self.assertEqual(self.root.bind("<KeyPress>"), "")
+
+    def test_an_unexpected_error_does_not_stop_the_window_updating(self):
+        self.window.submit(lambda: None, lambda _: 1 / 0, "Working")
+        self.window.pending.result(timeout=5)
+        self.tick()
+        self.assertIn("Something went wrong", self.window.status.get())
+        self.assertIn(self.window.timer, self.root.tk.call("after", "info"))
+
+    def test_home_explains_a_shortcut_that_could_not_be_set(self):
+        hotkeys.record_status(self.paths, False)
+        with patch.object(desktop, "platform_name", return_value="linux"):
+            self.window.home()
+        self.assertTrue(any("keyboard settings" in text for text in self.texts()))
+        hotkeys.record_status(self.paths, True)
+        self.window.home()
+        self.assertTrue(any("to dictate" in text for text in self.texts()))
 
     def test_second_launch_focuses_existing_window(self):
         fd = desktop.lock(self.paths.runtime / "app.lock")

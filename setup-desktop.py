@@ -74,6 +74,7 @@ ICONS = (
     (REPOSITORY / "lib/whisper-dictation.png", "whisper-dictation.png"),
     (REPOSITORY / "lib/menubar-icon.png", "menubar-icon.png"),
     (REPOSITORY / "lib/menubar-recording.png", "menubar-recording.png"),
+    (REPOSITORY / "lib/tray-recording.png", "tray-recording.png"),
     (REPOSITORY / "assets/icon.ico", "whisper-dictation.ico"),
 )
 MODULES = (
@@ -86,6 +87,8 @@ MODULES = (
     "app.py",
     "hotkeys.py",
     "menubar.py",
+    "tray.py",
+    "clipboardplus.py",
 )
 # The menu bar (macOS, PyObjC) and tray (Windows/Linux, pystray) apps run from a
 # private environment so the system or Homebrew Python is never modified.
@@ -375,6 +378,7 @@ def uninstall(prefix: Path) -> None:
         "lib/hotkeys.py",
         "lib/menubar.py",
         "lib/tray.py",
+        "lib/clipboardplus.py",
         "lib/tray-recording.png",
         "lib/menubar-icon.png",
         "lib/menubar-recording.png",
@@ -386,13 +390,23 @@ def uninstall(prefix: Path) -> None:
         "bin/Whisper Dictation.command",
     ):
         (prefix / relative).unlink(missing_ok=True)
+    cache = prefix / "lib/__pycache__"
+    for name in MODULES:
+        for compiled in cache.glob(Path(name).stem + ".*.pyc"):
+            compiled.unlink()
+    if cache.is_dir() and not any(cache.iterdir()):
+        cache.rmdir()
+    if desktop.platform_name() == "linux":
+        hotkeys.gnome_remove(prefix / "bin/dictate-toggle")
     receipt.unlink()
     venv = prefix / "share/whisper-dictation/venv"
     # Only a directory this installer created (it holds pyvenv.cfg) is removed.
+    if desktop.platform_name() == "macos":
+        # Quit the menu bar app before deleting the Python it runs from.
+        stop_menubar(dictation.Paths())
     if (venv / "pyvenv.cfg").is_file():
         shutil.rmtree(venv)
     if desktop.platform_name() == "macos":
-        stop_menubar(dictation.Paths())
         agent = hotkeys.agent_path()
         # Only remove the login item that launches this installation's bundle.
         if agent.is_file() and str(app_bundle(prefix)) in plistlib.loads(agent.read_bytes()).get(

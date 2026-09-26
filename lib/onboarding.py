@@ -19,6 +19,7 @@ from typing import Any
 
 import desktop
 import dictation
+import hotkeys
 
 MODELS = {
     "en": ("base.en", "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"),
@@ -203,8 +204,12 @@ def run(paths: dictation.Paths) -> None:
     print("--cancel cancels; --transcribe retries retained audio; --copy-last copies saved text.")
     print("--watch displays live drafts when enabled. Nothing has been recorded by setup.")
     if desktop.platform_name() == "macos":
-        print("Add the installed command to Apple Shortcuts > Run Shell Script and assign a key.")
+        print(
+            f"Open Whisper Dictation from Applications; it registers {hotkeys.DEFAULT.label()} itself."
+        )
     elif desktop.platform_name() == "windows":
-        print("Use the Start Menu Whisper Dictation shortcut or Ctrl+Alt+D.")
+        print(f"Use the Start Menu Whisper Dictation shortcut or {hotkeys.DEFAULT.label()}.")
     else:
-        print("GNOME installer shortcut: Ctrl+Alt+D. Other desktops: bind dictate-toggle.")
+        print(
+            f"GNOME installer shortcut: {hotkeys.DEFAULT.label()}. Other desktops: bind dictate-toggle."
+        )

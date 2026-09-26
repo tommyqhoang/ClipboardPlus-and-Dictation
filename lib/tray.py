@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -78,7 +79,7 @@ class GnomeHotKey:
         self.command = HERE.parent / "bin/dictate-toggle"
 
     def register(self, shortcut: hotkeys.Shortcut | None) -> bool:
-        return shortcut is None or hotkeys.gnome_shortcut(shortcut, self.command)
+        return hotkeys.gnome_shortcut(shortcut, self.command) or shortcut is None
 
 
 class Tray:
@@ -133,7 +134,9 @@ class Tray:
                     self.toggle_login,
                     checked=lambda _: self.preferences.open_at_login(),
                 ),
-                item("Clipboard History (Clipboard+)…", lambda: hotkeys.open_link()),
+                item(
+                    "Clipboard History (Clipboard+)…", lambda: self.service.open_clipboard_history()
+                ),
                 item("Settings…", lambda: self.open_window("--settings")),
                 menu.SEPARATOR,
                 item("Quit Whisper Dictation", self.quit),
@@ -157,13 +160,7 @@ class Tray:
         )
 
     def open_window(self, page: str) -> None:
-        subprocess.Popen(
-            [hotkeys.python_for_gui(), str(HERE / "app.py"), page],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **desktop.process_options(detached=True),
-        )
+        open_app_window(page)
 
     def toggle(self) -> None:
         self.pressed()
@@ -186,9 +183,16 @@ class Tray:
             self.shortcut, self.hotkey_ok = shortcut, True
             self.preferences.save(shortcut=shortcut)
         else:
-            self.hotkey.register(previous)
+            self.hotkey_ok = self.hotkey.register(previous)
             self.preferences.save(shortcut=previous)
-            self.notify(f"{shortcut.label()} is already in use. Keeping {previous.label()}.")
+            if desktop.platform_name() == "linux" and not shutil.which("gsettings"):
+                self.notify(
+                    "This desktop can’t set shortcuts automatically. Assign one to "
+                    "~/.local/bin/dictate-toggle in your keyboard settings."
+                )
+            else:
+                self.notify(f"{shortcut.label()} is already in use. Keeping {previous.label()}.")
+        hotkeys.record_status(self.paths, self.hotkey_ok)
         self.stamp = self.preferences.stamp()
         self.icon.update_menu()
 
@@ -237,6 +241,7 @@ class Tray:
             else GnomeHotKey(self.pressed)
         )
         self.hotkey_ok = self.hotkey.register(self.shortcut)
+        hotkeys.record_status(self.paths, self.hotkey_ok)
         if not self.hotkey_ok and desktop.platform_name() == "windows":
             self.notify(f"{self.shortcut.label()} is in use by another app. Pick another.")
         self.sync_login()
@@ -252,7 +257,15 @@ class Tray:
             (self.paths.runtime / "menubar-quit").unlink(missing_ok=True)
             self.quit()
             return
-        capturing = (self.paths.runtime / "shortcut-capture").exists()
+        capture = self.paths.runtime / "shortcut-capture"
+        capturing = capture.exists()
+        if capturing and not self.suspended:
+            # A window that crashed on the shortcut page leaves the flag behind.
+            window = desktop.lock(self.paths.runtime / "app.lock")
+            if window is not None:
+                os.close(window)
+                capture.unlink(missing_ok=True)
+                capturing = False
         changed = self.preferences.stamp() != self.stamp
         if capturing and not self.suspended:
             # Pressing the old keys while choosing a new shortcut must not record.
@@ -264,22 +277,44 @@ class Tray:
                 self.apply(self.preferences.shortcut())  # Chosen in the shortcut window.
             else:
                 self.hotkey_ok = self.hotkey.register(self.shortcut)
+                hotkeys.record_status(self.paths, self.hotkey_ok)
         try:
             current = workflow.snapshot(self.paths)
         except (d.DictationError, OSError, ValueError):
             current = {"phase": "idle", "active": False}
         phase = str(current["phase"]) if current["active"] else "idle"
         elapsed = int(current.get("elapsed_seconds", 0))
-        state = (phase, elapsed if phase == "recording" else 0)
-        if state != self.state:
-            self.state, self.phase = state, phase
+        # Only the Windows tooltip can show a running clock cheaply. On Linux each
+        # icon or menu update rewrites the icon file and rebuilds the GTK menu,
+        # which flickers the top bar and closes an open menu.
+        clock = phase == "recording" and desktop.platform_name() == "windows"
+        state = (phase, elapsed if clock else 0)
+        if state == self.state:
+            return
+        changed = phase != self.phase
+        self.state, self.phase = state, phase
+        if changed:
             self.icon.icon = self.images["recording" if phase == "recording" else "idle"]
-            self.icon.title = (
-                f"Whisper Dictation — recording {elapsed // 60}:{elapsed % 60:02d}"
-                if phase == "recording"
-                else "Whisper Dictation"
-            )
+        self.icon.title = (
+            f"Whisper Dictation — recording {elapsed // 60}:{elapsed % 60:02d}"
+            if clock
+            else "Whisper Dictation — recording"
+            if phase == "recording"
+            else "Whisper Dictation"
+        )
+        if changed:
             self.icon.update_menu()
+
+
+def open_app_window(page: str = "") -> None:
+    """Start the window; a running window is asked to show itself instead."""
+    subprocess.Popen(
+        [hotkeys.python_for_gui(), str(HERE / "app.py"), *([page] if page else [])],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **desktop.process_options(detached=True),
+    )
 
 
 def main() -> int:
@@ -287,13 +322,15 @@ def main() -> int:
     if desktop.platform_name() == "macos":
         print("On macOS, run menubar.py.")
         return 1
-    import pystray  # type: ignore[import-not-found]
-    from PIL import Image  # type: ignore[import-not-found]
-
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "menubar.lock")
     if fd is None:
-        return 0  # Already running.
+        # Already running: opening the launcher again should show the window.
+        open_app_window()
+        return 0
+    import pystray  # type: ignore[import-not-found]
+    from PIL import Image  # type: ignore[import-not-found, unused-ignore]
+
     try:
         (paths.runtime / "menubar-quit").unlink(missing_ok=True)
         tray = Tray(pystray, Image)

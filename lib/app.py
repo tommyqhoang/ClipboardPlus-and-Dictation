@@ -12,6 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
 from typing import Any, Literal
 
+import clipboardplus
 import desktop
 import dictation as d
 import hotkeys
@@ -80,6 +81,7 @@ class App:
         self.endpoint = tk.StringVar(value="")
         self.api_model = tk.StringVar(value="")
         self.api_key = tk.StringVar(value="")
+        self.clip_key = tk.StringVar(value="")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         # The tray/menu bar app owns everyday use; this window is for setup.
         self.tray = True
@@ -189,8 +191,9 @@ class App:
                 bordercolor=[("disabled", BORDER if fill == SURFACE else muted)],
                 foreground=[("disabled", "#9fb0bc" if fill == SURFACE else "white")],
             )
-        for name in ("Primary", "Danger"):
-            style.configure(f"Record.{name}.TButton", padding=(24, 16), font=self.fonts["record"])
+        # Idle Record is neutral: the shortcut, not this button, is the main way in.
+        for name in ("", "Primary.", "Danger."):
+            style.configure(f"Record.{name}TButton", padding=(24, 16), font=self.fonts["record"])
         style.configure(
             "Link.TButton",
             background=BACKGROUND,
@@ -274,6 +277,8 @@ class App:
         self.canvas.itemconfigure(self.frame_window, width=event.width)
 
     def reset(self, page: str, title: str, subtitle: str, step: str = "") -> None:
+        if self.page == "shortcut" and page != "shortcut":
+            self.end_capture()
         self.page = page
         self.buttons = []
         for child in self.frame.winfo_children():
@@ -489,6 +494,7 @@ class App:
         if not remote:
             self.choose_provider()
         self.show_choice()
+        self.clipboard_plus_card()
         self.button("Continue", self.prepare, True, self.actions(), "right")
         if self.service.completed():
             self.button("Cancel", self.leave, parent=self.actions(), side="right")
@@ -540,6 +546,9 @@ class App:
         self.status.set(f"{found} Pick the one you’ll speak into.")
 
     def prepare(self) -> None:
+        if self.clip_key.get().strip():
+            self.status.set("Press Connect to link Clipboard+, or clear the key field to skip it.")
+            return
         language = "en" if self.language.get() == "English" else "auto"
         device = self.device.get()
         source = self.model_source.get()
@@ -612,16 +621,7 @@ class App:
             style="CardHint.TLabel",
             wraplength=self.wraplength - 50,
         ).pack(anchor="w", pady=(10, 0))
-        history = self.card(
-            "Keep every transcript",
-            "Each dictation replaces what’s on your clipboard. Clipboard+ keeps a searchable "
-            "history of everything you copy, so earlier transcripts are one click away.",
-        )
-        row = ttk.Frame(history, style="Card.TFrame")
-        row.pack(fill="x")
-        self.button(
-            "Get Clipboard+ (recommended)", lambda: hotkeys.open_link(), parent=row, side="left"
-        )
+        self.clipboard_plus_card()
         self.button(
             "Done" if self.tray else "Start dictating",
             self.finish_setup,
@@ -629,6 +629,78 @@ class App:
             self.actions(),
             "right",
         )
+
+    def clipboard_plus_card(self) -> None:
+        """Optional: also save each transcript to the user's Clipboard+ history."""
+        body = self.card(
+            "Keep every transcript in Clipboard+",
+            "Each dictation replaces what’s on your clipboard. Connect Clipboard+ and every "
+            "transcript is also saved to your history, to search on the website or in the "
+            "browser extension. Optional: only the text is sent, never audio.",
+        )
+        self.clip_body = ttk.Frame(body, style="Card.TFrame")
+        self.clip_body.pack(fill="x")
+        self.clip_buttons: list[ttk.Button] = []
+        self.render_clipboard_plus()
+
+    def render_clipboard_plus(self) -> None:
+        # Drop the old buttons from the busy/idle list before their widgets are destroyed.
+        self.buttons = [button for button in self.buttons if button not in self.clip_buttons]
+        self.clip_buttons = []
+        for child in self.clip_body.winfo_children():
+            child.destroy()
+        row = ttk.Frame(self.clip_body, style="Card.TFrame")
+        actions: tuple[tuple[str, Callable[[], None]], ...]
+        if self.service.clipboard_plus_linked():
+            ttk.Label(
+                self.clip_body,
+                text="Connected. New transcripts are saved to your Clipboard+ history.",
+                style="Card.TLabel",
+                wraplength=self.wraplength - 50,
+            ).pack(anchor="w", pady=(0, 10))
+            row.pack(fill="x")
+            actions = (
+                ("Open history", lambda: hotkeys.open_link(clipboardplus.DASHBOARD_URL)),
+                ("Disconnect", self.disconnect_clipboard_plus),
+            )
+        else:
+            ttk.Label(
+                self.clip_body,
+                text="In your Clipboard+ account, open Developer API, generate a key with "
+                "clipboard write access, and paste it here.",
+                style="CardHint.TLabel",
+                wraplength=self.wraplength - 50,
+            ).pack(anchor="w", pady=(0, 6))
+            ttk.Entry(self.clip_body, textvariable=self.clip_key, show="•").pack(fill="x")
+            row.pack(fill="x", pady=(10, 0))
+            actions = (
+                ("Connect", self.connect_clipboard_plus),
+                ("Get a key", lambda: hotkeys.open_link(clipboardplus.ACCOUNT_URL)),
+                ("Get Clipboard+", lambda: hotkeys.open_link()),
+            )
+        for text, command in actions:
+            self.clip_buttons.append(self.button(text, command, parent=row, side="left"))
+
+    def connect_clipboard_plus(self) -> None:
+        key = self.clip_key.get()
+
+        def connected(_: Any) -> None:
+            self.clip_key.set("")  # The key is saved privately; do not leave it on screen.
+            self.render_clipboard_plus()
+            self.status.set("Connected to Clipboard+.")
+
+        self.submit(
+            lambda: self.service.connect_clipboard_plus(key),
+            connected,
+            "Checking your Clipboard+ key…",
+        )
+
+    def disconnect_clipboard_plus(self) -> None:
+        def disconnected(_: Any) -> None:
+            self.render_clipboard_plus()
+            self.status.set("Disconnected from Clipboard+.")
+
+        self.submit(self.service.disconnect_clipboard_plus, disconnected, "Disconnecting…")
 
     def finish_setup(self) -> None:
         self.submit(self.service.complete, lambda _: self.leave(), "Saving your setup…")
@@ -643,8 +715,12 @@ class App:
         self.reset(
             "shortcut",
             "Choose your shortcut",
-            "Hold Ctrl, Alt or Win/Super and press a letter, number or Space — "
-            "or press a function key (F1–F12).",
+            (
+                "Hold ⌃, ⌥ or ⌘ and press a letter, number or Space — "
+                if desktop.platform_name() == "macos"
+                else "Hold Ctrl, Alt or Win/Super and press a letter, number or Space — "
+            )
+            + "or press a function key (F1–F12).",
         )
         self.capture = self.service.paths.runtime / "shortcut-capture"
         d.private_dir(self.capture.parent)
@@ -692,18 +768,42 @@ class App:
         self.destroy()
 
     def home(self) -> None:
-        self.reset(
-            "home",
-            "What’s on your mind?",
-            "Press Record, speak, then Stop. Your transcript is copied so you can paste it anywhere.",
-        )
+        shortcut = hotkeys.Preferences(self.service.paths).shortcut().label()
+        platform = desktop.platform_name()
+        paste = "Command\u00a0+\u00a0V" if platform == "macos" else "Ctrl\u00a0+\u00a0V"
+        place = {"macos": "menu bar", "windows": "system tray"}.get(platform, "top bar")
+        if hotkeys.shortcut_working(self.service.paths):
+            title = f"Press {shortcut} to dictate"
+            subtitle = (
+                f"It works in any app: press it, speak, press it again, then paste with {paste}. "
+                "You don’t need this window."
+            )
+        elif platform == "linux":
+            title = "Set up your shortcut"
+            subtitle = (
+                "This desktop can’t set shortcuts automatically. In your keyboard settings, "
+                f"assign {shortcut} to ~/.local/bin/dictate-toggle. Until then, record from here."
+            )
+        else:
+            title = f"{shortcut} is taken"
+            subtitle = (
+                f"Another app already uses {shortcut}. Choose a different shortcut from the "
+                f"{place} icon. Until then, record from here."
+            )
+        self.reset("home", title, subtitle)
+        ttk.Label(
+            self.frame,
+            text="Optional: record from here instead",
+            style="Hint.TLabel",
+            wraplength=self.wraplength,
+        ).pack(anchor="w", pady=(0, 8))
         controls = ttk.Frame(self.frame)
         controls.pack(fill="x")
         self.record = ttk.Button(
             controls,
             text="Record",
             command=lambda: self.action("toggle"),
-            style="Record.Primary.TButton",
+            style="Record.TButton",
         )
         self.record.pack(side="left", fill="x", expand=True, padx=(0, 10))
         self.cancel = ttk.Button(
@@ -817,10 +917,12 @@ class App:
         recording = active and phase == "recording"
         retained = current["retained_audio"]
         message = workflow.display_text(str(current.get("message", ""))).strip()
-        self.record.configure(
-            text="Stop and transcribe" if recording else "Record",
-            style="Record.Danger.TButton" if recording else "Record.Primary.TButton",
-        )
+        label = "Stop and transcribe" if recording else "Record"
+        if str(self.record.cget("text")) != label:  # Restyling every tick flickers.
+            self.record.configure(
+                text=label,
+                style="Record.Danger.TButton" if recording else "Record.TButton",
+            )
         self.record.state(
             ["!disabled"] if recording or (not active and not retained) else ["disabled"]
         )
@@ -868,13 +970,24 @@ class App:
         if self.closing and not active:
             self.destroy()
 
+    def open_page(self, request: str) -> None:
+        """Honor a Settings or shortcut request from the tray when it is safe to leave."""
+        if self.pending is not None or self.page == request:
+            return
+        if request == "shortcut" and not d.busy(self.service.paths):
+            self.shortcut_page()
+        elif request == "settings" and self.service.completed() and not d.busy(self.service.paths):
+            self.settings()
+
     def poll(self) -> None:
         try:
             activation = self.service.paths.runtime / "show-window"
             if activation.exists():
+                request = activation.read_text(encoding="utf-8")
                 activation.unlink()
                 self.root.deiconify()
                 self.root.lift()
+                self.open_page(request)
             if self.pending is not None and not self.pending.done():
                 self.show_download()
             if self.pending is not None and self.pending.done():
@@ -894,6 +1007,8 @@ class App:
                 if isinstance(exc, d.DictationError)
                 else "Something went wrong. Check microphone permissions, connections, and free disk space, then retry."
             )
+        except Exception:  # noqa: BLE001 - never let one failure stop the window updating.
+            self.status.set("Something went wrong. Please try again.")
         if self.page != "closed":
             self.timer = self.root.after(200, self.poll)
 
@@ -915,9 +1030,15 @@ class App:
         else:
             self.destroy()
 
+    def end_capture(self) -> None:
+        """Stop recording keys for a new shortcut; the tray re-enables the shortcut."""
+        (self.service.paths.runtime / "shortcut-capture").unlink(missing_ok=True)
+        self.root.unbind("<KeyPress>")
+        self.root.unbind("<KeyRelease>")
+
     def destroy(self) -> None:
         self.page = "closed"
-        (self.service.paths.runtime / "shortcut-capture").unlink(missing_ok=True)
+        self.end_capture()
         self.root.after_cancel(self.timer)
         self.done = lambda _: None
         self.executor.shutdown(wait=True)
@@ -931,7 +1052,8 @@ def main(argv: list[str] | None = None) -> int:
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "app.lock")
     if fd is None:
-        d.atomic(paths.runtime / "show-window", "show")
+        # The running window shows itself, on the requested page if any.
+        d.atomic(paths.runtime / "show-window", page or "show")
         return 0
     try:
         root = tk.Tk(className="WhisperDictation")

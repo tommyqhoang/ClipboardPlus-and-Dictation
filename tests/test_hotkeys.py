@@ -31,16 +31,16 @@ class HotkeyTests(unittest.TestCase):
 
     def test_same_shortcut_on_every_platform(self):
         shortcut = hotkeys.DEFAULT
-        self.assertEqual(shortcut.label("macos"), "⌃⌥D")
-        self.assertEqual(shortcut.label("windows"), "Ctrl+Alt+D")
-        self.assertEqual(shortcut.label("linux"), "Ctrl+Alt+D")
+        self.assertEqual(shortcut.label("macos"), "⇧⌘D")
+        self.assertEqual(shortcut.label("windows"), "Win+Shift+D")
+        self.assertEqual(shortcut.label("linux"), "Super+Shift+D")
         self.assertEqual(hotkeys.Shortcut(("cmd",), "F5").label("windows"), "Win+F5")
         self.assertEqual(hotkeys.Shortcut(("cmd",), "F5").label("linux"), "Super+F5")
-        self.assertEqual(shortcut.carbon_modifiers(), 0x1000 | 0x800)
+        self.assertEqual(shortcut.carbon_modifiers(), 0x200 | 0x100)
         self.assertEqual(shortcut.mac_key_code(), 2)
         self.assertEqual(shortcut.windows_key(), ord("D"))
-        self.assertEqual(shortcut.windows_modifiers(), 0x2 | 0x1 | hotkeys.MOD_NOREPEAT)
-        self.assertEqual(shortcut.gnome(), "<Control><Alt>d")
+        self.assertEqual(shortcut.windows_modifiers(), 0x4 | 0x8 | hotkeys.MOD_NOREPEAT)
+        self.assertEqual(shortcut.gnome(), "<Shift><Super>d")
         space = hotkeys.Shortcut(("alt",), "Space")
         self.assertEqual((space.windows_key(), space.gnome()), (0x20, "<Alt>space"))
         f12 = hotkeys.Shortcut((), "F12")
@@ -60,12 +60,15 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(hotkeys.Shortcut(("cmd",), "D").problem(), "")
 
     def test_captured_keys(self):
-        flags = hotkeys.EVENT_FLAGS["ctrl"] | hotkeys.EVENT_FLAGS["alt"]
+        flags = hotkeys.EVENT_FLAGS["shift"] | hotkeys.EVENT_FLAGS["cmd"]
         self.assertEqual(hotkeys.from_mac_event(2, flags, "d"), hotkeys.DEFAULT)
         self.assertEqual(hotkeys.from_mac_event(49, flags, " ").key, "Space")
+        # Every modifier survives, whatever order the event flags are read in.
+        every = sum(hotkeys.EVENT_FLAGS.values())
+        self.assertEqual(hotkeys.from_mac_event(2, every, "d").modifiers, hotkeys.MODIFIER_ORDER)
         self.assertEqual(hotkeys.from_mac_event(200, 0, "é").key, "É")
         self.assertIsNone(hotkeys.from_tk("Control_L", set()))
-        self.assertEqual(hotkeys.from_tk("d", {"alt", "ctrl"}), hotkeys.DEFAULT)
+        self.assertEqual(hotkeys.from_tk("d", {"cmd", "shift"}), hotkeys.DEFAULT)
         self.assertEqual(hotkeys.from_tk("space", {"alt"}), hotkeys.PRESETS[1])
         self.assertEqual(hotkeys.from_tk("F9", set()).key, "F9")
 
@@ -134,11 +137,31 @@ class HotkeyTests(unittest.TestCase):
             self.assertIn(
                 ["set", *hotkeys.GNOME_LIST, f"['/other/', {hotkeys.GNOME_PATH!r}]"], calls
             )
-            self.assertEqual(calls[-1][-2:], ["binding", "<Control><Alt>d"])
+            self.assertEqual(calls[-1][-2:], ["binding", "<Shift><Super>d"])
             failing = Mock(return_value=Mock(returncode=1, stdout="", stderr="no schema"))
             self.assertFalse(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/t"), failing))
         with patch.object(hotkeys.shutil, "which", return_value=None):
             self.assertFalse(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/t")))
+
+    def test_gnome_shortcut_pauses_and_removes_only_its_own_binding(self):
+        calls = []
+        state = {"command": "'/bin/toggle'", "list": f"['/other/', {hotkeys.GNOME_PATH!r}]"}
+
+        def run(args, **_):
+            calls.append(args[1:])
+            output = state["list"] if args[-1] == "custom-keybindings" else state["command"]
+            return Mock(returncode=0, stdout=output if args[1] == "get" else "", stderr="")
+
+        with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
+            # Pausing (while a new shortcut is recorded) clears the keys but keeps the entry.
+            self.assertTrue(hotkeys.gnome_shortcut(None, Path("/bin/toggle"), run))
+            self.assertEqual(calls[-1][-2:], ["binding", ""])
+            calls.clear()
+            hotkeys.gnome_remove(Path("/other/toggle"), run)  # Someone else's command.
+            self.assertFalse(any(call[0] in ("set", "reset-recursively") for call in calls))
+            hotkeys.gnome_remove(Path("/bin/toggle"), run)
+            self.assertIn(["set", *hotkeys.GNOME_LIST, "['/other/']"], calls)
+            self.assertEqual(calls[-1][0], "reset-recursively")
 
     def test_helpers(self):
         with patch("webbrowser.open") as browser:

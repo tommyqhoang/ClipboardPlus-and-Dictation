@@ -10,9 +10,9 @@ commands.
 
 | Platform | Launcher | Local dependencies |
 | --- | --- | --- |
-| Linux (apt, dnf, pacman, zypper) | Top bar icon (starts at login), application menu, GNOME Ctrl+Alt+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray and Pillow in a private venv |
-| macOS | Menu bar icon from `~/Applications/Whisper Dictation.app` (starts at login), ⌃⌥D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC in a private venv |
-| Windows x64 | System tray icon (starts at login), Start Menu, Ctrl+Alt+D | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp; pystray and Pillow in a private venv |
+| Linux (apt, dnf, pacman, zypper) | Top bar icon (starts at login), application menu, GNOME Super+Shift+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray and Pillow in a private venv |
+| macOS | Menu bar icon from `~/Applications/Whisper Dictation.app` (starts at login), ⇧⌘D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC in a private venv |
+| Windows x64 | System tray icon (starts at login), Start Menu, Win+Shift+D | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp; pystray and Pillow in a private venv |
 
 The Windows bootstrap currently pins whisper.cpp 1.8.7 and verifies the upstream
 release digest. Linux uses the distribution package when one exists (Debian/Ubuntu, Fedora); the source fallback
@@ -27,6 +27,17 @@ After setup, the app provides Record/Stop, Cancel, Copy, Retry saved recording,
 Discard saved recording, Settings, and Help. A second launch focuses the existing
 window instead of opening another recorder. The window sizes itself to the display
 and exposes a scrollbar when all controls do not fit.
+
+## Clipboard+ account link (optional)
+
+Settings and the walkthrough include an optional Clipboard+ card. Pasting a
+Clipboard+ API key saves each transcript to the user's Clipboard+ history as well
+as the local clipboard. The key is verified with Clipboard+ before it is saved,
+stored owner-only as `clipboard-plus-key`, and only ever sent over HTTPS to the
+Clipboard+ service (redirects are never followed). Audio is never sent. Uploads run
+in the background with a 6-second network timeout, and a failure never affects
+dictation. If Clipboard+ refuses the key later, a notification asks the user to
+reconnect in Settings.
 
 ## Permissions
 
