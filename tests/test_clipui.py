@@ -6,6 +6,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -123,7 +124,7 @@ class PageCase(ServiceCase):
         gc.collect()
 
     def texts(self):
-        found, stack = [], [self.window.frame]
+        found, stack = [], [self.window.root]
         while stack:
             widget = stack.pop()
             stack.extend(widget.winfo_children())
@@ -131,8 +132,18 @@ class PageCase(ServiceCase):
                 found.append(str(widget.cget("text")))
         return found
 
+    def row_text(self, row):
+        """The label showing a row's text (not its time, star or actions)."""
+        stack = [row.frame]
+        while stack:
+            widget = stack.pop(0)
+            stack.extend(widget.winfo_children())
+            if widget.winfo_class() == "Label" and widget.cget("wraplength"):
+                return widget
+        raise AssertionError("no text label")
+
     def buttons(self, label):
-        found, stack = [], [self.window.frame]
+        found, stack = [], [self.window.root]
         while stack:
             widget = stack.pop()
             stack.extend(widget.winfo_children())
@@ -296,16 +307,21 @@ class PageTests(PageCase):
             self.page.copy_first()  # Runs the waiting search first.
             self.assertEqual(copy.call_args.args[0], self.page.rows[0].item.id)
             self.page.set_query("")
-            label = next(
-                w
-                for w in self.page.rows[0]
-                .frame.winfo_children()[0]
-                .winfo_children()[0]
-                .winfo_children()
-                if w.winfo_class() == "TLabel"
-            )
+            label = self.row_text(self.page.rows[0])
+            self.root.update_idletasks()  # New rows are mapped when Tk is idle.
             label.event_generate("<Button-1>")
         self.assertEqual(copy.call_args.args[0], newest.id)
+
+    def test_clear_history_sits_with_the_filters_not_below_the_list(self):
+        button = self.page.clear_button
+        self.assertEqual(button.winfo_manager(), "")  # Hidden: nothing to clear yet.
+        item = self.store.add_text("one", now=1.0)
+        self.page.reload()
+        self.assertEqual(button.winfo_manager(), "pack")
+        self.assertIs(button.master, self.page._chips["all"].master)
+        self.assertEqual(self.buttons("Clear history"), [button])
+        self.page.delete(item.id)
+        self.assertEqual(button.winfo_manager(), "")
 
     def test_a_paused_capture_is_announced_with_a_way_back(self):
         hotkeys.Preferences(self.paths).save(clipboard=hotkeys.ClipboardSettings(paused_until=-1))
@@ -352,16 +368,9 @@ class WindowTests(PageCase):
     def test_labels_rewrap_when_the_window_is_resized(self):
         self.store.add_text("long " * 80, now=1.0)
         self.page.reload()
-        label = next(
-            w
-            for w in self.page.rows[0]
-            .frame.winfo_children()[0]
-            .winfo_children()[0]
-            .winfo_children()
-            if w.winfo_class() == "TLabel"
-        )
+        label = self.row_text(self.page.rows[0])
         before = int(str(label.cget("wraplength")))
-        self.window.rewrap(self.window.wraplength + 110 + 200)
+        self.window.rewrap(self.window.wraplength + 2 * self.gui.PAD + 30 + 200)
         self.assertEqual(int(str(label.cget("wraplength"))), before + 200)
         self.window.rewrap(100)  # Never narrower than readable.
         self.assertGreaterEqual(int(str(label.cget("wraplength"))), 120)
@@ -407,8 +416,40 @@ class WindowTests(PageCase):
         self.assertEqual(hotkeys.Preferences(self.paths).shortcut().key, "K")
         self.assertIn("Dictation shortcut", self.window.status.get())
 
+    def test_search_stays_in_view_and_the_empty_bottom_bar_is_hidden(self):
+        self.assertIs(self.page.entry.master.master, self.window.toolbar)
+        self.assertEqual(self.window.toolbar.winfo_manager(), "pack")
+        self.root.update_idletasks()
+        self.assertEqual(self.window.bottom.winfo_manager(), "")  # Nothing to show.
+        self.window.status.set("Copied to the clipboard.")
+        self.assertEqual(self.window.bottom.winfo_manager(), "pack")
+        with (
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+        ):
+            self.window.settings()
+        self.assertEqual(self.window.toolbar.winfo_manager(), "")  # Only the list needs it.
+
+    def test_page_keys_scroll_but_not_while_typing(self):
+        seen = []
+        self.window.scroll(0.0, 0.5)
+        self.window.canvas.yview_scroll = lambda amount, what: seen.append((amount, what))
+        event = SimpleNamespace(widget=self.window.frame)
+        self.assertEqual(self.window.scroll_key(1, "pages", event), "break")
+        self.assertEqual(seen, [(1, "pages")])
+        typing = SimpleNamespace(widget=self.page.entry)
+        self.assertIsNone(self.window.scroll_key(1, "pages", typing))
+        self.assertEqual(len(seen), 1)
+
+    def test_a_narrow_window_keeps_the_tabs_and_drops_the_name(self):
+        self.window.rewrap(460)
+        self.assertEqual(self.window.brand.cget("text"), "")
+        self.assertEqual(self.page.count_label.winfo_manager(), "")
+        self.window.rewrap(760)
+        self.assertEqual(self.window.brand.cget("text"), hotkeys.APP_NAME)
+
     def all_widgets(self):
-        found, stack = [], [self.window.frame]
+        found, stack = [], [self.window.root]
         while stack:
             widget = stack.pop()
             stack.extend(widget.winfo_children())

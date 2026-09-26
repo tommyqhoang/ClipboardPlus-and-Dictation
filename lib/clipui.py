@@ -18,7 +18,8 @@ import hotkeys
 PAGE_SIZE = 50
 PREVIEW_CHARS = 140
 SEARCH_DELAY_MS = 150
-THUMB_PIXELS = 160
+THUMB_PIXELS = 96
+PAD = 20  # The window's side padding (app.PAD).
 SOURCES = {"desktop": "Desktop", "dictation": "Dictation", "cloud": "Cloud"}
 FILTERS = (("all", "All"), ("favorites", "Favorites"), ("images", "Images"), ("text", "Text"))
 
@@ -46,8 +47,8 @@ def preview(text: str) -> str:
 @dataclasses.dataclass
 class Row:
     item: clipstore.Item
-    frame: tk.Misc  # The outlined card; destroying it removes the whole row.
-    star: ttk.Button
+    frame: tk.Misc  # The row; destroying it removes the whole item from the list.
+    star: tk.Label
 
 
 class ClipboardPage:
@@ -69,43 +70,75 @@ class ClipboardPage:
         self._thumbs: dict[str, tk.PhotoImage | None] = {}
         self._signature: tuple[Any, ...] | None = None
         self._chips: dict[str, ttk.Button] = {}
-        self.query.trace_add("write", lambda *_: self._schedule_search())
+        self.query.trace_add("write", lambda *_: self._query_changed())
 
     # -- layout ------------------------------------------------------------
     def render(self) -> None:
-        """Build the controls (the caller has reset the page); then the list."""
-        frame = self.app.frame
-        self.banner = ttk.Frame(frame)
-        self.banner.pack(fill="x")
-        ttk.Label(
-            frame,
-            text="Search your clipboard history · Enter copies the first result · "
-            "click any item to copy it",
-            style="Hint.TLabel",
-            wraplength=self.app.wraplength,
-        ).pack(anchor="w", pady=(0, 4))
-        entry = self.entry = ttk.Entry(frame, textvariable=self.query)
-        entry.pack(fill="x", pady=(0, 8))
+        """Build the controls (the caller has reset the page); then the list.
+
+        Search and filters live in the window's fixed toolbar, so they stay in view
+        while the list scrolls under them.
+        """
+        bar = self.app.show_toolbar((PAD, 12, PAD, 8))
+        search = ttk.Frame(bar, style="Toolbar.TFrame")
+        search.pack(fill="x")
+        entry = self.entry = ttk.Entry(search, textvariable=self.query)
+        entry.pack(fill="x")
         entry.bind("<Return>", lambda _: self.copy_first())
         entry.bind("<Escape>", lambda _: self.set_query(""))
+        # A placeholder (ttk has none): shown while the box is empty.
+        self.placeholder = ttk.Label(
+            search,
+            text="Search your clipboard   ·   Enter copies the top result",
+            style="Placeholder.TLabel",
+        )
+        self.placeholder.bind("<Button-1>", lambda _: entry.focus_set())
+        self._show_placeholder()
         entry.focus_set()
-        chips = ttk.Frame(frame)
-        chips.pack(fill="x", pady=(0, 10))
+        chips = ttk.Frame(bar, style="Toolbar.TFrame")
+        chips.pack(fill="x", pady=(8, 0))
         self._chips = {}
         for name, label in FILTERS:
             chip = ttk.Button(
                 chips,
                 text=label,
                 style="Small.TButton",
+                takefocus=False,
                 command=functools.partial(self.set_filter, name),
             )
-            chip.pack(side="left", padx=(0, 6))
+            chip.pack(side="left", padx=(0, 4))
             self._chips[name] = chip
+        # Beside the filters, so it is never below a long list.
+        self.clear_button = ttk.Button(
+            chips, text="Clear history", style="Small.TButton", command=self.clear
+        )
+        self.count_label = ttk.Label(chips, style="Hint.TLabel")
+        self.count_label.pack(side="right", padx=(0, 8))
+        frame = self.app.frame
+        self.banner = ttk.Frame(frame)
+        self.banner.pack(fill="x")
         self.list_frame = ttk.Frame(frame)
         self.list_frame.pack(fill="x")
+        self.card: tk.Frame | None = None
         self.footer = ttk.Frame(frame)
-        self.footer.pack(fill="x", pady=(10, 0))
+        self.footer.pack(fill="x", pady=(8, 0))
         self.reload()
+
+    def fit(self, width: int) -> None:
+        """Below this width the item count would push the filters off the row."""
+        if width < 600:
+            self.count_label.pack_forget()
+        elif not self.count_label.winfo_manager():
+            if self.clear_button.winfo_manager():
+                self.count_label.pack(side="right", padx=(0, 8), after=self.clear_button)
+            else:
+                self.count_label.pack(side="right", padx=(0, 8))
+
+    def _show_placeholder(self) -> None:
+        if self.query.get():
+            self.placeholder.place_forget()
+        else:
+            self.placeholder.place(in_=self.entry, x=8, rely=0.5, anchor="w")
 
     def focus_search(self) -> None:
         """Ready to type a search, with any earlier one selected so typing replaces it."""
@@ -114,6 +147,11 @@ class ClipboardPage:
         self.entry.icursor("end")
 
     # -- searching ---------------------------------------------------------
+    def _query_changed(self) -> None:
+        if hasattr(self, "placeholder"):
+            self._show_placeholder()
+        self._schedule_search()
+
     def _schedule_search(self) -> None:
         if self.pending_search is not None:
             self.app.root.after_cancel(self.pending_search)
@@ -164,6 +202,7 @@ class ClipboardPage:
         for child in self.banner.winfo_children() + self.list_frame.winfo_children():
             child.destroy()
         self.rows = []
+        self.card = None
         for name, chip in self._chips.items():
             chip.configure(
                 style="Small.Primary.TButton" if name == self.filter else "Small.TButton"
@@ -199,11 +238,18 @@ class ClipboardPage:
         if shown >= self.limit:
             ttk.Button(
                 self.footer, text="Load more", style="Small.TButton", command=self.load_more
-            ).pack(side="left")
-        if self.store.count():
-            ttk.Button(
-                self.footer, text="Clear history", style="Small.TButton", command=self.clear
-            ).pack(side="right")
+            ).pack()
+        total = self.store.count()
+        self.count_label.configure(text=f"{total} item{'s' if total != 1 else ''}" if total else "")
+        if total:
+            if not self.clear_button.winfo_manager():
+                # Rightmost: packed ahead of the count when the count is shown.
+                if self.count_label.winfo_manager():
+                    self.clear_button.pack(side="right", before=self.count_label)
+                else:
+                    self.clear_button.pack(side="right")
+        else:
+            self.clear_button.pack_forget()
 
     def load_more(self) -> None:
         """Add the next page below the rows already drawn instead of redrawing them all."""
@@ -216,54 +262,102 @@ class ClipboardPage:
         self._finish(len(items))
 
     # -- rows --------------------------------------------------------------
+    def _list_card(self) -> tk.Frame:
+        """One outlined white panel holding every row, with hairlines between them."""
+        if self.card is None or not self.card.winfo_exists():
+            colors = self.app.colors
+            self.card = tk.Frame(self.list_frame, background=colors["border"], padx=1)
+            self.card.pack(fill="x")
+            tk.Frame(self.card, height=1, background=colors["border"]).pack(side="bottom", fill="x")
+        return self.card
+
     def _add_row(self, item: clipstore.Item) -> None:
-        body = self.app.bordered(self.list_frame)
-        info = ttk.Frame(body, style="Card.TFrame", cursor="hand2")
-        info.pack(side="left", fill="x", expand=True)
-        clickable: list[tk.Misc] = [info]
+        colors, fonts = self.app.colors, self.app.fonts
+        surface = colors["surface"]
+        row = tk.Frame(self._list_card(), background=surface, padx=12, pady=7, cursor="hand2")
+        row.pack(fill="x", pady=(1, 0))
+        painted: list[tk.Misc] = [row]  # Recolored on hover.
+        clickable: list[tk.Misc] = [row]  # A click copies the item.
         if item.kind == "image":
             photo = self._thumbnail(item)
             if photo is not None:
-                picture = ttk.Label(info, image=photo, style="Card.TLabel", cursor="hand2")
-                picture.pack(anchor="w")
+                picture = tk.Label(row, image=photo, background=surface, cursor="hand2")
+                picture.pack(side="left", padx=(0, 10))
+                painted.append(picture)
                 clickable.append(picture)
             text = f"Image {item.width}×{item.height}"
         else:
             text = preview(item.text)
-        label = ttk.Label(
+        actions = tk.Frame(row, background=surface)
+        actions.pack(side="right", padx=(10, 0))
+        info = tk.Frame(row, background=surface, cursor="hand2")
+        info.pack(side="left", fill="x", expand=True)
+        label = tk.Label(
             info,
             text=text,
-            style="Card.TLabel",
-            wraplength=self.app.wraplength - 250,
+            background=surface,
+            foreground=colors["text"],
+            font=fonts["body"],
+            justify="left",
+            anchor="w",
+            wraplength=self.app.wraplength - 170,
             cursor="hand2",
         )
-        label.pack(anchor="w")
+        label.pack(anchor="w", fill="x")
         meta = f"{relative_time(item.created_at, self._clock())} · {SOURCES.get(item.source, item.source)}"
-        hint = ttk.Label(info, text=meta, style="CardHint.TLabel", cursor="hand2")
-        hint.pack(anchor="w")
-        for widget in (*clickable, label, hint):
-            widget.bind("<Button-1>", lambda _: self.copy(item.id))
-        actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(side="right")
-        star = ttk.Button(
-            actions,
-            text="★" if item.favorite else "☆",
-            width=3,
-            style="Small.TButton",
-            command=lambda: self.toggle_favorite(item.id),
+        hint = tk.Label(
+            info,
+            text=meta,
+            background=surface,
+            foreground=colors["muted"],
+            font=fonts["small"],
+            cursor="hand2",
         )
-        star.pack(side="left", padx=2)
-        ttk.Button(
-            actions, text="Copy", width=6, style="Small.TButton", command=lambda: self.copy(item.id)
-        ).pack(side="left", padx=2)
-        ttk.Button(
-            actions,
-            text="Delete",
-            width=7,
-            style="Small.TButton",
-            command=lambda: self.delete(item.id),
-        ).pack(side="left", padx=2)
-        self.rows.append(Row(item, body.master, star))
+        hint.pack(anchor="w")
+        painted += [actions, info, label, hint]
+        clickable += [info, label, hint]
+        for widget in clickable:
+            widget.bind("<Button-1>", lambda _: self.copy(item.id))
+        star = self._action(actions, "★" if item.favorite else "☆", colors["star"], "icon")
+        star.bind("<Button-1>", lambda _: self.toggle_favorite(item.id))
+        copy = self._action(actions, "Copy", colors["accent"])
+        copy.bind("<Button-1>", lambda _: self.copy(item.id))
+        delete = self._action(actions, "Delete", colors["muted"], hover=colors["danger"])
+        delete.bind("<Button-1>", lambda _: self.delete(item.id))
+        painted += [star, copy, delete]
+
+        def paint(color: str) -> None:
+            for widget in painted:
+                widget.configure(background=color)  # type: ignore[call-arg]
+
+        def left(_: object) -> None:
+            # Moving onto a child also "leaves" the row: only repaint once really out.
+            under = self.app.root.winfo_containing(*self.app.root.winfo_pointerxy())
+            if under is None or not str(under).startswith(str(row)):
+                paint(surface)
+
+        row.bind("<Enter>", lambda _: paint(colors["hover"]))
+        row.bind("<Leave>", left)
+        self.rows.append(Row(item, row, star))
+
+    def _action(
+        self, parent: tk.Misc, text: str, color: str, font: str = "small", hover: str = ""
+    ) -> tk.Label:
+        """A light text button for a row; darker (or `hover`) under the pointer."""
+        colors = self.app.colors
+        link = tk.Label(
+            parent,
+            text=text,
+            foreground=color,
+            background=colors["surface"],
+            font=self.app.fonts[font],
+            cursor="hand2",
+            padx=6,
+        )
+        link.pack(side="left")
+        link.bind("<Enter>", lambda _: link.configure(foreground=hover or colors["text"]))
+        link.bind("<Leave>", lambda _: link.configure(foreground=color))
+        return link
 
     def _thumbnail(self, item: clipstore.Item) -> tk.PhotoImage | None:
         if item.image_file in self._thumbs:

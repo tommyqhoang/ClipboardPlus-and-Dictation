@@ -44,6 +44,10 @@ DANGER = "#c93a2e"
 DANGER_ACTIVE = "#a82e24"
 WARNING = "#c98a12"
 IDLE = "#9aa8b3"
+HOVER = "#eef5f4"  # A list row under the pointer.
+PAD = 20  # The page's side padding.
+# Pages reached from the header tabs once setup is done; they need no big title.
+TAB_PAGES = ("home", "clipboard", "settings")
 
 
 class App:
@@ -65,16 +69,16 @@ class App:
         self.rewrap_timer: str | None = None
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        width = min(720, max(360, screen_width - 80))
-        height = min(700, max(360, screen_height - 100))
+        width = min(780, max(360, screen_width - 80))
+        height = min(640, max(360, screen_height - 100))
         saved = self.saved_size()
         if saved is not None:
             # The size the user left it at, as long as it still fits this screen.
             width = max(360, min(saved[0], screen_width - 40))
             height = max(360, min(saved[1], screen_height - 60))
-        self.wraplength = max(260, width - 110)
+        self.wraplength = max(260, width - 2 * PAD - 30)
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(min(520, width), min(460, height))
+        self.root.minsize(min(480, width), min(400, height))
         self.root.configure(background=BACKGROUND)
         self.icon = self.load_icon()
         if self.icon is not None:
@@ -83,7 +87,9 @@ class App:
         self.styles()
         self.header()
         self.bottom_bar()
-        container = ttk.Frame(root)
+        # Fixed controls above the scrolling page (the clipboard search stays in view).
+        self.toolbar = ttk.Frame(root)
+        container = self.container = ttk.Frame(root)
         container.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(
             container,
@@ -95,7 +101,7 @@ class App:
         self.scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scroll)
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.frame = ttk.Frame(self.canvas, padding=(36, 28, 36, 28))
+        self.frame = ttk.Frame(self.canvas, padding=(PAD, 14, PAD, 20))
         self.frame_window = self.canvas.create_window((0, 0), window=self.frame, anchor="nw")
         self.frame.bind("<Configure>", self.resize_scroll_region)
         self.canvas.bind("<Configure>", self.resize_content)
@@ -106,6 +112,15 @@ class App:
         for key, action in (("f", self.find), ("comma", self.go_settings), ("w", self.close)):
             self.root.bind_all(
                 f"<{command}-{key}>", functools.partial(self.on_key, action), add="+"
+            )
+        for key, amount, what in (
+            ("Prior", -1, "pages"),
+            ("Next", 1, "pages"),
+            ("Home", -1, "end"),
+            ("End", 1, "end"),
+        ):
+            self.root.bind_all(
+                f"<{key}>", functools.partial(self.scroll_key, amount, what), add="+"
             )
         self.language = tk.StringVar(value="English")
         self.device = tk.StringVar(value="default")
@@ -164,15 +179,31 @@ class App:
             return None
 
     def styles(self) -> None:
-        family = font.nametofont("TkDefaultFont").actual("family")
+        system = font.nametofont("TkDefaultFont").actual()
+        family = str(system["family"])
+        # Follow the desktop's own text size (and its display scaling) instead of fixed,
+        # oversized points: 13 on a Mac, about 10 on Linux and 9 on Windows.
+        base = max(9, min(13, abs(int(system["size"])) or 10))
         self.fonts: dict[str, tuple[str, int, str]] = {
-            "title": (family, 22, "bold"),
-            "heading": (family, 14, "bold"),
-            "body": (family, 13, "normal"),
-            "small": (family, 11, "normal"),
-            "brand": (family, 13, "bold"),
-            "badge": (family, 12, "bold"),
-            "record": (family, 15, "bold"),
+            "title": (family, base + 5, "bold"),
+            "heading": (family, base + 1, "bold"),
+            "body": (family, base, "normal"),
+            "small": (family, max(8, base - 1), "normal"),
+            "brand": (family, base + 1, "bold"),
+            "badge": (family, base, "bold"),
+            "record": (family, base + 2, "bold"),
+            "icon": (family, base + 3, "normal"),
+        }
+        # For widgets drawn outside ttk (the clipboard list), whose rows change on hover.
+        self.colors = {
+            "surface": SURFACE,
+            "hover": HOVER,
+            "border": BORDER,
+            "text": TEXT,
+            "muted": MUTED,
+            "accent": ACCENT,
+            "danger": DANGER,
+            "star": WARNING,
         }
         style = ttk.Style(self.root)
         style.theme_use("clam")
@@ -217,7 +248,7 @@ class App:
             lightcolor=SURFACE,
             darkcolor=SURFACE,
             arrowcolor=MUTED,
-            padding=6,
+            padding=4,
         )
         style.map("TCombobox", fieldbackground=[("readonly", SURFACE)])
         style.configure(
@@ -226,7 +257,7 @@ class App:
             bordercolor=BORDER,
             lightcolor=SURFACE,
             darkcolor=SURFACE,
-            padding=6,
+            padding=5,
         )
         style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
         buttons = {
@@ -245,7 +276,7 @@ class App:
                 focuscolor=fill,
                 relief="solid",
                 borderwidth=1,
-                padding=(18, 10),
+                padding=(12, 5),
                 font=self.fonts["body"],
             )
             style.map(
@@ -257,11 +288,61 @@ class App:
                 foreground=[("disabled", "#9fb0bc" if fill == SURFACE else "white")],
             )
         # Compact buttons for dense lists (clipboard rows, filters).
-        style.configure("Small.TButton", padding=(10, 4), font=self.fonts["body"])
-        style.configure("Small.Primary.TButton", padding=(10, 4), font=self.fonts["body"])
+        # The theme's buttons are at least 11 characters wide; small ones fit their words.
+        for name in ("Small.TButton", "Small.Primary.TButton", "Small.Danger.TButton"):
+            style.configure(name, padding=(10, 2), font=self.fonts["small"], width=-6)
         # Idle Record is neutral: the shortcut, not this button, is the main way in.
         for name in ("", "Primary.", "Danger."):
-            style.configure(f"Record.{name}TButton", padding=(24, 16), font=self.fonts["record"])
+            style.configure(f"Record.{name}TButton", padding=(18, 10), font=self.fonts["record"])
+        # Header tabs: quiet text, the current one filled.
+        style.configure(
+            "Tab.TButton",
+            background=SURFACE,
+            foreground=MUTED,
+            bordercolor=SURFACE,
+            lightcolor=SURFACE,
+            darkcolor=SURFACE,
+            focuscolor=SURFACE,
+            relief="flat",
+            padding=(12, 4),
+            font=self.fonts["body"],
+        )
+        style.map(
+            "Tab.TButton",
+            background=[("active", ACCENT_SOFT)],
+            lightcolor=[("active", ACCENT_SOFT)],
+            darkcolor=[("active", ACCENT_SOFT)],
+            bordercolor=[("active", ACCENT_SOFT)],
+            foreground=[("active", ACCENT)],
+        )
+        style.configure(
+            "Tab.Current.TButton",
+            background=ACCENT_SOFT,
+            foreground=ACCENT,
+            bordercolor=ACCENT_SOFT,
+            lightcolor=ACCENT_SOFT,
+            darkcolor=ACCENT_SOFT,
+            focuscolor=ACCENT_SOFT,
+            relief="flat",
+            padding=(12, 4),
+            font=self.fonts["brand"],
+        )
+        style.configure("Toolbar.TFrame", background=BACKGROUND)
+        style.configure(
+            "Card.TCheckbutton",
+            background=SURFACE,
+            foreground=TEXT,
+            font=self.fonts["body"],
+            indicatorbackground=SURFACE,
+        )
+        style.map(
+            "Card.TCheckbutton",
+            background=[("active", SURFACE)],
+            indicatorcolor=[("selected", ACCENT)],
+        )
+        style.configure(
+            "Placeholder.TLabel", background=SURFACE, foreground=IDLE, font=self.fonts["body"]
+        )
         style.configure(
             "Link.TButton",
             background=BACKGROUND,
@@ -299,24 +380,32 @@ class App:
         )
 
     def header(self) -> None:
-        bar = ttk.Frame(self.root, style="Header.TFrame", padding=(20, 12))
+        """Brand on the left; the tabs (or the setup step) on the right. Always in view."""
+        bar = ttk.Frame(self.root, style="Header.TFrame", padding=(PAD - 4, 8))
         bar.pack(fill="x")
+        # Packed first so a narrow window clips the name, never the tabs.
+        self.nav = ttk.Frame(bar, style="Header.TFrame")
+        self.nav.pack(side="right")
+        self.step = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self.step, style="Step.TLabel").pack(side="right")
         brand = ttk.Frame(bar, style="Header.TFrame")
         brand.pack(side="left")
         if self.icon is not None:
-            self.header_icon = self.icon.subsample(8)
+            self.header_icon = self.icon.subsample(max(1, self.icon.width() // 24))
             ttk.Label(brand, image=self.header_icon, style="Brand.TLabel").pack(
-                side="left", padx=(0, 10)
+                side="left", padx=(0, 8)
             )
-        ttk.Label(brand, text=hotkeys.APP_NAME, style="Brand.TLabel").pack(side="left")
-        self.step = tk.StringVar(value="")
-        ttk.Label(bar, textvariable=self.step, style="Step.TLabel").pack(side="right")
+        self.brand = ttk.Label(brand, text=hotkeys.APP_NAME, style="Brand.TLabel")
+        self.brand.pack(side="left")
         tk.Frame(self.root, height=1, background=BORDER).pack(fill="x")
 
     def bottom_bar(self) -> None:
-        tk.Frame(self.root, height=1, background=BORDER).pack(side="bottom", fill="x")
-        bar = ttk.Frame(self.root, style="Header.TFrame", padding=(24, 14))
-        bar.pack(side="bottom", fill="x", before=self.root.pack_slaves()[-1])
+        """Actions and status. Hidden while it has nothing to show, to give the page room."""
+        self.bottom = tk.Frame(self.root, background=BORDER)
+        tk.Frame(self.bottom, height=1, background=BORDER).pack(fill="x")
+        bar = ttk.Frame(self.bottom, style="Header.TFrame", padding=(PAD, 8))
+        bar.pack(fill="x")
+        self.status.trace_add("write", lambda *_: self.update_bottom())
         self.bar_actions = ttk.Frame(bar, style="Header.TFrame")
         self.bar_actions.pack(side="right")
         self.bar_info = ttk.Frame(bar, style="Header.TFrame")
@@ -329,6 +418,32 @@ class App:
             style="Step.TLabel",
         )
         self.status_label.pack(anchor="w")
+
+    def show_toolbar(self, padding: tuple[int, int, int, int]) -> ttk.Frame:
+        """The fixed area above the scrolling page, for this page's controls."""
+        self.toolbar.configure(padding=padding)
+        self.toolbar.pack(fill="x", before=self.container)
+        return self.toolbar
+
+    def update_bottom(self) -> None:
+        wanted = bool(
+            self.bar_actions.winfo_children() or self.status.get() or self.progress.winfo_manager()
+        )
+        if wanted and not self.bottom.winfo_manager():
+            self.bottom.pack(side="bottom", fill="x", before=self.root.pack_slaves()[0])
+        elif not wanted and self.bottom.winfo_manager():
+            self.bottom.pack_forget()
+
+    def scroll_key(self, amount: int, what: str, event: tk.Event[Any]) -> str | None:
+        """Page Up/Down, Home and End scroll the page, except while typing in a field."""
+        widget = event.widget
+        if isinstance(widget, (ttk.Entry, tk.Entry, tk.Text)) or not self.scrollbar.winfo_manager():
+            return None
+        if what == "end":
+            self.canvas.yview_moveto(0 if amount < 0 else 1)
+        else:
+            self.canvas.yview_scroll(amount, "pages")
+        return "break"
 
     def scroll(self, first: float, last: float) -> None:
         # Show the scrollbar only when the page is taller than the window.
@@ -373,7 +488,11 @@ class App:
     def rewrap(self, canvas_width: int) -> None:
         """Let every wrapped label follow the window's width (they were sized for the old one)."""
         self.rewrap_timer = None
-        wraplength = max(260, canvas_width - 110)  # As at start: the page's padding, and air.
+        # A narrow window keeps the icon and the tabs; the full name no longer fits.
+        self.brand.configure(text=hotkeys.APP_NAME if canvas_width >= 700 else "")
+        if self.clipboard_page is not None and self.page == "clipboard":
+            self.clipboard_page.fit(canvas_width)
+        wraplength = max(260, canvas_width - 2 * PAD - 30)  # As at start: padding and air.
         change = wraplength - self.wraplength
         if not change:
             return
@@ -382,7 +501,7 @@ class App:
         while stack:
             widget = stack.pop()
             stack.extend(widget.winfo_children())
-            if widget.winfo_class() == "TLabel":
+            if widget.winfo_class() in ("TLabel", "Label"):
                 current = int(str(widget.cget("wraplength") or 0))
                 if current > 0:
                     widget.configure(wraplength=max(120, current + change))  # type: ignore[call-arg]
@@ -394,30 +513,38 @@ class App:
         self.page = page
         self.buttons = []
         self.account = None
-        for child in self.frame.winfo_children():
-            child.destroy()
-        for child in self.bar_actions.winfo_children():
-            child.destroy()
+        for area in (self.frame, self.bar_actions, self.toolbar, self.nav):
+            for child in area.winfo_children():
+                child.destroy()
+        # An emptied frame keeps its old size in Tk, so the toolbar leaves until used again.
+        self.toolbar.pack_forget()
         self.canvas.yview_moveto(0)
         # Home shows status beside Record; the bar keeps only the progress.
         if page == "home":
             self.status_label.pack_forget()
         elif not self.status_label.winfo_manager():
             self.status_label.pack(anchor="w")
-        self.step.set(step)
-        if page in ("home", "clipboard", "settings") and self.service.completed():
+        tabs = page in TAB_PAGES and self.service.completed()
+        self.step.set("" if tabs else step)
+        if tabs:
             self.draw_tabs(page)
-        ttk.Label(self.frame, text=title, style="Title.TLabel").pack(anchor="w", pady=(0, 6))
-        ttk.Label(
-            self.frame, text=subtitle, wraplength=self.wraplength, style="Subtitle.TLabel"
-        ).pack(anchor="w", pady=(0, 20))
+        if title:
+            ttk.Label(
+                self.frame, text=title, style="Title.TLabel", wraplength=self.wraplength
+            ).pack(anchor="w", pady=(0, 4))
+        if subtitle:
+            ttk.Label(
+                self.frame, text=subtitle, wraplength=self.wraplength, style="Subtitle.TLabel"
+            ).pack(anchor="w", pady=(0, 14))
         self.status.set("")
+        # The page fills the bar after this; show or hide it once it has.
+        self.root.after_idle(self.update_bottom)
 
     def bordered(self, parent: tk.Misc, pady: tuple[int, int] = (0, 8)) -> ttk.Frame:
         """A white, outlined panel inside `parent`."""
         outline = tk.Frame(parent, background=BORDER, padx=1, pady=1)
         outline.pack(fill="x", pady=pady)
-        body = ttk.Frame(outline, style="Card.TFrame", padding=(16, 10))
+        body = ttk.Frame(outline, style="Card.TFrame", padding=(12, 8))
         body.pack(fill="both", expand=True)
         return body
 
@@ -441,21 +568,19 @@ class App:
             self.settings()
 
     def draw_tabs(self, current: str) -> None:
-        names = self.tab_names()
-        row = ttk.Frame(self.frame)
-        row.pack(fill="x", pady=(0, 14))
         active = "dictation" if current == "home" else current
         labels = {"clipboard": "Clipboard", "dictation": "Dictation", "settings": "Settings"}
-        for name in names:
+        for name in self.tab_names():
             ttk.Button(
-                row,
+                self.nav,
                 text=labels[name],
                 command=functools.partial(self.tab, name),
-                style="Primary.TButton" if name == active else "TButton",
-            ).pack(side="left", padx=(0, 8))
+                style="Tab.Current.TButton" if name == active else "Tab.TButton",
+                takefocus=False,
+            ).pack(side="left", padx=(4, 0))
 
     def clipboard(self) -> None:
-        self.reset("clipboard", "Clipboard", "Everything you copy, kept on this computer.")
+        self.reset("clipboard", "", "")
         if self.clipboard_store is None:
             self.clipboard_store = clipstore.Store(self.service.paths.clipboard)
         self.clipboard_page = clipui.ClipboardPage(self, self.clipboard_store)
@@ -490,15 +615,15 @@ class App:
 
     def card(self, heading: str = "", hint: str = "") -> ttk.Frame:
         outline = tk.Frame(self.frame, background=BORDER, padx=1, pady=1)
-        outline.pack(fill="x", pady=(0, 16))
-        body = ttk.Frame(outline, style="Card.TFrame", padding=(22, 16))
+        outline.pack(fill="x", pady=(0, 10))
+        body = ttk.Frame(outline, style="Card.TFrame", padding=(16, 12))
         body.pack(fill="both", expand=True)
         if heading:
             ttk.Label(body, text=heading, style="CardHeading.TLabel").pack(anchor="w")
         if hint:
             ttk.Label(
-                body, text=hint, style="CardHint.TLabel", wraplength=self.wraplength - 50
-            ).pack(anchor="w", pady=(2, 12))
+                body, text=hint, style="CardHint.TLabel", wraplength=self.wraplength - 40
+            ).pack(anchor="w", pady=(1, 8))
         return body
 
     def steps(self, parent: ttk.Frame, items: list[tuple[str, str]]) -> None:
@@ -691,7 +816,11 @@ class App:
         ttk.Checkbutton(
             card, text="Save images", variable=images, style="Card.TCheckbutton", command=save
         ).pack(anchor="w", pady=(10, 0))
-        self.button("Delete all clipboard data", self.delete_clipboard_data, parent=card)
+        row = ttk.Frame(card, style="Card.TFrame")
+        row.pack(fill="x", pady=(10, 0))
+        self.button(
+            "Delete all clipboard data", self.delete_clipboard_data, parent=row, side="left"
+        )
 
     def delete_clipboard_data(self) -> None:
         if messagebox.askyesno(
@@ -759,7 +888,7 @@ class App:
             ).pack(anchor="w", pady=(6, 0))
 
     def clipboard_settings(self) -> None:
-        self.reset("settings", "Settings", "Clipboard history and your account.")
+        self.reset("settings", "", "")
         self.features_card()
         if self.service.completed():
             self.shortcuts_card()
@@ -809,7 +938,7 @@ class App:
                 "Step 1 of 2",
             )
         else:
-            self.reset("settings", "Settings", "Dictation, clipboard history and your account.")
+            self.reset("settings", "", "")
         config = d.Config(self.service.paths)
         self.language.set(
             "English" if config.s("language") == "en" else "Multilingual / auto-detect"
@@ -832,7 +961,7 @@ class App:
                 list(PROVIDERS)[-1] if remote else next(iter(PROVIDERS)),
             )
         )
-        voice = self.card()
+        voice = self.card("Dictation")
         ttk.Label(voice, text="Language", style="Card.TLabel").pack(anchor="w")
         ttk.Combobox(
             voice,
@@ -1199,7 +1328,7 @@ class App:
         outline.pack(fill="both", expand=True, pady=(4, 10))
         self.transcript = tk.Text(
             outline,
-            height=8,
+            height=6,
             wrap="word",
             font=self.fonts["body"],
             background=SURFACE,
@@ -1227,9 +1356,6 @@ class App:
         self.buttons.extend([self.copy, self.retry, self.discard])
         self.help_button = self.button(
             "How it works", self.tutorial, parent=self.bar_actions, side="right"
-        )
-        self.settings_button = self.button(
-            "Settings", self.settings, parent=self.bar_actions, side="right"
         )
 
     def show_transcript(self, text: str) -> None:
@@ -1269,6 +1395,7 @@ class App:
         else:
             self.progress.pack(fill="x", pady=(2, 8))
         self.progress.start(15)
+        self.update_bottom()
         self.done = done
         self.pending = self.executor.submit(work)
 
@@ -1304,8 +1431,7 @@ class App:
         self.cancel.state(["!disabled"] if recording else ["disabled"])
         for button in (self.retry, self.discard):
             button.state(["!disabled"] if retained and not active else ["disabled"])
-        for button in (self.settings_button, self.help_button):
-            button.state(["disabled"] if active else ["!disabled"])
+        self.help_button.state(["disabled"] if active else ["!disabled"])
         self.copy.state(["!disabled"] if self.service.paths.text.exists() else ["disabled"])
         color = ACCENT
         if active:
@@ -1419,6 +1545,7 @@ class App:
                 self.download = (0, 0)
                 self.progress.stop()
                 self.progress.pack_forget()
+                self.update_bottom()
                 for button in self.buttons:
                     button.state(["!disabled"])
                 done, self.done = self.done, lambda _: None
