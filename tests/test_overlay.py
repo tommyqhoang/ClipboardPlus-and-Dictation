@@ -209,6 +209,15 @@ class OverlayWindowTests(unittest.TestCase):
         self.pill._click(Mock(x=5, y=5))  # Not on a button: nothing happens.
         self.assertEqual(len(self.launched), 2)
 
+    def test_an_error_gets_room_for_its_message_and_a_click_dismisses_it(self):
+        long = "The microphone stopped. Your audio is saved: open the app to retry. " * 2
+        self.state("error", message=long.strip())
+        self.frames(0.3)
+        self.assertEqual(self.pill.height, overlay.DRAFT_HEIGHT)
+        self.assertGreater(len(self.pill._words(self.now)[1]), 100)
+        self.pill._click(Mock(x=5, y=5))
+        self.assertTrue(self.pill.closed)
+
     def test_errors_show_their_message_and_another_session_closes_it(self):
         self.state("error", message="Microphone could not start.")
         self.frames(0.3)

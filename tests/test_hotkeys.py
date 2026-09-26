@@ -70,7 +70,7 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(hotkeys.from_mac_event(200, 0, "é").key, "É")
         self.assertIsNone(hotkeys.from_tk("Control_L", set()))
         self.assertEqual(hotkeys.from_tk("d", {"cmd", "shift"}), hotkeys.default_shortcut("linux"))
-        self.assertEqual(hotkeys.from_tk("space", {"alt"}), hotkeys.PRESETS[1])
+        self.assertEqual(hotkeys.from_tk("space", {"alt"}), hotkeys.Shortcut(("alt",), "Space"))
         self.assertEqual(hotkeys.from_tk("F9", set()).key, "F9")
 
     def test_preferences_round_trip_and_fallbacks(self):
@@ -145,6 +145,74 @@ class HotkeyTests(unittest.TestCase):
             self.assertFalse(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/t"), failing))
         with patch.object(hotkeys.shutil, "which", return_value=None):
             self.assertFalse(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/t")))
+
+    def gsettings(self, custom, built_in=""):
+        """A fake gsettings: custom shortcuts {path: (name, binding)} and built-in listings."""
+
+        def run(args, **_):
+            command = args[1:]
+            if command[0] == "get" and command[1:] == list(hotkeys.GNOME_LIST):
+                return Mock(returncode=0, stdout=str(list(custom)))
+            if command[0] == "get":
+                path = command[1].split(":", 1)[1]
+                name, binding = custom[path]
+                return Mock(returncode=0, stdout=repr(binding if command[2] == "binding" else name))
+            if command[0] == "list-recursively":
+                return Mock(
+                    returncode=0, stdout=built_in if command[1].endswith("wm.keybindings") else ""
+                )
+            return Mock(returncode=0, stdout="")
+
+        return run
+
+    def test_another_shortcut_on_the_same_keys_is_found(self):
+        old = hotkeys.GNOME_LIST_PREFIX + "custom0/"
+        custom = {
+            hotkeys.GNOME_PATH: ("Clipboard+ Desktop", "<Shift><Super>d"),
+            old: ("Whisper Dictation", "<Super><Shift>D"),  # Other order and case: same keys.
+        }
+        built_in = (
+            "org.gnome.desktop.wm.keybindings activate-window-menu ['<Alt>space']\n"
+            "org.gnome.desktop.wm.keybindings close ['<Primary>q', '<Alt>F4']"
+        )
+        run = self.gsettings(custom, built_in)
+        with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
+            found = hotkeys.gnome_conflict(hotkeys.DEFAULT, hotkeys.GNOME_PATH, run)
+            self.assertEqual(found, hotkeys.Conflict("Whisper Dictation", old))
+            window_menu = hotkeys.gnome_conflict(
+                hotkeys.Shortcut(("alt",), "Space"), hotkeys.GNOME_PATH, run
+            )
+            self.assertIn("activate window menu", window_menu.name)
+            self.assertEqual(window_menu.path, "")
+            quit_key = hotkeys.gnome_conflict(
+                hotkeys.Shortcut(("ctrl",), "Q"), hotkeys.GNOME_PATH, run
+            )
+            self.assertIn("close", quit_key.name)  # <Primary> is Ctrl.
+            free = hotkeys.Shortcut(("ctrl", "alt"), "Space")
+            self.assertIsNone(hotkeys.gnome_conflict(free, hotkeys.GNOME_PATH, run))
+        with patch.object(hotkeys.shutil, "which", return_value=None):
+            self.assertIsNone(hotkeys.gnome_conflict(hotkeys.DEFAULT, hotkeys.GNOME_PATH, run))
+
+    def test_a_conflict_is_shared_with_the_window_and_can_be_released(self):
+        paths = d.Paths()
+        conflict = hotkeys.Conflict("Whisper Dictation", hotkeys.GNOME_LIST_PREFIX + "custom0/")
+        hotkeys.record_status(paths, True, conflict=conflict)
+        self.assertFalse(hotkeys.shortcut_working(paths))
+        self.assertEqual(hotkeys.shortcut_conflict(paths), conflict)
+        hotkeys.record_status(paths, True)
+        self.assertTrue(hotkeys.shortcut_working(paths))
+        self.assertIsNone(hotkeys.shortcut_conflict(paths))
+        run = Mock(return_value=Mock(returncode=0))
+        with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
+            self.assertTrue(hotkeys.gnome_release(conflict.path, run))
+            self.assertEqual(run.call_args.args[0][-2:], ["binding", ""])
+            self.assertFalse(hotkeys.gnome_release("/org/gnome/desktop/other/", run))
+        self.assertEqual(run.call_count, 1)  # Only custom shortcuts are ever touched.
+
+    def test_alt_space_is_offered_only_where_the_desktop_leaves_it_free(self):
+        alt_space = hotkeys.Shortcut(("alt",), "Space")
+        expected = hotkeys.desktop.platform_name() == "macos"
+        self.assertEqual(alt_space in hotkeys.PRESETS, expected)
 
     def test_the_history_shortcut_has_its_own_gnome_entry_and_command(self):
         calls = []

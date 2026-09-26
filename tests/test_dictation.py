@@ -33,7 +33,7 @@ class DictationTests(unittest.TestCase):
                 "DICTATION_TEST_ROOT": str(self.root),
                 "DICTATION_AUDIO_BACKEND": "alsa",
                 "DICTATION_CLIPBOARD_BACKEND": "wayland",
-                "DICTATION_OVERLAY": "0",  # Notifications are what these tests read.
+                "DICTATION_OVERLAY": "0",  # No pill or app window pops up during these tests.
             }
         )
         for name, variable in (
@@ -131,6 +131,22 @@ class DictationTests(unittest.TestCase):
         (self.root / "fail").unlink()
         self.cli("--transcribe")
         self.assertFalse(self.paths.audio.exists())
+
+    def test_messages_speak_in_app_terms(self):
+        with (
+            patch.object(d.desktop, "available", return_value=True),
+            patch.object(d.subprocess, "run") as run,
+        ):
+            d.notify(None, "Settings unreadable")  # Unreadable settings still notify.
+        self.assertEqual(run.call_args.args[0][-1], "Settings unreadable")
+        (self.root / "copy-fail").touch()
+        with self.assertRaisesRegex(d.DictationError, "Couldn’t put that on the clipboard"):
+            d.copy_text(self.config, self.paths, "history item")
+        self.paths.audio.write_bytes(b"\0" * 3200)
+        with patch.object(d, "open_app") as window:
+            with self.assertRaisesRegex(d.DictationError, "wasn’t transcribed yet"):
+                d.dispatch(self.config, self.paths, "toggle")
+        window.assert_called_once_with(self.config)
 
     def test_busy_does_not_overwrite_audio(self):
         (self.root / "slow").touch()

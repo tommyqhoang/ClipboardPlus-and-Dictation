@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import plistlib
+import re
 import shlex
 import shutil
 import string
@@ -84,11 +85,20 @@ TK_MODIFIERS = {
 CLIPBOARD_PLUS = "https://clipboardplus.apercallc.com"
 AGENT_LABEL = "org.whisperdictation.menubar"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+GNOME_LIST_PREFIX = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/"
 GNOME_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
 GNOME_HISTORY_PATH = (
     "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipboard-history/"
 )
 GNOME_LIST = ("org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings")
+# Where GNOME keeps its own shortcuts; a key used there never reaches a custom binding.
+GNOME_BUILT_IN = (
+    "org.gnome.desktop.wm.keybindings",
+    "org.gnome.shell.keybindings",
+    "org.gnome.settings-daemon.plugins.media-keys",
+    "org.gnome.mutter.keybindings",
+    "org.gnome.mutter.wayland.keybindings",
+)
 
 
 def canonical(modifiers: Any) -> tuple[str, ...]:
@@ -163,7 +173,8 @@ PRESETS = tuple(
     dict.fromkeys(
         (
             DEFAULT,
-            Shortcut(("alt",), "Space"),
+            # Alt+Space opens the window menu on GNOME and Windows, so only macOS offers it.
+            *((Shortcut(("alt",), "Space"),) if desktop.platform_name() == "macos" else ()),
             Shortcut(("ctrl", "alt"), "Space"),
             Shortcut(("ctrl", "shift"), "Space"),
             Shortcut(("ctrl", "alt", "shift"), "D"),
@@ -389,17 +400,106 @@ def set_login_item(
 HISTORY_STATUS = "history-shortcut-status"
 
 
-def record_status(paths: d.Paths, ok: bool, name: str = "shortcut-status") -> None:
+@dataclass(frozen=True)
+class Conflict:
+    """Another shortcut on the same keys, which gets the key press instead of us."""
+
+    name: str  # As the desktop's keyboard settings show it.
+    path: str = ""  # A custom GNOME shortcut we may unbind; "" for the desktop's own.
+
+
+def record_status(
+    paths: d.Paths, ok: bool, name: str = "shortcut-status", conflict: Conflict | None = None
+) -> None:
     """Share whether the tray or menu bar could register a shortcut with the window."""
     d.private_dir(paths.runtime)
-    d.atomic(paths.runtime / name, "ok" if ok else "failed")
+    text = "ok" if ok else "failed"
+    if ok and conflict is not None:
+        text = json.dumps({"conflict": conflict.name, "path": conflict.path})
+    d.atomic(paths.runtime / name, text)
+
+
+def _status(paths: d.Paths, name: str) -> str:
+    try:
+        return (paths.runtime / name).read_text(encoding="utf-8")
+    except OSError:
+        return "ok"
 
 
 def shortcut_working(paths: d.Paths, name: str = "shortcut-status") -> bool:
+    """Registered, and nothing else on the desktop takes the same keys."""
+    status = _status(paths, name)
+    return status != "failed" and shortcut_conflict(paths, name) is None
+
+
+def shortcut_conflict(paths: d.Paths, name: str = "shortcut-status") -> Conflict | None:
+    status = _status(paths, name)
+    if not status.startswith("{"):
+        return None
     try:
-        return (paths.runtime / name).read_text(encoding="utf-8") != "failed"
-    except OSError:
-        return True
+        data = json.loads(status)
+    except ValueError:
+        return None
+    return Conflict(str(data.get("conflict", "")), str(data.get("path", "")))
+
+
+def _accelerator(text: str) -> tuple[frozenset[str], str] | None:
+    """A GNOME accelerator ("<Shift><Super>d") as comparable (modifiers, key)."""
+    names = {"primary": "ctrl", "control": "ctrl", "mod4": "super", "mod1": "alt"}
+    modifiers = frozenset(
+        names.get(part.lower(), part.lower()) for part in re.findall(r"<([^>]+)>", text)
+    )
+    key = re.sub(r"<[^>]+>", "", text).strip().lower()
+    return (modifiers, key) if key else None
+
+
+def gnome_conflict(shortcut: Shortcut, path: str, run: Any = subprocess.run) -> Conflict | None:
+    """The first other GNOME shortcut (custom or built in) on the same keys, if any."""
+    if not shutil.which("gsettings"):
+        return None
+    wanted = _accelerator(shortcut.gnome())
+
+    def gsettings(*args: str) -> str:
+        result = run(["gsettings", *args], capture_output=True, text=True, timeout=10)
+        return str(result.stdout).strip() if not result.returncode else ""
+
+    try:
+        listed = gsettings("get", *GNOME_LIST)
+        for other in re.findall(r"'([^']+)'", listed):
+            if other == path:
+                continue
+            schema = f"{GNOME_LIST[0]}.custom-keybinding:{other}"
+            binding = gsettings("get", schema, "binding").strip("'")
+            if _accelerator(binding) == wanted:
+                name = gsettings("get", schema, "name").strip("'") or "another shortcut"
+                return Conflict(name, other)
+        for schema in GNOME_BUILT_IN:
+            for line in gsettings("list-recursively", schema).splitlines():
+                parts = line.split(" ", 2)
+                if len(parts) < 3:
+                    continue
+                for value in re.findall(r"'([^']*)'", parts[2]):
+                    if _accelerator(value) == wanted:
+                        action = parts[1].replace("-", " ")
+                        return Conflict(f"the desktop’s “{action}” shortcut")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
+def gnome_release(path: str, run: Any = subprocess.run) -> bool:
+    """Unbind another custom GNOME shortcut (its name and command stay, for the user
+    to bind again in the keyboard settings)."""
+    if not path.startswith(GNOME_LIST_PREFIX) or not shutil.which("gsettings"):
+        return False
+    schema = f"{GNOME_LIST[0]}.custom-keybinding:{path}"
+    try:
+        result = run(
+            ["gsettings", "set", schema, "binding", ""], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not result.returncode
 
 
 def _gnome_command(command: Path | list[str]) -> str:

@@ -143,7 +143,8 @@ class TrayTests(unittest.TestCase):
         self.assertTrue(self.item(preset.label()).options["checked"](None))
         taken = hotkeys.PRESETS[2]
         self.tray.hotkey.refuse.add(taken)
-        self.tray.apply(taken)
+        with patch.object(tray.desktop, "platform_name", return_value="windows"):
+            self.tray.apply(taken)
         self.assertEqual(self.tray.shortcut, preset)
         self.assertIn("already in use", self.tray.icon.notifications[-1])
 
@@ -231,11 +232,27 @@ class TrayTests(unittest.TestCase):
         self.assertIn("--clipboard", self.popen.call_args.args[0])
 
     def test_gnome_hotkey_binds_toggle_command(self):
-        with patch.object(hotkeys, "gnome_shortcut", return_value=True) as bind:
+        taken = hotkeys.Conflict("Old dictation", hotkeys.GNOME_LIST_PREFIX + "custom0/")
+        with (
+            patch.object(hotkeys, "gnome_shortcut", return_value=True) as bind,
+            patch.object(hotkeys, "gnome_conflict", return_value=taken),
+        ):
             gnome = tray.GnomeHotKey(lambda: None)
             self.assertTrue(gnome.register(hotkeys.DEFAULT))
+            self.assertEqual(gnome.conflict, taken)
             self.assertTrue(gnome.register(None))
+            self.assertIsNone(gnome.conflict)
         self.assertEqual(bind.call_args.args[1].name, "dictate-toggle")
+
+    def test_a_conflict_is_recorded_and_announced_once(self):
+        taken = hotkeys.Conflict("Old dictation", hotkeys.GNOME_LIST_PREFIX + "custom0/")
+        self.tray.hotkey.conflict = taken
+        self.tray.hotkey_ok = True
+        self.tray.record_dictation()
+        self.tray.record_dictation()
+        self.assertEqual(hotkeys.shortcut_conflict(self.paths), taken)
+        told = [n for n in self.tray.icon.notifications if "Old dictation" in n]
+        self.assertEqual(len(told), 1)
 
     def test_main_refuses_macos(self):
         with patch.object(tray.desktop, "platform_name", return_value="macos"):
@@ -395,10 +412,7 @@ class TrayTests(unittest.TestCase):
 
     def test_registration_result_is_shared_and_explained(self):
         self.tray.hotkey.refuse.add(hotkeys.PRESETS[1])
-        with (
-            patch.object(tray.desktop, "platform_name", return_value="linux"),
-            patch.object(tray.shutil, "which", return_value=None),
-        ):
+        with patch.object(tray.desktop, "platform_name", return_value="linux"):
             self.tray.apply(hotkeys.PRESETS[1])
         self.assertIn("keyboard settings", self.tray.icon.notifications[-1])
         self.tray.apply(hotkeys.PRESETS[2])

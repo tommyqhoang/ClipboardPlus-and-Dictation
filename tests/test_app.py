@@ -30,6 +30,8 @@ class ServiceCase(unittest.TestCase):
                 "XDG_CACHE_HOME": str(self.folder / "cache"),
                 "XDG_RUNTIME_DIR": str(self.folder / "runtime"),
                 "DICTATION_NOTIFY": str(self.folder / "missing-notifier"),
+                # A speech model installed on this computer must not count as set up.
+                "HOME": str(self.folder / "home"),
             },
         )
         environment.start()
@@ -762,6 +764,26 @@ class WindowTests(ServiceCase):
         hotkeys.record_status(self.paths, True)
         self.window.home()
         self.assertTrue(any("to dictate" in text for text in self.texts()))
+
+    def test_home_names_a_shortcut_taken_by_something_else_and_takes_it_back(self):
+        old = hotkeys.Conflict("Whisper Dictation", hotkeys.GNOME_LIST_PREFIX + "custom0/")
+        hotkeys.record_status(self.paths, True, conflict=old)
+        self.window.home()
+        texts = self.texts()
+        self.assertTrue(any("taken by something else" in text for text in texts))
+        self.assertTrue(any("Whisper Dictation also uses" in text for text in texts))
+        take = next(b for b in self.window.buttons if str(b.cget("text")).startswith("Use "))
+        with patch.object(hotkeys, "gnome_release", return_value=True) as release:
+            take.invoke()
+        release.assert_called_once_with(old.path)
+        self.assertTrue(any("to dictate" in text for text in self.texts()))
+        self.assertIsNone(hotkeys.shortcut_conflict(self.paths))
+        # The desktop's own shortcuts are never unbound: only another choice is offered.
+        hotkeys.record_status(self.paths, True, conflict=hotkeys.Conflict("the desktop’s x"))
+        self.window.home()
+        labels = [str(b.cget("text")) for b in self.window.buttons if b.winfo_exists()]
+        self.assertIn("Choose another shortcut", labels)
+        self.assertFalse(any(label.startswith("Use ") for label in labels))
 
     def test_second_launch_focuses_existing_window(self):
         fd = desktop.lock(self.paths.runtime / "app.lock")

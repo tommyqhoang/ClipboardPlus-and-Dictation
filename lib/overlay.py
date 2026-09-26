@@ -35,7 +35,7 @@ FRAME_MS = 33  # About 30 frames a second.
 SAMPLE_RATE = 16_000  # The recorder writes raw 16-bit mono PCM at this rate.
 WINDOW_SAMPLES = 800  # 50 ms of audio per level reading.
 QUIET_DB, LOUD_DB = -55.0, -14.0
-HOLD = {"copied": 1.6, "empty": 2.2, "cancelled": 1.0, "error": 4.5}
+HOLD = {"copied": 1.6, "empty": 2.2, "cancelled": 1.0, "error": 8.0}  # A click dismisses.
 LIFETIME_SECONDS = 1200.0  # A stuck session never leaves the pill up for good.
 
 BACKGROUND = "#13222d"
@@ -220,6 +220,9 @@ class Overlay:
         self.canvas.configure(cursor="hand2" if self.hovered else "")
 
     def _click(self, event: tk.Event[Any]) -> None:
+        if self.ended_at is not None:
+            self.close()  # Read it: a click dismisses the result.
+            return
         name = self._under(event.x, event.y)
         if name:
             engine = str(Path(__file__).resolve().with_name("dictation.py"))
@@ -259,6 +262,8 @@ class Overlay:
             self.started_at = now
         if current.mode in HOLD and self.ended_at is None:
             self.ended_at = now
+        if current.mode == "error" and self.mode != "error":
+            self._place(DRAFT_HEIGHT)  # Room for the whole message.
         self.mode, self.message = current.mode, current.message
         self._read_draft()
 
@@ -344,7 +349,15 @@ class Overlay:
         self._badge(now)
         title, detail = self._words(now)
         canvas.create_text(58, 24, text=title, anchor="w", fill=TEXT, font=self.fonts["title"])
-        canvas.create_text(58, 43, text=detail, anchor="w", fill=MUTED, font=self.fonts["small"])
+        if self.mode == "error":
+            canvas.create_text(
+                58, 36, text=detail, anchor="nw", fill=MUTED, font=self.fonts["small"],
+                width=WIDTH - 76,
+            )  # fmt: skip
+        else:
+            canvas.create_text(
+                58, 43, text=detail, anchor="w", fill=MUTED, font=self.fonts["small"]
+            )
         self._bars()
         for name, (left, top, right, bottom) in self._buttons().items():
             fill = BUTTON_HOVER if self.hovered == name else BUTTON
@@ -415,7 +428,7 @@ class Overlay:
             return "No speech detected", "Your previous transcript is kept"
         if self.mode == "cancelled":
             return "Recording cancelled", "Nothing was transcribed"
-        message = self.message if len(self.message) <= 54 else self.message[:53] + "…"
+        message = self.message if len(self.message) <= 150 else self.message[:149] + "…"
         return "Dictation stopped", message
 
     def _bars(self) -> None:

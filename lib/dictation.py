@@ -194,12 +194,15 @@ class Config:
         if recording:
             commands.append(desktop.recorder_command(self.values)[0])
             if desktop.audio_backend(self.values) == "dshow" and self.s("device") == "default":
-                raise DictationError("Set device to a Windows microphone name from --devices.")
+                raise DictationError(
+                    "Choose your microphone in Clipboard+ Desktop: Settings, Microphone."
+                )
         if self.s("backend") == "local":
             commands.append(self.s("whisper_bin"))
             if not Path(self.s("model")).expanduser().is_file():
                 raise DictationError(
-                    "Local model not found. Set model in config.json or DICTATION_MODEL."
+                    "Dictation isn’t set up yet: the speech model is missing. "
+                    "Open Clipboard+ Desktop to finish setup."
                 )
             if self.s("vad_model") and not Path(self.s("vad_model")).expanduser().is_file():
                 raise DictationError("VAD model not found.")
@@ -229,11 +232,13 @@ class Config:
                 raise DictationError(f"Required executable unavailable: {Path(command).name}")
 
 
-def notify(config: Config, message: str) -> None:
-    command = desktop.notification_command(config.values)
+def notify(config: Config | None, message: str) -> None:
+    """A desktop notification (with default settings when they could not be read)."""
+    values = config.values if config is not None else DEFAULTS
+    command = desktop.notification_command(values)
     if desktop.available(command[0]):
         try:
-            use_stdin = desktop.platform_name() == "windows" and not config.s("notify")
+            use_stdin = desktop.platform_name() == "windows" and not values["notify"]
             subprocess.run(
                 command if use_stdin else command + [message],
                 input=message.encode("utf-8") if use_stdin else None,
@@ -390,7 +395,11 @@ def copy_text(config: Config, paths: Paths, text: str | None = None) -> None:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise DictationError(
-            "Transcript saved, but clipboard copy failed. Retry with Copy transcript (or --copy-last)."
+            "Transcript saved, but clipboard copy failed. Retry with Copy transcript."
+            if text is None
+            else "Couldn’t put that on the clipboard. Check that "
+            + Path(desktop.clipboard_command(config.values)[0]).name
+            + " is installed."
         ) from exc
 
 
@@ -429,6 +438,24 @@ def finish(config: Config, paths: Paths, quiet: bool = False) -> str:
     if not config.b("keep_audio"):
         paths.audio.unlink(missing_ok=True)
     return "copied" if text else "empty"
+
+
+def open_app(config: Config) -> None:
+    """Bring up the app window (it shows the saved recording with Retry and Discard).
+
+    Like the recording pill, it is a window of its own: "overlay": false turns both off.
+    """
+    script = Path(__file__).resolve().with_name("app.py")
+    if not config.b("overlay") or not script.is_file():
+        return
+    with contextlib.suppress(OSError):
+        subprocess.Popen(
+            [overlay_python(), str(script)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **desktop.process_options(detached=True),
+        )
 
 
 def overlay_python() -> str:
@@ -546,7 +573,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
         time.sleep(0.08)
         if recorder.poll() is not None:
             raise DictationError(
-                "Microphone could not start. Check --devices and your OS microphone permission."
+                "Microphone could not start. Choose a microphone in Settings and allow microphone access."
             )
         state("recording")
         shown = overlay_ready(overlay)
@@ -558,11 +585,13 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                 cancelled = control["action"] == "cancel"
                 break
             if interrupted:
-                raise DictationError("Session interrupted; audio retained for --transcribe.")
+                raise DictationError(
+                    "Recording interrupted. Your audio is saved: open the app to retry."
+                )
             if recorder.poll() is not None:
                 if recorder.returncode:
                     raise DictationError(
-                        "Microphone stopped unexpectedly; audio retained for --transcribe."
+                        "The microphone stopped. Your audio is saved: open the app to retry."
                     )
                 break
             if time.monotonic() - started >= config.n("max_seconds"):
@@ -618,7 +647,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
 def dispatch(config: Config, paths: Paths, action: str) -> None:
     command_fd = lock(paths.runtime / "command.lock")
     if command_fd is None:
-        print("Another shortcut action is running.")
+        print("Another shortcut action is running.")  # A double press: nothing to add.
         return
     try:
         if busy(paths):
@@ -637,6 +666,7 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
                 )
                 print("Cancelling…" if action == "cancel" else "Stopping…")
             else:
+                notify(config, "Still transcribing. Your text will be ready in a moment.")
                 print("Dictation is busy; audio is protected until this session finishes.")
             return
         if action == "cancel":
@@ -656,8 +686,11 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
                 atomic(paths.state, json.dumps({"phase": "idle"}))
                 return
             if paths.audio.exists() and paths.audio.stat().st_size:
+                if action in ("toggle", "start"):
+                    open_app(config)
                 raise DictationError(
-                    "Unfinished audio is retained. Use --transcribe to retry or --discard to remove it."
+                    "Your last recording wasn’t transcribed yet. Retry or discard it in "
+                    "Clipboard+ Desktop, then record again. (Or run --transcribe / --discard.)"
                 )
             token = uuid.uuid4().hex
             atomic(paths.state, json.dumps({"phase": "starting", "token": token}))
@@ -814,13 +847,12 @@ def main() -> int:
             )
         return 0
     except (DictationError, OSError, EOFError, subprocess.SubprocessError) as exc:
-        if config is not None:
-            notify(
-                config,
-                str(exc)
-                if isinstance(exc, DictationError)
-                else "Dictation could not access a file or executable.",
-            )
+        notify(
+            config,
+            str(exc)
+            if isinstance(exc, DictationError)
+            else "Dictation could not access a file or executable.",
+        )
         print(
             str(exc)
             if isinstance(exc, DictationError)

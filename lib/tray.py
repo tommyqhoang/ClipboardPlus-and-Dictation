@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -85,9 +84,11 @@ class GnomeHotKey:
     ) -> None:
         self.command = command or HERE.parent / "bin/dictate-toggle"
         self.path, self.name = path, name
+        self.conflict: hotkeys.Conflict | None = None  # Who else has these keys.
 
     def register(self, shortcut: hotkeys.Shortcut | None) -> bool:
         bound = hotkeys.gnome_shortcut(shortcut, self.command, path=self.path, name=self.name)
+        self.conflict = hotkeys.gnome_conflict(shortcut, self.path) if bound and shortcut else None
         return bound or shortcut is None
 
 
@@ -105,6 +106,7 @@ class Tray:
         self.shortcut = self.preferences.shortcut()
         self.stamp = self.preferences.stamp()
         self.hotkey_ok = False
+        self.announced: hotkeys.Conflict | None = None  # Told once per conflict.
         self.suspended = False
         self.running = False
         self.phase = "idle"
@@ -246,16 +248,27 @@ class Tray:
         else:
             self.hotkey_ok = self.hotkey.register(previous)
             self.preferences.save(shortcut=previous)
-            if desktop.platform_name() == "linux" and not shutil.which("gsettings"):
+            if desktop.platform_name() == "linux":
                 self.notify(
-                    "This desktop can’t set shortcuts automatically. Assign one to "
+                    "Couldn’t save the shortcut in this desktop’s settings. Assign one to "
                     "~/.local/bin/dictate-toggle in your keyboard settings."
                 )
             else:
                 self.notify(f"{shortcut.label()} is already in use. Keeping {previous.label()}.")
-        hotkeys.record_status(self.paths, self.hotkey_ok)
+        self.record_dictation()
         self.stamp = self.preferences.stamp()
         self.icon.update_menu()
+
+    def record_dictation(self) -> None:
+        """Tell the window whether the shortcut works, and who else uses its keys."""
+        conflict = getattr(self.hotkey, "conflict", None)
+        hotkeys.record_status(self.paths, self.hotkey_ok, conflict=conflict)
+        announced, self.announced = self.announced, conflict
+        if conflict is not None and conflict != announced:
+            self.notify(
+                f"{self.shortcut.label()} is also used by {conflict.name}, which gets it first. "
+                "Open Clipboard+ Desktop to fix it."
+            )
 
     def toggle_login(self) -> None:
         self.preferences.save(open_at_login=not self.preferences.open_at_login())
@@ -311,7 +324,7 @@ class Tray:
         if self.clip.features().dictation:
             self.hotkey_ok = self.hotkey.register(self.shortcut)
             self.dictation_registered = True
-            hotkeys.record_status(self.paths, self.hotkey_ok)
+            self.record_dictation()
             if not self.hotkey_ok and desktop.platform_name() == "windows":
                 self.notify(f"{self.shortcut.label()} is in use by another app. Pick another.")
         self.history_key = (
@@ -339,7 +352,7 @@ class Tray:
         if wanted and not self.dictation_registered:
             self.hotkey_ok = self.hotkey.register(self.shortcut)
             self.dictation_registered = True
-            hotkeys.record_status(self.paths, self.hotkey_ok)
+            self.record_dictation()
         elif not wanted and self.dictation_registered:
             self.hotkey.register(None)
             self.dictation_registered = False
@@ -351,7 +364,8 @@ class Tray:
             return
         self.history, self.history_synced = wanted, True
         ok = self.history_key.register(wanted)
-        hotkeys.record_status(self.paths, ok, hotkeys.HISTORY_STATUS)
+        conflict = getattr(self.history_key, "conflict", None)
+        hotkeys.record_status(self.paths, ok, hotkeys.HISTORY_STATUS, conflict)
         if not ok and wanted is not None and desktop.platform_name() == "windows":
             self.notify(f"{wanted.label()} is in use by another app. Choose another in Settings.")
 
@@ -387,7 +401,7 @@ class Tray:
             elif was_suspended and self.clip.features().dictation:
                 # The shortcut window closed without a new choice: use the old one again.
                 self.hotkey_ok = self.hotkey.register(self.shortcut)
-                hotkeys.record_status(self.paths, self.hotkey_ok)
+                self.record_dictation()
             self.stamp = self.preferences.stamp()
         try:
             current = workflow.snapshot(self.paths)

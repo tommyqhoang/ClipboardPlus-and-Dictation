@@ -873,7 +873,10 @@ class App:
             )
 
         box.bind("<<ComboboxSelected>>", choose)
-        if current is not None and not hotkeys.shortcut_working(
+        conflict = hotkeys.shortcut_conflict(self.service.paths, hotkeys.HISTORY_STATUS)
+        if current is not None and conflict is not None:
+            self.conflict_note(card, current, conflict, hotkeys.HISTORY_STATUS, self.settings)
+        elif current is not None and not hotkeys.shortcut_working(
             self.service.paths, hotkeys.HISTORY_STATUS
         ):
             problem = (
@@ -886,6 +889,29 @@ class App:
             ttk.Label(
                 card, text=problem, style="CardHint.TLabel", wraplength=self.wraplength - 50
             ).pack(anchor="w", pady=(6, 0))
+
+    def conflict_note(
+        self,
+        parent: tk.Misc,
+        shortcut: hotkeys.Shortcut,
+        conflict: hotkeys.Conflict,
+        status: str,
+        redraw: Callable[[], None],
+    ) -> None:
+        """Explain that another shortcut takes these keys, with a way to take them back."""
+        text = f"{shortcut.label()} is also used by {conflict.name}, which gets it first." + (
+            "" if conflict.path else " Choose another shortcut."
+        )
+        style = "CardHint.TLabel" if str(parent.cget("style")).startswith("Card") else "Hint.TLabel"
+        ttk.Label(parent, text=text, style=style, wraplength=self.wraplength - 50).pack(
+            anchor="w", pady=(6, 0)
+        )
+        if conflict.path:
+            self.button(
+                f"Use {shortcut.label()} here instead",
+                lambda: self.take_over(conflict, status, redraw),
+                parent=parent,
+            ).pack_configure(anchor="w", fill="none", pady=(6, 0))
 
     def clipboard_settings(self) -> None:
         self.reset("settings", "", "")
@@ -1275,7 +1301,14 @@ class App:
         platform = desktop.platform_name()
         paste = "Command\u00a0+\u00a0V" if platform == "macos" else "Ctrl\u00a0+\u00a0V"
         place = {"macos": "menu bar", "windows": "system tray"}.get(platform, "top bar")
-        if hotkeys.shortcut_working(self.service.paths):
+        conflict = hotkeys.shortcut_conflict(self.service.paths)
+        if conflict is not None:
+            title = f"{shortcut} is taken by something else"
+            subtitle = (
+                f"{conflict.name[0].upper() + conflict.name[1:]} also uses {shortcut} and gets it "
+                "first, so dictation doesn’t start. Until you fix it, record from here."
+            )
+        elif hotkeys.shortcut_working(self.service.paths):
             title = f"Press {shortcut} to dictate"
             subtitle = (
                 f"It works in any app: press it, speak, press it again, then paste with {paste}. "
@@ -1294,6 +1327,23 @@ class App:
                 f"{place} icon. Until then, record from here."
             )
         self.reset("home", title, subtitle)
+        if conflict is not None:
+            fixes = ttk.Frame(self.frame)
+            fixes.pack(fill="x", pady=(0, 12))
+            if conflict.path:
+                self.button(
+                    f"Use {shortcut} for dictation",
+                    lambda: self.take_over(conflict),
+                    True,
+                    fixes,
+                    "left",
+                )
+            self.button(
+                "Choose another shortcut",
+                lambda: self.shortcut_page(back=self.home),
+                parent=fixes,
+                side="left",
+            )
         ttk.Label(
             self.frame,
             text="Optional: record from here instead",
@@ -1357,6 +1407,20 @@ class App:
         self.help_button = self.button(
             "How it works", self.tutorial, parent=self.bar_actions, side="right"
         )
+
+    def take_over(
+        self,
+        conflict: hotkeys.Conflict,
+        status: str = "shortcut-status",
+        redraw: Callable[[], None] | None = None,
+    ) -> None:
+        """Unbind the other custom shortcut (kept in the keyboard settings) so ours works."""
+        if hotkeys.gnome_release(conflict.path):
+            hotkeys.record_status(self.service.paths, True, status)
+            (redraw or self.home)()
+            self.status.set(f"Done. The shortcut belongs to {hotkeys.APP_NAME} now.")
+        else:
+            self.status.set("Couldn’t change the keyboard settings. Try your desktop’s settings.")
 
     def show_transcript(self, text: str) -> None:
         self.transcript.configure(state="normal")
