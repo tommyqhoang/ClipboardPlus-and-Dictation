@@ -148,6 +148,39 @@ class CaptureTests(ServiceCase):
         self.assertEqual(self.store.count(), 200)
 
 
+class DiskFullTests(ServiceCase):
+    def test_a_full_disk_while_storing_an_image_is_reported_not_fatal(self):
+        service = self.service(
+            clipwatch.Clip(image_png=make_png()), clipwatch.Clip(text="still captured")
+        )
+        with patch.object(self.store, "add_image", side_effect=OSError(28, "No space left")):
+            self.assertFalse(service.step(0))  # Tells the loop to pause before retrying.
+        status = clipservice.read_status(self.paths, lambda: self.now)
+        self.assertEqual(status["state"], "error")
+        self.assertIn("disk", status["message"])
+        self.assertTrue(service.step(0))
+        self.assertEqual(self.texts(), ["still captured"])
+        self.assertEqual(
+            clipservice.read_status(self.paths, lambda: self.now)["state"], "capturing"
+        )
+
+    def test_a_failure_scheduling_the_sync_never_stops_capture(self):
+        class Broken:
+            state = "off"
+            synced = 0.0
+
+            def step(self, now):
+                raise OSError("key file unreadable")
+
+            def poke(self, now):
+                pass
+
+        service = self.service(clipwatch.Clip(text="kept"))
+        service._syncer = Broken()  # type: ignore[assignment]
+        service.step(0)
+        self.assertEqual(self.texts(), ["kept"])
+
+
 class OwnWriteTests(ServiceCase):
     def test_the_transcript_dictation_just_copied_is_not_captured_again(self):
         clipservice.mark_own_write(self.paths, "my transcript", clock=lambda: self.now)

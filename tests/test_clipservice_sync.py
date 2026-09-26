@@ -198,6 +198,73 @@ class ScheduleTests(SyncCase):
         self.assertEqual((self.engines, syncer.state), ([], "off"))
 
 
+class CrashTests(SyncCase):
+    def test_a_round_that_crashes_is_reported_and_not_retried_every_second(self):
+        self.link()
+        syncer = self.syncer()
+        syncer.step(self.now)
+        engine = self.engines[0]
+
+        def crash() -> clipsync.Report:
+            engine.runs += 1
+            raise RuntimeError("unexpected server data")
+
+        engine.run_once = crash  # type: ignore[method-assign]
+        self.now += 61
+        syncer.step(self.now)
+        self.assertEqual((engine.runs, syncer.state), (2, "error"))
+        for _ in range(30):
+            self.now += 1
+            syncer.step(self.now)
+        self.assertEqual(engine.runs, 2)  # Not a round per second.
+        self.now += 600
+        syncer.step(self.now)
+        self.assertEqual(engine.runs, 3)
+
+    def test_a_crash_on_the_thread_is_survived_too(self):
+        self.link()
+        syncer = self.syncer(threaded=True)
+        syncer.step(self.now)
+        syncer.wait(5)
+        engine = self.engines[0]
+
+        def crash() -> clipsync.Report:
+            raise ValueError("bad")
+
+        engine.run_once = crash  # type: ignore[method-assign]
+        self.now += 61
+        syncer.step(self.now)
+        syncer.wait(5)
+        self.assertEqual(syncer.state, "error")
+
+
+class AccountSwitchTests(SyncCase):
+    def linked_item(self):
+        item = self.store.add_text("mine", now=1.0)
+        self.store.mark_pushed(item.id, "text|k|mine")
+        self.store.link(item.id, "cloud-old", False)
+        self.store.meta_set("sync_cursor", "5.0")
+        return item
+
+    def test_removing_the_key_forgets_the_old_account_even_after_a_late_round(self):
+        self.link()
+        syncer = self.syncer()
+        syncer.step(self.now)
+        item = self.linked_item()  # A round finishing after the app reset things.
+        cp.remove_key(self.config_dir)
+        self.now += 5
+        syncer.step(self.now)
+        kept = self.store.get(item.id)
+        self.assertEqual((kept.cloud_id, kept.cloud_key, kept.dirty), ("", "", True))
+        self.assertEqual(self.store.meta_get("sync_cursor"), "")
+
+    def test_a_key_that_was_never_linked_touches_nothing(self):
+        item = self.linked_item()
+        syncer = self.syncer()
+        syncer.step(self.now)  # No key at all, and no earlier engine.
+        self.assertEqual(self.store.get(item.id).cloud_id, "cloud-old")
+
+
 class ThreadTests(SyncCase):
     def test_a_slow_round_never_blocks_the_caller_and_never_overlaps(self):
         self.link()

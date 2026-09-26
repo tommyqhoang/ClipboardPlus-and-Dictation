@@ -280,6 +280,15 @@ class ClipboardPlusServiceTests(ServiceCase):
         store.meta_set("sync_cursor", "5.0")
         return store, item
 
+    def test_linking_another_account_starts_from_scratch(self):
+        store, item = self.linked_history()
+        other = "cp_live_" + "e5f6a7b8" * 6
+        with patch.object(app_service.clipboardplus, "verify", return_value="ok"):
+            self.service.connect_clipboard_plus(other)
+        again = store.get(item.id)
+        self.assertEqual((again.cloud_id, again.cloud_key, again.dirty), ("", "", True))
+        self.assertEqual(store.meta_get("sync_cursor"), "")
+
     def test_disconnecting_can_keep_the_history_and_forgets_the_account(self):
         store, item = self.linked_history()
         self.service.disconnect_clipboard_plus(keep_history=True)

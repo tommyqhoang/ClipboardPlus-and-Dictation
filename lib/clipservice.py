@@ -187,7 +187,7 @@ class Syncer:
         self._stamp: tuple[int, int, int] | None = None
         self._due = 0.0
         self._thread: threading.Thread | None = None
-        self._state = "off"
+        self._crashed = False
         self.synced = 0.0
 
     @property
@@ -195,9 +195,11 @@ class Syncer:
         """off, syncing, ok, offline, error or auth."""
         if self._engine is None:
             return "off"
-        if self._running() or self._engine.state == "idle":
+        if self._running():
             return "syncing"
-        return self._engine.state
+        if self._crashed:
+            return "error"
+        return "syncing" if self._engine.state == "idle" else self._engine.state
 
     def poke(self, now: float) -> None:
         """Something changed here: send it soon."""
@@ -244,11 +246,22 @@ class Syncer:
             return
         self._stamp = stamp
         key = cp.read_key(self._paths.config.parent) if stamp else ""
+        if not key and self._engine is not None:
+            # Disconnected. A round that was still running may have written the old
+            # account's ids after the app reset them, so forget them again.
+            self._store.reset_sync()
         self._engine = self._factory(self._store, key) if key else None
+        self._crashed = False
         self._due = now
 
     def _run(self, engine: SyncEngine) -> None:
-        engine.run_once()
+        try:
+            engine.run_once()
+        except Exception:  # noqa: BLE001 - a bug or odd server data must not loop or kill the service.
+            self._crashed = True
+            self._due = self._clock() + clipsync.BACKOFF_MAX_SECONDS
+            return
+        self._crashed = False
         finished = self._clock()
         delay = engine.retry_delay()
         self._due = finished + (clipsync.INTERVAL_SECONDS if delay is None else delay)
@@ -303,7 +316,10 @@ class Service:
         if clip is not None:
             ok = self._capture(clip, now) and ok
         if self._syncer is not None:
-            self._syncer.step(now)
+            try:
+                self._syncer.step(now)
+            except (OSError, sqlite3.Error):
+                pass  # Syncing is optional: it must never stop the capturing.
         self._maintain(now)
         return ok
 
@@ -322,6 +338,9 @@ class Service:
                 self._store.add_image(clip.image_png, "desktop", now)
         except sqlite3.Error:
             self._fail("The clipboard history is busy; retrying.", now)
+            return False
+        except OSError:
+            self._fail("The clipboard history can’t be written (is the disk full?); retrying.", now)
             return False
         return True
 

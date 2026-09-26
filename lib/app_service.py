@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import sqlite3
 import subprocess
 import urllib.parse
 from collections.abc import Callable
@@ -99,6 +100,17 @@ class Service:
         )
 
     def _link_clipboard_plus(self, key: str, email: str) -> None:
+        try:
+            # Whatever account this device was linked to before, the history starts
+            # afresh with the new key (uploads are idempotent, so nothing duplicates).
+            if self.paths.clipboard.exists():
+                store = clipstore.Store(self.paths.clipboard)
+                try:
+                    store.reset_sync()
+                finally:
+                    store.close()
+        except sqlite3.Error as exc:
+            raise d.DictationError("The clipboard history is busy. Try again in a moment.") from exc
         try:
             d.private_dir(self.paths.config.parent)
             clipboardplus.save_key(self.paths.config.parent, key)
