@@ -19,6 +19,14 @@ KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybinding
 KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
 DEFAULT_BINDING="${DICTATION_BINDING:-<Control><Alt>d}"
 
+# apt's python3-tk/python3-venv serve the system interpreter, not a Homebrew or
+# pyenv python3 that may come first on PATH.
+if [[ -x /usr/bin/python3 ]]; then
+  PYTHON=/usr/bin/python3
+else
+  PYTHON=python3
+fi
+
 need() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -149,7 +157,7 @@ install_model() {
   fi
 
   # Reject common HTML/error downloads. The optional SHA-256 verifies the entire file.
-  python3 - "$candidate" "$expected_sha256" <<'PY'
+  "$PYTHON" - "$candidate" "$expected_sha256" <<'PY'
 import hashlib
 import pathlib
 import sys
@@ -189,7 +197,7 @@ install_script() {
   install -m 0644 "${PROJECT_DIR}/lib/rewriting.py" "${HOME}/.local/lib/rewriting.py"
   install -m 0644 "${PROJECT_DIR}/lib/workflow.py" "${HOME}/.local/lib/workflow.py"
   install -m 0755 "$BIN_SRC" "$BIN_DEST"
-  python3 "${PROJECT_DIR}/setup-desktop.py"
+  "$PYTHON" "${PROJECT_DIR}/setup-desktop.py"
   echo "Installed $BIN_DEST"
 }
 
@@ -253,11 +261,11 @@ main() {
     echo "Skipping package installation."
   fi
 
-  if ! need python3; then
+  if ! need "$PYTHON"; then
     echo "Python 3.10 or newer is required." >&2
     return 1
   fi
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'
+  "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))'
   if [[ "$SKIP_MODEL" == 0 && "$SKIP_DOWNLOAD" == 0 ]]; then
     install_model
   fi
