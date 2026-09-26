@@ -9,6 +9,10 @@ MODEL_DIR="${HOME}/.local/share/whisper.cpp/models"
 MODEL_NAME="${DICTATION_MODEL_NAME:-ggml-base.en.bin}"
 MODEL_URL="${DICTATION_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_NAME}}"
 MODEL_DEST="${MODEL_DIR}/${MODEL_NAME}"
+MODEL_LINK="${MODEL_DIR}/dictation-model.bin"
+SKIP_MODEL=0
+SKIP_PACKAGES=0
+SKIP_DOWNLOAD=0
 KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
 KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
 DEFAULT_BINDING="${DICTATION_BINDING:-<Super><Shift>d}"
@@ -33,16 +37,28 @@ install_packages() {
     gnome-session-canberra
     libnotify-bin
     perl
+    python3
+    python3-tk
+    util-linux
     wl-clipboard
   )
 
   echo "Installing Debian packages: ${base_packages[*]}"
   sudo apt-get update
   sudo apt-get install -y "${base_packages[@]}"
-  install_whisper
+  if [[ "$SKIP_MODEL" == 0 ]]; then
+    install_whisper
+  fi
 }
 
 install_whisper() {
+  if [[ -n "${DICTATION_WHISPER_BIN:-}" ]]; then
+    [[ -x "$DICTATION_WHISPER_BIN" ]] || {
+      echo "DICTATION_WHISPER_BIN is not executable." >&2
+      return 1
+    }
+    return 0
+  fi
   if need whisper-cli; then
     echo "whisper-cli already installed: $(command -v whisper-cli)"
     return 0
@@ -95,19 +111,62 @@ install_whisper_from_source() {
 }
 
 install_model() {
+  local partial_dest="${MODEL_DEST}.part"
+  local candidate="$MODEL_DEST"
+
   mkdir -p "$MODEL_DIR"
   if [[ -s "$MODEL_DEST" ]]; then
     echo "Model already present: $MODEL_DEST"
-    return 0
+  else
+    echo "Downloading Whisper model: $MODEL_NAME"
+    curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 15 \
+      --continue-at - --output "$partial_dest" "$MODEL_URL"
+    if [[ ! -s "$partial_dest" ]]; then
+      echo "Model download completed without producing a usable file." >&2
+      return 1
+    fi
+    candidate="$partial_dest"
   fi
 
-  echo "Downloading Whisper model: $MODEL_NAME"
-  curl -L --fail --continue-at - --output "$MODEL_DEST" "$MODEL_URL"
+  # Reject common HTML/error downloads. The optional SHA-256 verifies the entire file.
+  python3 - "$candidate" "${DICTATION_MODEL_SHA256:-}" <<'PY'
+import hashlib
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+with path.open("rb") as stream:
+    if stream.read(4) != b"lmgg":
+        sys.exit("Model does not have a whisper.cpp GGML header; check the download.")
+    if sys.argv[2]:
+        stream.seek(0)
+        digest = hashlib.sha256()
+        for block in iter(lambda: stream.read(1048576), b""):
+            digest.update(block)
+        if digest.hexdigest() != sys.argv[2].lower():
+            sys.exit("Model SHA-256 mismatch. Select a trusted model download.")
+PY
+  if [[ "$candidate" == "$partial_dest" ]]; then
+    mv -f "$partial_dest" "$MODEL_DEST"
+    echo "Downloaded model: $MODEL_DEST"
+  fi
+
+  if [[ -e "$MODEL_LINK" && ! -L "$MODEL_LINK" ]]; then
+    echo "Refusing to replace a regular file at $MODEL_LINK." >&2
+    return 1
+  fi
+  ln -sfn "$MODEL_DEST" "$MODEL_LINK"
+  echo "Selected model: $MODEL_LINK -> $MODEL_NAME"
 }
 
 install_script() {
-  mkdir -p "${HOME}/.local/bin"
+  mkdir -p "${HOME}/.local/bin" "${HOME}/.local/lib"
+  install -m 0644 "${PROJECT_DIR}/lib/dictation.py" "${HOME}/.local/lib/dictation.py"
+  install -m 0644 "${PROJECT_DIR}/lib/desktop.py" "${HOME}/.local/lib/desktop.py"
+  install -m 0644 "${PROJECT_DIR}/lib/onboarding.py" "${HOME}/.local/lib/onboarding.py"
+  install -m 0644 "${PROJECT_DIR}/lib/rewriting.py" "${HOME}/.local/lib/rewriting.py"
+  install -m 0644 "${PROJECT_DIR}/lib/workflow.py" "${HOME}/.local/lib/workflow.py"
   install -m 0755 "$BIN_SRC" "$BIN_DEST"
+  python3 "${PROJECT_DIR}/setup-desktop.py"
   echo "Installed $BIN_DEST"
 }
 
@@ -118,35 +177,82 @@ install_gnome_shortcut() {
   fi
 
   local current updated
-  current="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings)"
-  if [[ "$current" == "@as []" ]]; then
+  if ! current="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null)"; then
+    echo "GNOME media-key settings are unavailable; skipping shortcut setup."
+    return 0
+  fi
+  if [[ "$current" == "@as []" || "$current" == "[]" ]]; then
     updated="['${KEYBINDING_PATH}']"
   elif [[ "$current" == *"'${KEYBINDING_PATH}'"* ]]; then
     updated="$current"
   else
-    updated="${current%]}', '${KEYBINDING_PATH}']"
+    updated="${current%]}, '${KEYBINDING_PATH}']"
   fi
 
-  gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$updated"
-  gsettings set "$KEYBINDING_SCHEMA" name "$APP_NAME"
-  gsettings set "$KEYBINDING_SCHEMA" command "$BIN_DEST"
-  gsettings set "$KEYBINDING_SCHEMA" binding "$DEFAULT_BINDING"
+  if ! gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$updated"; then
+    echo "Could not update GNOME custom keybindings; skipping shortcut setup." >&2
+    return 0
+  fi
+  if ! {
+    gsettings set "$KEYBINDING_SCHEMA" name "$APP_NAME" &&
+      gsettings set "$KEYBINDING_SCHEMA" command "\"$BIN_DEST\"" &&
+      gsettings set "$KEYBINDING_SCHEMA" binding "$DEFAULT_BINDING"
+  }; then
+    echo "Could not configure the GNOME shortcut; the command was still installed." >&2
+    return 0
+  fi
   echo "Installed GNOME shortcut: $DEFAULT_BINDING"
 }
 
 main() {
-  if [[ "${1:-}" != "--no-packages" ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      --no-packages) SKIP_PACKAGES=1 ;;
+      --http) SKIP_MODEL=1 ;;
+      --no-model) SKIP_DOWNLOAD=1 ;;
+      --help)
+        echo "Usage: ./install.sh [--no-packages] [--http] [--no-model]"
+        return 0
+        ;;
+      *)
+        echo "Unknown option: $arg" >&2
+        return 2
+        ;;
+    esac
+  done
+  if [[ ! "$MODEL_NAME" =~ ^ggml-[A-Za-z0-9._-]+\.bin$ ]]; then
+    echo "MODEL_NAME must be a ggml-*.bin filename without directory components." >&2
+    return 1
+  fi
+  if [[ "$SKIP_PACKAGES" == 0 ]]; then
     install_packages
   else
     echo "Skipping package installation."
   fi
 
-  install_model
+  if ! need python3; then
+    echo "Python 3.10 or newer is required." >&2
+    return 1
+  fi
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'
+  if [[ "$SKIP_MODEL" == 0 && "$SKIP_DOWNLOAD" == 0 ]]; then
+    install_model
+  fi
+  if [[ "$SKIP_MODEL" == 0 && -z "${DICTATION_WHISPER_BIN:-}" ]] && ! need whisper-cli && [[ ! -x "${HOME}/.local/opt/whisper.cpp/build/bin/whisper-cli" ]]; then
+    echo "whisper-cli was not found. Re-run without --no-packages or set DICTATION_WHISPER_BIN." >&2
+    return 1
+  fi
   install_script
   install_gnome_shortcut
 
   echo
-  echo "Done. Press Super+Shift+D once to record, then again to stop and copy."
+  echo "Installed. Whisper Dictation will open automatically when using the quick installer."
+  echo "It is also available from your application menu."
+  if [[ "$SKIP_MODEL" == 1 ]]; then
+    echo "Set backend=http and your transcription endpoint in config.json before recording."
+  fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

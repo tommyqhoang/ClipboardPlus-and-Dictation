@@ -1,0 +1,208 @@
+"""OS adapters. Command arguments stay separate from user-provided text."""
+
+from __future__ import annotations
+
+import errno
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
+
+def platform_name() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    return "linux"
+
+
+def roots() -> tuple[Path, Path, Path]:
+    home = Path.home()
+    system = platform_name()
+    if system == "windows":
+        base = (
+            Path(os.environ.get("LOCALAPPDATA", str(home / "AppData/Local"))) / "WhisperDictation"
+        )
+        defaults = (base / "Config", base / "Cache", base / "Runtime")
+    elif system == "macos":
+        defaults = (
+            home / "Library/Application Support/WhisperDictation",
+            home / "Library/Caches/WhisperDictation",
+            Path(tempfile.gettempdir()) / f"dictation-{os.getuid()}",
+        )
+    else:
+        defaults = (
+            home / ".config/dictation",
+            home / ".cache/dictation",
+            Path(tempfile.gettempdir()) / f"dictation-{os.getuid()}",
+        )
+    # Explicit XDG overrides keep existing integrations and isolated tests usable.
+    return (
+        Path(os.environ["XDG_CONFIG_HOME"]) / "dictation"
+        if "XDG_CONFIG_HOME" in os.environ
+        else defaults[0],
+        Path(os.environ["XDG_CACHE_HOME"]) / "dictation"
+        if "XDG_CACHE_HOME" in os.environ
+        else defaults[1],
+        Path(os.environ["XDG_RUNTIME_DIR"])
+        / ("dictation" if sys.platform == "win32" else f"dictation-{os.getuid()}")
+        if "XDG_RUNTIME_DIR" in os.environ
+        else defaults[2],
+    )
+
+
+def lock(path: Path) -> int | None:
+    if path.is_symlink():
+        raise OSError("Lock files must not be symlinks.")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        if sys.platform == "win32":
+            if not os.fstat(fd).st_size:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            return None
+        raise
+    return fd
+
+
+def executable(command: str) -> list[str]:
+    # Python hooks are useful for custom integrations and portable subprocess fixtures.
+    return [sys.executable, command] if command.endswith(".py") else [command]
+
+
+def available(command: str) -> bool:
+    return Path(command).is_file() if command.endswith(".py") else shutil.which(command) is not None
+
+
+def audio_backend(values: dict[str, Any]) -> str:
+    backend = str(values["audio_backend"])
+    if backend != "auto":
+        return backend
+    return {"linux": "alsa", "macos": "avfoundation", "windows": "dshow"}[platform_name()]
+
+
+def recorder_command(values: dict[str, Any], listing: bool = False) -> list[str]:
+    backend = audio_backend(values)
+    device = str(values["device"])
+    if backend == "alsa":
+        args = executable(str(values["arecord"]))
+        return args + (
+            ["-L"]
+            if listing
+            else [
+                "-q",
+                "-D",
+                device,
+                "-t",
+                "raw",
+                "-f",
+                "S16_LE",
+                "-r",
+                "16000",
+                "-c",
+                "1",
+                "-d",
+                str(values["max_seconds"]),
+            ]
+        )
+    args = executable(str(values["ffmpeg"])) + ["-hide_banner"]
+    if listing:
+        return args + [
+            "-f",
+            backend,
+            "-list_devices",
+            "true",
+            "-i",
+            "" if backend == "avfoundation" else "dummy",
+        ]
+    source = f"none:{device}" if backend == "avfoundation" else f"audio={device}"
+    return args + [
+        "-loglevel",
+        "error",
+        "-f",
+        backend,
+        "-i",
+        source,
+        "-t",
+        str(values["max_seconds"]),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-acodec",
+        "pcm_s16le",
+        "-f",
+        "s16le",
+        "-flush_packets",
+        "1",
+        "pipe:1",
+    ]
+
+
+def clipboard_command(values: dict[str, Any]) -> list[str]:
+    backend = str(values["clipboard_backend"])
+    if backend == "auto":
+        backend = {"linux": "wayland", "macos": "pbcopy", "windows": "powershell"}[platform_name()]
+    if backend == "wayland":
+        return executable(str(values["wl_copy"])) + ["--type", "text/plain;charset=utf-8"]
+    if backend == "pbcopy":
+        return ["/usr/bin/pbcopy"]
+    return [
+        str(values["powershell"]),
+        "-NoProfile",
+        "-NonInteractive",
+        "-STA",
+        "-Command",
+        "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new(); "
+        "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+    ]
+
+
+def notification_command(values: dict[str, Any]) -> list[str]:
+    if values["notify"]:
+        return executable(str(values["notify"])) + ["-a", "Dictation", "-t", "4000", "Dictation"]
+    if platform_name() == "linux":
+        return ["notify-send", "-a", "Dictation", "-t", "4000", "Dictation"]
+    if platform_name() == "macos":
+        return [
+            "/usr/bin/osascript",
+            "-e",
+            'on run argv\ndisplay notification (item 1 of argv) with title "Dictation"\nend run',
+        ]
+    # A short-lived notification-area balloon; the message arrives over stdin.
+    return [
+        str(values["powershell"]),
+        "-NoProfile",
+        "-NonInteractive",
+        "-STA",
+        "-Command",
+        "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new(); "
+        "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; "
+        "$n=New-Object System.Windows.Forms.NotifyIcon; "
+        "$n.Icon=[System.Drawing.SystemIcons]::Information; $n.Visible=$true; "
+        "try {$n.ShowBalloonTip(1000,'Dictation',[Console]::In.ReadToEnd(),"
+        "[System.Windows.Forms.ToolTipIcon]::Info); Start-Sleep -Milliseconds 1100} "
+        "finally {$n.Dispose()}",
+    ]
+
+
+def process_options(detached: bool = False) -> dict[str, Any]:
+    if sys.platform == "win32":
+        # Numeric constants avoid importing Windows-only subprocess names on Unix.
+        return {"creationflags": 0x08000000 | (0x00000200 if detached else 0)}
+    return {"start_new_session": True} if detached else {}

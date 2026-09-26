@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 BIN_DEST="${HOME}/.local/bin/dictate-toggle"
 KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
 KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
 
-if command -v gsettings >/dev/null 2>&1; then
-  current="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings)"
-  updated="$(
-    printf '%s' "$current" |
-      sed "s#'${KEYBINDING_PATH}', ##g; s#, '${KEYBINDING_PATH}'##g; s#'${KEYBINDING_PATH}'##g"
-  )"
-  if [[ "$updated" == "[]" ]]; then
-    updated="@as []"
-  fi
-  gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$updated"
-  gsettings reset "$KEYBINDING_SCHEMA" name 2>/dev/null || true
-  gsettings reset "$KEYBINDING_SCHEMA" command 2>/dev/null || true
-  gsettings reset "$KEYBINDING_SCHEMA" binding 2>/dev/null || true
+# Never signal a PID read from disk; only the session supervisor owns the recorder.
+if [[ -f "${HOME}/.local/lib/dictation.py" ]]; then
+  python3 - "${HOME}/.local/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from dictation import Paths, busy
+if busy(Paths()):
+    sys.exit("Dictation is active. Stop or cancel it and wait for completion before uninstalling.")
+PY
 fi
-
-rm -f "$BIN_DEST"
-rm -rf "${XDG_RUNTIME_DIR:-/tmp}/dictation-${USER}"
-
-echo "Removed dictation shortcut and $BIN_DEST."
-echo "The model and logs were left in ~/.local/share/whisper.cpp and ~/.cache/dictation."
+if command -v gsettings >/dev/null 2>&1; then
+  if current="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null)"; then
+    updated="$(printf '%s' "$current" | sed "s#'${KEYBINDING_PATH}', ##g; s#, '${KEYBINDING_PATH}'##g; s#'${KEYBINDING_PATH}'##g")"
+    gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$updated"
+    gsettings reset-recursively "$KEYBINDING_SCHEMA"
+  fi
+fi
+rm -f "$BIN_DEST" "${HOME}/.local/lib/dictation.py" "${HOME}/.local/lib/desktop.py" "${HOME}/.local/lib/onboarding.py" "${HOME}/.local/lib/rewriting.py" "${HOME}/.local/lib/workflow.py" "${HOME}/.local/lib/app.py" "${HOME}/.local/lib/app_service.py" "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/bin/Whisper Dictation.command"
+echo "Removed the command and runtime module. Models, settings, and saved transcripts were retained."

@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Subprocess boundary fixture controlled by files."""
+import os
+from pathlib import Path
+import sys
+import time
+import threading
+
+root = Path(os.environ["DICTATION_TEST_ROOT"])
+mode = Path(sys.argv[0]).stem
+if mode in ("arecord", "ffmpeg"):
+    if (root / "recorder-fail").exists():
+        sys.exit(1)
+    stopped = threading.Event()
+    if mode == "ffmpeg":
+        def wait_for_stop():
+            sys.stdin.buffer.read(1)
+            stopped.set()
+        threading.Thread(target=wait_for_stop, daemon=True).start()
+    while not stopped.is_set():
+        os.write(1, b"\x10\x00" * 1600)
+        time.sleep(0.05)
+elif mode == "whisper":
+    if (root / "slow").exists():
+        time.sleep(1.5)
+    if (root / "fail").exists():
+        sys.exit(1)
+    print((root / "result").read_text() if (root / "result").exists() else "Hello new paragraph world")
+elif mode == "clipboard":
+    if (root / "copy-fail").exists():
+        sys.exit(1)
+    (root / "clipboard.txt").write_bytes(sys.stdin.buffer.read())
+else:
+    sys.exit(0)

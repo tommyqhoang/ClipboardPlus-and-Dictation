@@ -1,0 +1,244 @@
+from __future__ import annotations
+
+import errno
+import importlib.util
+import os
+import plistlib
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import desktop
+import dictation
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def setup_module():
+    spec = importlib.util.spec_from_file_location("setup_desktop", ROOT / "setup-desktop.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class DesktopTests(unittest.TestCase):
+    def setUp(self):
+        self.values = dictation.DEFAULTS.copy()
+
+    def test_platform_selection(self):
+        for system, expected in (("darwin", "macos"), ("win32", "windows"), ("linux", "linux")):
+            with patch.object(sys, "platform", system):
+                self.assertEqual(desktop.platform_name(), expected)
+
+    def test_native_and_override_paths(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(os, "getuid", return_value=1000, create=True),
+            patch.object(Path, "home", return_value=Path("/users/tester")),
+        ):
+            for system, expected in (
+                ("macos", "Application Support"),
+                ("windows", "WhisperDictation"),
+                ("linux", ".config"),
+            ):
+                with patch.object(desktop, "platform_name", return_value=system):
+                    self.assertIn(expected, str(desktop.roots()[0]))
+        with patch.dict(
+            os.environ,
+            {
+                "XDG_CONFIG_HOME": "/config",
+                "XDG_CACHE_HOME": "/cache",
+                "XDG_RUNTIME_DIR": "/runtime",
+            },
+        ):
+            self.assertEqual(
+                desktop.roots()[:2], (Path("/config/dictation"), Path("/cache/dictation"))
+            )
+            self.assertEqual(desktop.roots()[2].parent, Path("/runtime"))
+
+    def test_macos_audio_only_and_device_listing(self):
+        with patch.object(desktop, "platform_name", return_value="macos"):
+            args = desktop.recorder_command(self.values)
+            self.assertEqual(args[args.index("-i") + 1], "none:default")
+            self.assertIn("avfoundation", args)
+            self.assertIn("s16le", args)
+            listing = desktop.recorder_command(self.values, listing=True)
+            self.assertIn("-list_devices", listing)
+            self.assertEqual(listing[-1], "")
+            self.assertEqual(desktop.clipboard_command(self.values), ["/usr/bin/pbcopy"])
+            self.assertIn("osascript", desktop.notification_command(self.values)[0])
+
+    def test_windows_device_names_are_not_shell_code(self):
+        self.values["device"] = 'Microphone (USB) & "quoted"'
+        with patch.object(desktop, "platform_name", return_value="windows"):
+            args = desktop.recorder_command(self.values)
+            self.assertIn('audio=Microphone (USB) & "quoted"', args)
+            self.assertEqual(desktop.recorder_command(self.values, listing=True)[-1], "dummy")
+            self.assertIn("Set-Clipboard", desktop.clipboard_command(self.values)[-1])
+            self.assertIn("ShowBalloonTip", desktop.notification_command(self.values)[-1])
+        with patch.object(sys, "platform", "win32"):
+            self.assertTrue(desktop.process_options(detached=True)["creationflags"] & 0x08000000)
+
+    def test_hooks_and_linux_commands(self):
+        self.values["arecord"] = "/custom/input.py"
+        self.values["wl_copy"] = "/custom/copy.py"
+        self.values["audio_backend"] = "alsa"
+        self.values["clipboard_backend"] = "wayland"
+        self.values["notify"] = "/custom/notify.py"
+        self.assertEqual(
+            desktop.recorder_command(self.values)[:2], [sys.executable, "/custom/input.py"]
+        )
+        self.assertEqual(
+            desktop.clipboard_command(self.values)[:2], [sys.executable, "/custom/copy.py"]
+        )
+        self.assertIn("/custom/notify.py", desktop.notification_command(self.values))
+        self.assertFalse(desktop.available("/missing/hook.py"))
+        self.assertTrue(desktop.available(sys.executable))
+
+    def test_windows_notification_text_is_stdin(self):
+        config = Mock()
+        config.values = self.values
+        config.s.side_effect = lambda key: str(self.values[key])
+        with (
+            patch.object(desktop, "platform_name", return_value="windows"),
+            patch.object(desktop, "available", return_value=True),
+            patch.object(dictation.subprocess, "run") as run,
+        ):
+            dictation.notify(config, "秘密; $unsafe")
+            self.assertEqual(run.call_args.kwargs["input"], "秘密; $unsafe".encode())
+            self.assertNotIn("秘密; $unsafe", run.call_args.args[0][-1])
+
+    def test_native_lock_released_on_close(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "lock"
+            fd = desktop.lock(path)
+            self.assertIsNotNone(fd)
+            self.assertIsNone(desktop.lock(path))
+            os.close(fd)
+            replacement = desktop.lock(path)
+            self.assertIsNotNone(replacement)
+            os.close(replacement)
+
+    @unittest.skipIf(sys.platform == "win32", "Simulates Windows error mapping on Unix")
+    def test_windows_lock_error_mapping(self):
+        fake = Mock()
+        fake.LK_NBLCK = 2
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(desktop, "msvcrt", fake, create=True),
+            patch.object(sys, "platform", "win32"),
+        ):
+            path = Path(folder) / "lock"
+            fake.locking.side_effect = OSError(errno.EACCES, "locked")
+            self.assertIsNone(desktop.lock(path))
+            fake.locking.side_effect = OSError(errno.EIO, "disk error")
+            with self.assertRaises(OSError):
+                desktop.lock(path)
+            fake.locking.side_effect = None
+            fd = desktop.lock(path)
+            os.close(fd)
+
+    def test_desktop_installer_round_trip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            prefix = root / "app with spaces"
+            env = os.environ | {
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_CACHE_HOME": str(root / "cache"),
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+                "DICTATION_NOTIFY": str(root / "missing-notifier"),
+            }
+            setup = [
+                sys.executable,
+                str(ROOT / "setup-desktop.py"),
+                "--prefix",
+                str(prefix),
+                "--no-shortcut",
+            ]
+            subprocess.run(setup, env=env, check=True, capture_output=True)
+            config = root / "config/dictation/config.json"
+            before = config.read_bytes()
+            subprocess.run(setup, env=env, check=True, capture_output=True)
+            self.assertEqual(config.read_bytes(), before)
+            module = prefix / "lib/dictation.py"
+            result = subprocess.run(
+                [sys.executable, str(module), "--status"],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn('"phase": "idle"', result.stdout)
+            review = subprocess.run(
+                [sys.executable, str(module), "--review"],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(review.returncode, 1)
+            self.assertIn("No saved transcript", review.stderr)
+            subprocess.run(setup + ["--uninstall"], env=env, check=True, capture_output=True)
+            self.assertFalse(module.exists())
+            self.assertTrue(config.exists())
+
+    def test_windows_shortcut_uses_structured_paths(self):
+        setup = setup_module()
+        with patch.object(setup.subprocess, "run") as run:
+            setup.windows_shortcut(Path("path with spaces") / "app.py")
+            self.assertIn(b"path with spaces", run.call_args.kwargs["input"])
+            self.assertIn(b"dictation.py", run.call_args.kwargs["input"])
+            self.assertNotIn("path with spaces", run.call_args.args[0][-1])
+
+    def test_application_launchers_and_launch(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            prefix = root / ".local"
+            (prefix / "lib").mkdir(parents=True)
+            (prefix / "lib/app.py").write_text("# app")
+            with patch.object(setup.desktop, "platform_name", return_value="linux"):
+                setup.install_app_launcher(prefix)
+                entry = (prefix / "share/applications/whisper-dictation.desktop").read_text()
+                self.assertIn("Name=Whisper Dictation", entry)
+                self.assertIn("app.py", entry)
+                self.assertIn("Terminal=false", entry)
+                with patch.object(setup.subprocess, "Popen") as process:
+                    setup.launch(prefix)
+                    self.assertIn(str(prefix / "lib/app.py"), process.call_args.args[0])
+            with patch.object(setup.desktop, "platform_name", return_value="macos"):
+                setup.install_app_launcher(prefix)
+                bundle = root / "Applications/Whisper Dictation.app"
+                info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+                self.assertEqual(info["CFBundleIdentifier"], "org.whisperdictation.desktop")
+                self.assertIn("Record speech only", info["NSMicrophoneUsageDescription"])
+                executable = bundle / "Contents/MacOS/WhisperDictation"
+                self.assertIn("app.py", executable.read_text())
+                with patch.object(setup.subprocess, "run") as run:
+                    setup.launch(prefix)
+                    self.assertEqual(run.call_args.args[0][:1], ["/usr/bin/open"])
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="windows"),
+                patch.object(setup, "windows_shortcut") as shortcut,
+            ):
+                setup.install_app_launcher(prefix)
+                self.assertEqual(shortcut.call_args.args[0].name, "app.py")
+
+    def test_launcher_refuses_unrelated_macos_bundle_and_missing_install(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder) / ".local"
+            bundle = setup.app_bundle(prefix)
+            bundle.mkdir(parents=True)
+            with patch.object(setup.desktop, "platform_name", return_value="macos"):
+                with self.assertRaises(dictation.DictationError):
+                    setup.install_app_launcher(prefix)
+            with self.assertRaises(dictation.DictationError):
+                setup.launch(prefix)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,4 +1,12 @@
 .cache/
 *.wav
+*.pcm
 *.log
 models/
+__pycache__/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+.coverage.*
