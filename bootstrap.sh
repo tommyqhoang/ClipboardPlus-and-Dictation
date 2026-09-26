@@ -2,6 +2,27 @@
 # Download an application snapshot; users do not need a git checkout.
 set -euo pipefail
 
+# Only reached when the script was saved and run without curl; the one-line
+# command already has it.
+install_curl() {
+  local sudo=""
+  if [[ "$(id -u)" != 0 ]]; then
+    sudo=sudo
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    $sudo apt-get update && $sudo apt-get install -y curl ca-certificates
+  elif command -v dnf >/dev/null 2>&1; then
+    $sudo dnf install -y curl ca-certificates
+  elif command -v pacman >/dev/null 2>&1; then
+    $sudo pacman -S --needed --noconfirm curl ca-certificates
+  elif command -v zypper >/dev/null 2>&1; then
+    $sudo zypper --non-interactive install curl ca-certificates
+  else
+    echo "Install curl, then run this installer again." >&2
+    return 1
+  fi
+}
+
 main() (
   local ref="${DICTATION_REF:-main}" work archive platform python_prefix python=python3
   if [[ ! "$ref" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -18,6 +39,14 @@ main() (
   esac
   echo "Installs Whisper Dictation and dependencies for your user. Package managers may request administrator access."
   if [[ "$platform" == Darwin ]]; then
+    # Homebrew may be installed without being on PATH (non-login shells).
+    if ! command -v brew >/dev/null 2>&1; then
+      if [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+      elif [[ -x /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+      fi
+    fi
     if ! command -v brew >/dev/null 2>&1; then
       echo "Installing Homebrew using its official installer (interactive)."
       /bin/bash -c "$(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -34,8 +63,7 @@ main() (
       python="${python_prefix}/bin/python3"
     fi
   elif ! command -v curl >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y curl ca-certificates
+    install_curl
   fi
   work="$(mktemp -d -t whisper-dictation.XXXXXXXX)"
   # Only this newly allocated temporary directory is removed.

@@ -19,46 +19,169 @@ KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybinding
 KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
 DEFAULT_BINDING="${DICTATION_BINDING:-<Control><Alt>d}"
 
-# apt's python3-tk/python3-venv serve the system interpreter, not a Homebrew or
-# pyenv python3 that may come first on PATH.
-if [[ -x /usr/bin/python3 ]]; then
-  PYTHON=/usr/bin/python3
-else
-  PYTHON=python3
-fi
+PYTHON=""
+PM=""
+RUNTIME_PACKAGES=()
+BUILD_PACKAGES=()
+WHISPER_PACKAGE=""
 
 need() {
   command -v "$1" >/dev/null 2>&1
 }
 
-install_packages() {
-  if ! need apt-get; then
-    echo "apt-get not found. This installer is intended for Debian or Debian-based systems." >&2
+python_has() {
+  "$1" -c "import $2" >/dev/null 2>&1
+}
+
+# The distribution's Tk and GTK packages serve its own interpreter, which is not
+# always the python3 first on PATH (Homebrew, pyenv, conda). Prefer one that has
+# everything the tray needs, then any python3 so the checks can report what is
+# missing.
+find_python() {
+  local candidate first=""
+  for candidate in /usr/bin/python3 "$(command -v python3 || true)"; do
+    if [[ -n "$candidate" ]] && need "$candidate"; then
+      first="${first:-$candidate}"
+      if python_has "$candidate" "tkinter, venv, gi"; then
+        PYTHON="$candidate"
+        return 0
+      fi
+    fi
+  done
+  PYTHON="$first"
+  [[ -n "$PYTHON" ]]
+}
+
+detect_package_manager() {
+  local manager
+  for manager in apt-get dnf pacman zypper; do
+    if need "$manager"; then
+      PM="$manager"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Package names per distribution family; every one is verified to exist.
+select_packages() {
+  case "$PM" in
+    apt-get)
+      RUNTIME_PACKAGES=(alsa-utils ca-certificates curl gir1.2-ayatanaappindicator3-0.1
+        gnome-session-canberra libnotify-bin perl python3 python3-gi python3-tk python3-venv
+        util-linux wl-clipboard)
+      BUILD_PACKAGES=(build-essential cmake git)
+      WHISPER_PACKAGE=whisper.cpp
+      ;;
+    dnf)
+      RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libayatana-appindicator-gtk3 libnotify
+        perl python3 python3-gobject python3-tkinter util-linux wl-clipboard)
+      BUILD_PACKAGES=(cmake gcc-c++ git make)
+      # Fedora's whisper-cpp depends on PyTorch and ROCm (8 GiB); build the pinned CPU release.
+      WHISPER_PACKAGE=""
+      ;;
+    pacman)
+      RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libayatana-appindicator libnotify perl
+        python python-gobject tk util-linux wl-clipboard)
+      BUILD_PACKAGES=(base-devel cmake git)
+      WHISPER_PACKAGE=""
+      ;;
+    zypper)
+      RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libnotify-tools perl python3
+        python3-gobject python3-tk typelib-1_0-AyatanaAppIndicator3-0_1 util-linux wl-clipboard)
+      BUILD_PACKAGES=(cmake gcc-c++ git make)
+      WHISPER_PACKAGE=""
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+as_root() {
+  if [[ "$(id -u)" == 0 ]]; then
+    "$@"
+  elif need sudo; then
+    sudo "$@"
+  else
+    echo "Administrator access is needed to install packages, but sudo was not found." >&2
+    echo "Run this installer as root, or install the packages yourself and use --no-packages." >&2
     return 1
   fi
+}
 
-  local base_packages=(
-    alsa-utils
-    build-essential
-    ca-certificates
-    cmake
-    curl
-    gir1.2-ayatanaappindicator3-0.1
-    git
-    gnome-session-canberra
-    libnotify-bin
-    perl
-    python3
-    python3-gi
-    python3-tk
-    python3-venv
-    util-linux
-    wl-clipboard
-  )
+pm_install() {
+  case "$PM" in
+    apt-get)
+      as_root apt-get update
+      as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+      ;;
+    dnf) as_root dnf install -y --setopt=install_weak_deps=False "$@" ;;
+    pacman)
+      # A fresh system may have no package database yet; sync it and retry once.
+      as_root pacman -S --needed --noconfirm "$@" ||
+        {
+          as_root pacman -Sy --noconfirm &&
+            as_root pacman -S --needed --noconfirm "$@"
+        }
+      ;;
+    zypper) as_root zypper --non-interactive install --no-recommends "$@" ;;
+  esac
+}
 
-  echo "Installing Debian packages: ${base_packages[*]}"
-  sudo apt-get update
-  sudo apt-get install -y "${base_packages[@]}"
+typelib_available() {
+  "$PYTHON" - <<'PY' >/dev/null 2>&1
+import gi
+
+for name in ("AyatanaAppIndicator3", "AppIndicator3"):
+    try:
+        gi.require_version(name, "0.1")
+        raise SystemExit(0)
+    except ValueError:
+        pass
+raise SystemExit(1)
+PY
+}
+
+# True when something the desktop app needs is absent, so nothing is installed
+# (and no administrator prompt appears) on a machine that is already ready.
+runtime_missing() {
+  local tool
+  for tool in arecord wl-copy notify-send curl; do
+    need "$tool" || return 0
+  done
+  find_python || return 0
+  python_has "$PYTHON" "tkinter, venv, gi" || return 0
+  typelib_available || return 0
+  return 1
+}
+
+unsupported_system() {
+  cat >&2 <<'MSG'
+No supported package manager found (apt, dnf, pacman or zypper).
+Install these yourself, then re-run with --no-packages:
+  - Python 3.10+ with Tk (tkinter), venv and PyGObject (gi)
+  - AyatanaAppIndicator3 (libayatana-appindicator) GObject bindings
+  - arecord (alsa-utils), wl-copy (wl-clipboard), notify-send (libnotify), curl
+  - whisper-cli (whisper.cpp), or set DICTATION_WHISPER_BIN
+MSG
+}
+
+install_packages() {
+  if runtime_missing; then
+    if ! detect_package_manager; then
+      unsupported_system
+      return 1
+    fi
+    select_packages
+    echo "Installing missing dependencies with $PM: ${RUNTIME_PACKAGES[*]}"
+    pm_install "${RUNTIME_PACKAGES[@]}"
+    find_python || true
+    if runtime_missing; then
+      echo "Dependencies are still missing after installation; see the messages above." >&2
+      return 1
+    fi
+  else
+    echo "System dependencies already installed."
+  fi
   if [[ "$SKIP_MODEL" == 0 ]]; then
     install_whisper
   fi
@@ -77,14 +200,16 @@ install_whisper() {
     return 0
   fi
 
-  if apt-cache show whisper.cpp >/dev/null 2>&1; then
-    echo "Installing Debian package: whisper.cpp"
-    if sudo apt-get install -y whisper.cpp; then
+  detect_package_manager || true
+  select_packages 2>/dev/null || true
+  if [[ -n "$WHISPER_PACKAGE" ]]; then
+    echo "Installing $PM package: $WHISPER_PACKAGE"
+    if pm_install "$WHISPER_PACKAGE" && need whisper-cli; then
       return 0
     fi
-    echo "Debian package install failed; falling back to source build."
+    echo "Package install did not provide whisper-cli; falling back to source build."
   else
-    echo "Debian package whisper.cpp not available; falling back to source build."
+    echo "No whisper.cpp package for this system; building from source."
   fi
 
   install_whisper_from_source
@@ -93,6 +218,15 @@ install_whisper() {
 install_whisper_from_source() {
   local src_dir="${HOME}/.local/opt/whisper.cpp-${WHISPER_VERSION}"
   local bin_path="${src_dir}/build/bin/whisper-cli"
+
+  if ! { need cmake && need git && { need cc || need gcc; } && need make; }; then
+    if [[ -z "$PM" ]]; then
+      echo "Building whisper.cpp needs cmake, git, make and a C++ compiler." >&2
+      return 1
+    fi
+    echo "Installing build tools: ${BUILD_PACKAGES[*]}"
+    pm_install "${BUILD_PACKAGES[@]}"
+  fi
 
   mkdir -p "${HOME}/.local/opt"
   if [[ -d "$src_dir/.git" ]]; then
@@ -156,6 +290,7 @@ install_model() {
     candidate="$partial_dest"
   fi
 
+  [[ -n "$PYTHON" ]] || find_python
   # Reject common HTML/error downloads. The optional SHA-256 verifies the entire file.
   "$PYTHON" - "$candidate" "$expected_sha256" <<'PY'
 import hashlib
@@ -204,6 +339,7 @@ install_script() {
 install_gnome_shortcut() {
   if ! need gsettings; then
     echo "gsettings not found; skipping GNOME shortcut setup."
+    echo "Bind a shortcut to ${BIN_DEST} in your desktop's keyboard settings to start and stop dictation."
     return 0
   fi
 
@@ -261,11 +397,10 @@ main() {
     echo "Skipping package installation."
   fi
 
-  if ! need "$PYTHON"; then
+  if ! find_python || ! "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
     echo "Python 3.10 or newer is required." >&2
     return 1
   fi
-  "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))'
   if [[ "$SKIP_MODEL" == 0 && "$SKIP_DOWNLOAD" == 0 ]]; then
     install_model
   fi

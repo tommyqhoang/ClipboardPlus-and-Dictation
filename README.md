@@ -29,7 +29,7 @@ the repository's `main` branch. They are not a claim that the current local
 changes have been released. Windows automatic installation is x64 only and
 still needs real-machine acceptance testing.
 
-macOS or Debian/Ubuntu Linux, in Terminal:
+macOS or Linux (Debian/Ubuntu, Fedora, Arch, openSUSE), in Terminal:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tommyqhoang/wayland-whisper-dictation/main/bootstrap.sh)"
@@ -44,7 +44,7 @@ Windows x64, in PowerShell:
 These commands execute downloaded code: review the bootstrap script first if
 you prefer. Administrator permission may be requested by dependency installers;
 do not run the entire installation as root. macOS uses Homebrew (installing it
-if missing); Linux uses apt; Windows requires Microsoft's App Installer/WinGet
+if missing); Linux uses apt, dnf, pacman or zypper and installs only what is missing; Windows requires Microsoft's App Installer/WinGet
 and installs Python, FFmpeg, the C++ runtime and a checksum-pinned Whisper build.
 The app snapshot is downloaded automatically. Windows installs the checksum-pinned
 Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching release
@@ -139,7 +139,7 @@ Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 ./install.sh
 ```
 
-The installer installs Debian dependencies, downloads the base English model,
+The installer detects your package manager (apt, dnf, pacman or zypper), installs only the dependencies that are missing (asking for administrator access only then), downloads the base English model,
 builds whisper.cpp if necessary, adds Whisper Dictation to the application menu,
 and requests the optional GNOME shortcut Ctrl+Alt+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations

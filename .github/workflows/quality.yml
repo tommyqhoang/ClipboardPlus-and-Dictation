@@ -23,9 +23,9 @@ jobs:
         if: runner.os == 'Linux'
       - run: ruff check lib tests tools setup-desktop.py && ruff format --check lib tests tools setup-desktop.py
       - run: mypy --strict lib tools setup-desktop.py
-      - run: shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh
+      - run: shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh
         if: runner.os == 'Linux'
-      - run: shfmt -d -i 2 -ci bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh
+      - run: shfmt -d -i 2 -ci bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh
         if: runner.os == 'Linux'
       - name: Parse Windows bootstrap without installing
         if: runner.os == 'Windows'
@@ -54,3 +54,15 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s tests -v
       - run: python -m compileall -q lib setup-desktop.py
+
+  linux-distro-install:
+    # The installer must bring a bare system to a working install, whatever the distribution.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu:latest, debian:stable, fedora:latest, archlinux:latest, opensuse/tumbleweed:latest]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: docker run --rm -v "$PWD:/src:ro" "${{ matrix.image }}" bash /src/tests/verify-install.sh

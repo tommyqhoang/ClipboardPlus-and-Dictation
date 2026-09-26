@@ -10,12 +10,12 @@ commands.
 
 | Platform | Launcher | Local dependencies |
 | --- | --- | --- |
-| Debian/Ubuntu Linux | Top bar icon (starts at login), application menu, GNOME Ctrl+Alt+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray and Pillow in a private venv |
+| Linux (apt, dnf, pacman, zypper) | Top bar icon (starts at login), application menu, GNOME Ctrl+Alt+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray and Pillow in a private venv |
 | macOS | Menu bar icon from `~/Applications/Whisper Dictation.app` (starts at login), ⌃⌥D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC in a private venv |
 | Windows x64 | System tray icon (starts at login), Start Menu, Ctrl+Alt+D | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp; pystray and Pillow in a private venv |
 
 The Windows bootstrap currently pins whisper.cpp 1.8.7 and verifies the upstream
-release digest. Debian/Ubuntu uses its package when available; the source fallback
+release digest. Linux uses the distribution package when one exists (Debian/Ubuntu, Fedora); the source fallback
 pins the same release and commit instead of building an unreviewed moving branch.
 
 The app opens to a welcome screen. It asks for language and microphone, then
@@ -46,7 +46,7 @@ the AVFoundation and DirectShow capture interfaces used on macOS and Windows.
 
 ## Developer and custom installation
 
-Developers working from a checkout can run `./install.sh` on Debian/Ubuntu or
+Developers working from a checkout can run `./install.sh` on Linux or
 `python3 setup-desktop.py` on macOS/Windows. The graphical app is installed with
 the core runtime. `python3 setup-desktop.py --launch-only` opens the installed
 app; `--uninstall` removes known application files and its registered launcher.

@@ -17,11 +17,31 @@ foreach ($package in @('Python.Python.3.11', 'Gyan.FFmpeg', 'Microsoft.VCRedist.
     }
 }
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-$python = Get-Command python.exe -ErrorAction SilentlyContinue
-$knownPython = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311\python.exe'
-if (Test-Path -LiteralPath $knownPython) { $pythonPath = $knownPython }
-elseif ($python) { $pythonPath = $python.Source }
-else { throw 'Python was installed but cannot be located. Restart PowerShell and rerun.' }
+function Find-Python {
+    # A leftover Python without Tk, or the Microsoft Store stub, must not be chosen.
+    $ErrorActionPreference = 'Continue'
+    $candidates = @()
+    $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($launcher) {
+        $found = & $launcher.Source -3.11 -c 'import sys; print(sys.executable)' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $found) { $candidates += "$found".Trim() }
+    }
+    $candidates += Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311\python.exe'
+    $candidates += Join-Path $env:ProgramFiles 'Python311\python.exe'
+    $onPath = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($onPath -and $onPath.Source -notlike '*\WindowsApps\*') { $candidates += $onPath.Source }
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            & $candidate -c 'import tkinter, venv' 2>$null
+            if ($LASTEXITCODE -eq 0) { return $candidate }
+        }
+    }
+    return $null
+}
+$pythonPath = Find-Python
+if (-not $pythonPath) {
+    throw 'No Python 3 with Tk (tkinter) was found. Install Python 3.11 from python.org with the tcl/tk option, or restart PowerShell and rerun.'
+}
 $work = Join-Path ([IO.Path]::GetTempPath()) ('whisper-dictation-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
 try {

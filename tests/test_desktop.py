@@ -278,6 +278,7 @@ class DesktopTests(unittest.TestCase):
             for platform, requirement in (("macos", "pyobjc"), ("linux", "pystray")):
                 with (
                     patch.object(setup.desktop, "platform_name", return_value=platform),
+                    patch.object(setup, "base_python", return_value="python3"),
                     patch.object(setup.subprocess, "run") as run,
                 ):
                     run.return_value.returncode = 1
@@ -292,13 +293,54 @@ class DesktopTests(unittest.TestCase):
                 run.return_value.returncode = 0
                 setup.gui_environment(prefix)
                 run.assert_called_once()  # Only the import probe.
-            with patch.object(
-                setup.subprocess,
-                "run",
-                side_effect=[Mock(returncode=1), setup.subprocess.CalledProcessError(1, "venv")],
+            with (
+                patch.object(setup, "base_python", return_value="python3"),
+                patch.object(
+                    setup.subprocess,
+                    "run",
+                    side_effect=[
+                        Mock(returncode=1),
+                        setup.subprocess.CalledProcessError(1, "venv"),
+                    ],
+                ),
             ):
                 with self.assertRaisesRegex(dictation.DictationError, "tray component"):
                     setup.gui_environment(prefix)
+
+    def test_base_python_skips_interpreter_without_tk(self):
+        setup = setup_module()
+
+        def probe(command, **_):
+            # Only the system interpreter can import Tk and GTK.
+            return Mock(returncode=0 if command[0] == "/usr/bin/python3" else 1)
+
+        with (
+            patch.object(setup.sys, "executable", "/opt/brew/bin/python3"),
+            patch.object(setup.shutil, "which", return_value=None),
+            patch.object(setup.os.path, "isfile", return_value=True),
+            patch.object(setup.subprocess, "run", side_effect=probe),
+        ):
+            self.assertEqual(setup.base_python("linux"), "/usr/bin/python3")
+            # Other platforms keep the running interpreter.
+            self.assertEqual(setup.base_python("macos"), "/opt/brew/bin/python3")
+
+    def test_gui_environment_error_names_the_cause(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            failure = setup.subprocess.CalledProcessError(
+                1, "probe", stderr="ImportError: no _tkinter\n"
+            )
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup, "base_python", return_value="python3"),
+                patch.object(
+                    setup.subprocess,
+                    "run",
+                    side_effect=[Mock(), Mock(), failure],
+                ),
+            ):
+                with self.assertRaisesRegex(dictation.DictationError, "no _tkinter"):
+                    setup.gui_environment(Path(folder))
 
     def test_stop_menubar_requests_quit_and_waits(self):
         setup = setup_module()

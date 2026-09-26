@@ -95,6 +95,13 @@ GUI_REQUIREMENTS = {
 }
 
 
+TK_HINT = {
+    "linux": "install python3-tk, python3-tkinter or tk from your package manager",
+    "macos": "run: brew install python-tk",
+    "windows": "reinstall Python with the tcl/tk option",
+}
+
+
 def gui_python(prefix: Path) -> tuple[Path, Path]:
     """The private environment's Python and its no-console variant."""
     venv = prefix / "share/whisper-dictation/venv"
@@ -103,17 +110,48 @@ def gui_python(prefix: Path) -> tuple[Path, Path]:
     return venv / "bin/python", venv / "bin/python"
 
 
+def base_python(platform: str) -> str:
+    """An interpreter able to build the private environment.
+
+    The running Python is not always the one the distribution's Tk and GTK
+    packages were installed for (Homebrew, pyenv or conda first on PATH), so on
+    Linux also try the system interpreter. Falls back to the running Python so
+    the failure is reported by the environment build itself.
+    """
+    candidates = [sys.executable]
+    if platform == "linux":
+        candidates += ["/usr/bin/python3", shutil.which("python3") or ""]
+    needed = "tkinter, venv" + (", gi" if platform == "linux" else "")
+    tried = set()
+    for candidate in candidates:
+        if not candidate or candidate in tried or not os.path.isfile(candidate):
+            continue
+        tried.add(candidate)
+        probe = subprocess.run(
+            [candidate, "-c", f"import {needed}"], capture_output=True, check=False
+        )
+        if probe.returncode == 0:
+            return candidate
+    return sys.executable
+
+
 def gui_environment(prefix: Path) -> Path:
     """Create the private environment; returns its windowed Python."""
     platform = desktop.platform_name()
     venv = prefix / "share/whisper-dictation/venv"
     python, windowed = gui_python(prefix)
-    modules = "AppKit" if platform == "macos" else "pystray, PIL"
-    probe = [str(python), "-c", f"import {modules}, tkinter"]
+    # Importing pystray connects to the display, which an SSH or TTY install lacks,
+    # so only check that it is installed.
+    code = (
+        "import AppKit, tkinter"
+        if platform == "macos"
+        else "import importlib.util, PIL, tkinter; assert importlib.util.find_spec('pystray')"
+    )
+    probe = [str(python), "-c", code]
     if python.exists() and subprocess.run(probe, capture_output=True, check=False).returncode == 0:
         return windowed
     print("Installing the menu bar/tray component (one time)...", flush=True)
-    create = [sys.executable, "-m", "venv", "--clear", str(venv)]
+    create = [base_python(platform), "-m", "venv", "--clear", str(venv)]
     if platform == "linux":
         create.insert(3, "--system-site-packages")  # Sees the distribution's GTK bindings.
     requirements = GUI_REQUIREMENTS["macos" if platform == "macos" else "other"]
@@ -125,11 +163,13 @@ def gui_environment(prefix: Path) -> Path:
             check=True,
             timeout=600,
         )
-        subprocess.run(probe, check=True, capture_output=True)
+        subprocess.run(probe, check=True, capture_output=True, text=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        lines = (getattr(exc, "stderr", None) or "").strip().splitlines()
+        detail = f" ({lines[-1]})" if lines else ""
         raise dictation.DictationError(
-            "Could not install the menu bar/tray component. Check your internet connection "
-            "and retry."
+            f"Could not install the menu bar/tray component{detail}. Check your internet "
+            f"connection and that your Python includes Tk ({TK_HINT[platform]}), then retry."
         ) from exc
     return windowed
 
