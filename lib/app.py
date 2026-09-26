@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import os
 import subprocess
 import sys
@@ -13,6 +14,8 @@ from tkinter import filedialog, font, messagebox, ttk
 from typing import Any, Literal
 
 import clipboardplus
+import clipstore
+import clipui
 import desktop
 import dictation as d
 import hotkeys
@@ -82,11 +85,15 @@ class App:
         self.api_model = tk.StringVar(value="")
         self.api_key = tk.StringVar(value="")
         self.clip_key = tk.StringVar(value="")
+        self.clipboard_page: clipui.ClipboardPage | None = None
+        self.clipboard_store: clipstore.Store | None = None
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         # The tray/menu bar app owns everyday use; this window is for setup.
         self.tray = True
         if page == "shortcut":
             self.shortcut_page()
+        elif service.completed() and page == "clipboard" and self.features().clipboard:
+            self.clipboard()
         elif service.completed() and page == "settings":
             self.settings()
         elif service.completed():
@@ -191,6 +198,9 @@ class App:
                 bordercolor=[("disabled", BORDER if fill == SURFACE else muted)],
                 foreground=[("disabled", "#9fb0bc" if fill == SURFACE else "white")],
             )
+        # Compact buttons for dense lists (clipboard rows, filters).
+        style.configure("Small.TButton", padding=(10, 4), font=self.fonts["body"])
+        style.configure("Small.Primary.TButton", padding=(10, 4), font=self.fonts["body"])
         # Idle Record is neutral: the shortcut, not this button, is the main way in.
         for name in ("", "Primary.", "Danger."):
             style.configure(f"Record.{name}TButton", padding=(24, 16), font=self.fonts["record"])
@@ -292,11 +302,88 @@ class App:
         elif not self.status_label.winfo_manager():
             self.status_label.pack(anchor="w")
         self.step.set(step)
+        if page in ("home", "clipboard") and self.service.completed():
+            self.draw_tabs(page)
         ttk.Label(self.frame, text=title, style="Title.TLabel").pack(anchor="w", pady=(0, 6))
         ttk.Label(
             self.frame, text=subtitle, wraplength=self.wraplength, style="Subtitle.TLabel"
         ).pack(anchor="w", pady=(0, 20))
         self.status.set("")
+
+    def bordered(self, parent: tk.Misc, pady: tuple[int, int] = (0, 8)) -> ttk.Frame:
+        """A white, outlined panel inside `parent`."""
+        outline = tk.Frame(parent, background=BORDER, padx=1, pady=1)
+        outline.pack(fill="x", pady=pady)
+        body = ttk.Frame(outline, style="Card.TFrame", padding=(16, 10))
+        body.pack(fill="both", expand=True)
+        return body
+
+    def features(self) -> hotkeys.Features:
+        return hotkeys.Preferences(self.service.paths).features()
+
+    def tab_names(self) -> list[str]:
+        features = self.features()
+        return (
+            (["clipboard"] if features.clipboard else [])
+            + (["dictation"] if features.dictation else [])
+            + ["settings"]
+        )
+
+    def tab(self, name: str) -> None:
+        if name == "clipboard":
+            self.clipboard()
+        elif name == "dictation":
+            self.home()
+        else:
+            self.settings()
+
+    def draw_tabs(self, current: str) -> None:
+        names = self.tab_names()
+        row = ttk.Frame(self.frame)
+        row.pack(fill="x", pady=(0, 14))
+        active = "dictation" if current == "home" else current
+        labels = {"clipboard": "Clipboard", "dictation": "Dictation", "settings": "Settings"}
+        for name in names:
+            ttk.Button(
+                row,
+                text=labels[name],
+                command=functools.partial(self.tab, name),
+                style="Primary.TButton" if name == active else "TButton",
+            ).pack(side="left", padx=(0, 8))
+
+    def clipboard(self) -> None:
+        self.reset("clipboard", "Clipboard", "Everything you copy, kept on this computer.")
+        if self.clipboard_store is None:
+            self.clipboard_store = clipstore.Store(self.service.paths.clipboard)
+        self.clipboard_page = clipui.ClipboardPage(self, self.clipboard_store)
+        self.clipboard_page.render()
+
+    def clipboard_optin(self, after: Callable[[], None]) -> None:
+        """Ask before anything is captured: the choice is explicit and reversible."""
+        self.reset(
+            "clipboard-optin",
+            "Keep a history of what you copy?",
+            "Search it, star favorites and copy things back, on every computer you use.",
+        )
+        card = self.card(
+            "How it works",
+            "It saves text, links and images you copy so you can find them again. Everything "
+            "stays on this computer unless you connect a Clipboard+ account, and even then "
+            "images are never uploaded. Anything a password manager marks as secret is "
+            "skipped. You can pause or turn it off at any time.",
+        )
+
+        def choose(enabled: bool) -> None:
+            if enabled:
+                prefs = hotkeys.Preferences(self.service.paths)
+                features = prefs.features()
+                prefs.save(features=hotkeys.Features(features.dictation, True))
+            after()
+
+        row = ttk.Frame(card, style="Card.TFrame")
+        row.pack(fill="x")
+        self.button("Turn on", lambda: choose(True), True, row, "left")
+        self.button("Not now", lambda: choose(False), False, row, "left")
 
     def card(self, heading: str = "", hint: str = "") -> ttk.Frame:
         outline = tk.Frame(self.frame, background=BORDER, padx=1, pady=1)
@@ -1001,6 +1088,10 @@ class App:
                 done(future.result())
             if self.page == "home" and self.pending is None:
                 self.refresh()
+            if self.page == "clipboard" and self.clipboard_page is not None:
+                self.polls = getattr(self, "polls", 0) + 1
+                if self.polls % 5 == 0:  # About once a second.
+                    self.clipboard_page.refresh()
         except (d.DictationError, OSError, ValueError, subprocess.SubprocessError) as exc:
             self.status.set(
                 str(exc)
@@ -1042,13 +1133,17 @@ class App:
         self.root.after_cancel(self.timer)
         self.done = lambda _: None
         self.executor.shutdown(wait=True)
+        if self.clipboard_store is not None:
+            self.clipboard_store.close()
         self.root.destroy()
 
 
 def main(argv: list[str] | None = None) -> int:
     os.umask(0o077)
     args = sys.argv[1:] if argv is None else argv
-    page = next((flag[2:] for flag in ("--settings", "--shortcut") if flag in args), "")
+    page = next(
+        (flag[2:] for flag in ("--settings", "--shortcut", "--clipboard") if flag in args), ""
+    )
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "app.lock")
     if fd is None:

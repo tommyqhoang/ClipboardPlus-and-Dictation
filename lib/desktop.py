@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -157,6 +158,41 @@ def recorder_command(values: dict[str, Any], listing: bool = False) -> list[str]
         "1",
         "pipe:1",
     ]
+
+
+def windows_image_script(path: Path) -> str:
+    """PowerShell that puts a PNG file on the clipboard as an image."""
+    quoted = str(path).replace("'", "''")
+    return (
+        "$ErrorActionPreference='Stop'; "
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+        f"$i=[Drawing.Image]::FromFile('{quoted}'); "
+        "[Windows.Forms.Clipboard]::SetImage($i); $i.Dispose()"
+    )
+
+
+def copy_image(values: dict[str, Any], path: Path, run: Any = subprocess.run) -> None:
+    """Put a PNG file on the system clipboard as an image. Raises OSError on failure."""
+    system = platform_name()
+    try:
+        if system == "macos":
+            script = f'set the clipboard to (read (POSIX file "{path}") as «class PNGf»)'
+            run(["/usr/bin/osascript", "-e", script], timeout=10, check=True, capture_output=True)
+        elif system == "windows":
+            command = [
+                str(values["powershell"]),
+                "-NoProfile",
+                "-NonInteractive",
+                "-STA",
+                "-Command",
+                windows_image_script(path),
+            ]
+            run(command, timeout=15, check=True, capture_output=True, **process_options())
+        else:
+            command = executable(str(values["wl_copy"])) + ["--type", "image/png"]
+            run(command, input=path.read_bytes(), timeout=5, check=True, capture_output=True)
+    except subprocess.SubprocessError as exc:
+        raise OSError("Could not copy the image to the clipboard.") from exc
 
 
 def clipboard_command(values: dict[str, Any]) -> list[str]:

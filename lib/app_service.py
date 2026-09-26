@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import clipboardplus
+import clipstore
 import desktop
 import dictation as d
 import hotkeys
@@ -84,6 +85,17 @@ class Service:
             raise d.DictationError(
                 "Couldn’t save the Clipboard+ key. Check that your settings folder is writable."
             ) from exc
+
+    def copy_item(self, item: clipstore.Item, store: clipstore.Store) -> None:
+        """Put a history item back on the system clipboard."""
+        config = d.Config(self.paths)
+        try:
+            if item.kind == "image":
+                desktop.copy_image(config.values, store.image_path(item))
+            else:
+                d.copy_text(config, self.paths, item.text)
+        except OSError as exc:
+            raise d.DictationError(str(exc)) from exc
 
     def open_clipboard_website(self) -> None:
         """The user's history once linked; otherwise the Clipboard+ site."""
