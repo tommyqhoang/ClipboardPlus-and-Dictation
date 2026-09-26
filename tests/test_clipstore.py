@@ -5,17 +5,17 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
-import struct
 import sys
 import tempfile
 import threading
 import unittest
-import zlib
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import clipstore
+from support import make_png
 
 try:
     import PIL  # noqa: F401
@@ -23,27 +23,6 @@ try:
     HAS_PILLOW = True
 except ImportError:
     HAS_PILLOW = False
-
-
-def make_png(width: int = 2, height: int = 2, color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
-    """A valid PNG without needing Pillow."""
-    raw = b"".join(b"\x00" + bytes(color) * width for _ in range(height))
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(data))
-            + tag
-            + data
-            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        )
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(raw))
-        + chunk(b"IEND", b"")
-    )
 
 
 class StoreCase(unittest.TestCase):
