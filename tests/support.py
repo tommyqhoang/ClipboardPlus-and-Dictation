@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import faulthandler
+import os
 import random
 import struct
 import zlib
+
+if os.environ.get("CI"):
+    # A hung test (a dialog waiting for a click, a lock never released) would otherwise
+    # sit silently until the job timeout. The suite takes about two minutes.
+    faulthandler.dump_traceback_later(600, exit=True)
 
 
 def make_png(

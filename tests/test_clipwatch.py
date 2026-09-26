@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import sys
 import unittest
 from pathlib import Path
@@ -98,16 +99,24 @@ class ChoiceTests(unittest.TestCase):
 
 
 class FakeWatchProcess:
-    """Stands in for `wl-paste --watch`: a line on the pipe is one clipboard change."""
+    """Stands in for `wl-paste --watch`: a line on the pipe is one clipboard change.
+
+    A socket pair rather than os.pipe(), because Windows only select()s on sockets.
+    """
 
     def __init__(self) -> None:
-        read, self.write_fd = os.pipe()
-        self.stdout = os.fdopen(read, "r")
+        self._writer, self._reader = socket.socketpair()
+        self.stdout = self._reader.makefile("r")
         self.terminated = False
         self.exit_code: int | None = None
 
     def change(self) -> None:
-        os.write(self.write_fd, b"changed\n")
+        self._writer.sendall(b"changed\n")
+
+    def close(self) -> None:
+        self.stdout.close()
+        self._reader.close()
+        self._writer.close()
 
     def poll(self) -> int | None:
         return self.exit_code
@@ -119,12 +128,10 @@ class FakeWatchProcess:
         return 0
 
 
-@unittest.skipIf(sys.platform == "win32", "wl-paste is Wayland-only; select() needs sockets here")
 class WlPasteTests(unittest.TestCase):
     def source(self, clipboard: dict[str, bytes], types_output: str | None = None):
         process = FakeWatchProcess()
-        self.addCleanup(process.stdout.close)
-        self.addCleanup(os.close, process.write_fd)
+        self.addCleanup(process.close)
         reads: list[list[str]] = []
 
         def reader(command, max_bytes):
@@ -152,8 +159,7 @@ class WlPasteTests(unittest.TestCase):
     def test_the_startup_notification_for_existing_content_is_ignored(self):
         clock = [100.0]
         process = FakeWatchProcess()
-        self.addCleanup(process.stdout.close)
-        self.addCleanup(os.close, process.write_fd)
+        self.addCleanup(process.close)
         source = linux.WlPasteSource(process, lambda c, m: b"", clock=lambda: clock[0])
         process.change()  # wl-paste reports the current selection right after it starts.
         self.assertFalse(source.wait(0.05))

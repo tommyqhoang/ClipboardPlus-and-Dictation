@@ -277,7 +277,7 @@ class TabTests(PageCase):
 class OptInTests(PageCase):
     def test_turning_it_on_enables_the_feature(self):
         hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, False))
-        self.window.clipboard_optin(lambda: None)
+        self.window.clipboard_optin(lambda enabled: None)
         self.assertTrue(any("password manager" in t for t in self.texts()))
         self.buttons("Turn on")[0].invoke()
         self.assertTrue(hotkeys.Preferences(self.paths).features().clipboard)
