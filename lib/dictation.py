@@ -168,7 +168,7 @@ class Config:
             )
         if not self.s("whisper_bin"):
             self.values["whisper_bin"] = shutil.which("whisper-cli") or str(
-                Path.home() / ".local/opt/whisper.cpp/build/bin/whisper-cli"
+                Path.home() / ".local/opt/whisper.cpp-v1.8.7/build/bin/whisper-cli"
             )
 
     def s(self, key: str) -> str:
@@ -210,6 +210,10 @@ class Config:
             if not loopback and (endpoint.scheme != "https" or not self.b("allow_remote")):
                 raise DictationError(
                     "Remote transcription requires HTTPS and allow_remote=true; audio leaves this machine."
+                )
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.s("api_key_env")):
+                raise DictationError(
+                    "api_key_env must be an environment variable NAME, not an API key."
                 )
         for command in commands:
             if not desktop.available(command):
@@ -375,7 +379,7 @@ def copy_text(config: Config, paths: Paths, text: str | None = None) -> None:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise DictationError(
-            "Transcript saved, but clipboard copy failed. Retry with --copy-last."
+            "Transcript saved, but clipboard copy failed. Retry with Copy transcript (or --copy-last)."
         ) from exc
 
 
@@ -598,7 +602,11 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
                     )
                 if time.monotonic() >= deadline:
                     child.terminate()
-                    child.wait(timeout=5)
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
                     raise DictationError("Session startup timed out. Try again.")
                 time.sleep(0.02)
             print("Starting recording…")

@@ -39,7 +39,7 @@ class ServiceTests(ServiceCase):
     def test_setup_model_save_and_completion(self):
         self.assertFalse(self.service.completed())
         model = self.folder / "model.bin"
-        model.write_bytes(b"fixture")
+        model.write_bytes(b"lmgg-fixture")
         with (
             patch.object(d.Config, "check"),
             patch.object(app_service.onboarding, "download_model", return_value=model) as download,
@@ -51,6 +51,12 @@ class ServiceTests(ServiceCase):
             self.assertEqual(d.read_json(self.paths.config)["language"], "auto")
             self.service.prepare("en", "USB Mic", str(model))
             self.assertEqual(download.call_count, 1)
+        with patch.dict(os.environ, {"DICTATION_PROMPT": "temporary environment prompt"}):
+            with patch.object(d.Config, "check"):
+                self.service.prepare("en", "USB Mic", str(model))
+        self.assertNotEqual(
+            d.read_json(self.paths.config)["prompt"], "temporary environment prompt"
+        )
         for language, device in (("bad", "default"), ("en", "")):
             with self.assertRaises(d.DictationError):
                 self.service.prepare(language, device, "")
@@ -204,6 +210,12 @@ class WindowTests(ServiceCase):
         self.paths.audio.write_bytes(b"saved")
         self.tick()
         self.assertIn("Retry", self.window.status.get())
+        d.atomic(
+            self.paths.state,
+            '{"phase":"error","message":"Transcript saved, but clipboard copy failed."}',
+        )
+        self.tick()
+        self.assertIn("clipboard copy failed", self.window.status.get())
         d.atomic(self.paths.state, '{"phase":"idle"}')
         self.tick()
         self.assertIn("discard", self.window.status.get())

@@ -84,6 +84,11 @@ class OnboardingTests(unittest.TestCase):
             with self.assertRaises(dictation.DictationError):
                 self.wizard(answers, platform)
             self.assertFalse(self.paths.config.exists())
+        invalid_model = Path(self.temp.name) / "not-a-model.bin"
+        invalid_model.write_bytes(b"not a GGML file")
+        with self.assertRaisesRegex(dictation.DictationError, "not a whisper.cpp GGML"):
+            self.wizard(["1", str(invalid_model)])
+        self.assertFalse(self.paths.config.exists())
         with patch.object(dictation, "busy", return_value=True):
             with self.assertRaises(dictation.DictationError):
                 self.wizard([])

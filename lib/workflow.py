@@ -18,9 +18,7 @@ def snapshot(paths: d.Paths) -> dict[str, Any]:
     current = {"phase": "idle", **d.read_json(paths.state)}
     active = d.busy(paths)
     if not active and current["phase"] in ("starting", "recording", "transcribing", "cancelling"):
-        current.update(
-            phase="interrupted", message="Worker exited; use --transcribe for retained audio."
-        )
+        current.update(phase="interrupted", message="Worker exited. Retry the saved recording.")
     if active and isinstance(current.get("started_at"), (int, float)):
         current["elapsed_seconds"] = max(0, round(time.time() - current["started_at"], 1))
     return current | {"active": active, "retained_audio": paths.audio.exists()}

@@ -5,12 +5,12 @@
 The cross-platform/installer update is checked with native macOS tests and an
 isolated Linux container. The latest verified scope is:
 
-- 65 unit/integration tests, including actual subprocess session control,
+- 67 unit/integration tests, including actual subprocess session control,
   live previews, cancellation, retained audio, clipboard failure recovery,
   HTTP multipart requests, redirect rejection, graphical workflows, and installer
   regression tests.
 - 95% combined statement/branch coverage across the seven `lib` runtime modules
-  (1,079 statements, 368 branch destinations): graphical app 99%, app service
+  (1,125 statements, 382 branch destinations): graphical app 98%, app service
   95%, dictation 91%, desktop adapters 95%, onboarding 98%, and rewriting/workflow
   100%.
   Coverage includes subprocesses. This is critical-core coverage,
@@ -21,15 +21,20 @@ isolated Linux container. The latest verified scope is:
   and uninstallation that retained settings.
 - Desktop installer round trips in temporary directories, launcher construction
   for all three operating systems, verified-download success/failure tests, and
-  native/virtual walkthrough tests that verify no recording starts.
+  native/virtual walkthrough tests that verify no recording starts. Setup rejects
+  non-GGML model files before recording, and desktop settings do not persist
+  temporary environment overrides.
 - Unix bootstrap orchestration and cleanup with substituted package/network
-  commands. Actual package-manager installation was not performed on the host.
+  commands. The Linux source fallback is tested for its release/commit pin and the
+  Windows bootstrap for its version/digest pin. Actual package-manager installation
+  was not performed on the host.
 - Actual loopback HTTP requests test concise-draft creation, separate review/copy,
   original preservation, stale-draft rejection, no redirects or automatic retries,
   malformed/truncated responses, remote consent and secret non-persistence.
 - The graphical status window is exercised natively on macOS and under a Linux
-  virtual display with deterministic state/timer tests. Displayed model text has
-  control characters removed.
+  virtual display with deterministic state/timer tests. Recovery errors remain
+  visible, smaller windows expose scrolling controls, and displayed model text
+  has control characters removed.
 
 CI defines Linux/macOS/Windows checks and Windows PowerShell parsing. These local
 results are not a completed GitHub Actions run or an actual Windows installation.

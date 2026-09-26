@@ -14,6 +14,10 @@ commands.
 | macOS | `~/Applications/Whisper Dictation.app` | Homebrew Python/Tk, FFmpeg, whisper.cpp |
 | Windows x64 | Whisper Dictation in the Start Menu | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp |
 
+The Windows bootstrap currently pins whisper.cpp 1.8.7 and verifies the upstream
+release digest. Debian/Ubuntu uses its package when available; the source fallback
+pins the same release and commit instead of building an unreviewed moving branch.
+
 The app opens to a welcome screen. It asks for language and microphone, then
 downloads and verifies a free base model unless the user chooses an existing
 compatible model. Setup does not record. The microphone starts only after the
@@ -21,7 +25,8 @@ user presses **Record**.
 
 After setup, the app provides Record/Stop, Cancel, Copy, Retry saved recording,
 Discard saved recording, Settings, and Help. A second launch focuses the existing
-window instead of opening another recorder.
+window instead of opening another recorder. The window sizes itself to the display
+and exposes a scrollbar when all controls do not fit.
 
 ## Permissions
 

@@ -27,11 +27,11 @@ New-Item -ItemType Directory -Path $work | Out-Null
 try {
     $whisperZip = Join-Path $work 'whisper.zip'
     # Pin both version and digest, keeping all DLLs beside the executable.
-    Invoke-WebRequest -UseBasicParsing 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-bin-x64.zip' -OutFile $whisperZip
-    if ((Get-FileHash $whisperZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd824b1e37599f882b396e73f1ee0bfd5d0529f700314c48311dcbd00b803321d') {
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.7/whisper-bin-x64.zip' -OutFile $whisperZip
+    if ((Get-FileHash $whisperZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd9627486e1c34a03745880485593473e047294260ce9a3cb0aa8deaf15b99af6') {
         throw 'Whisper archive checksum mismatch.'
     }
-    $engine = Join-Path $env:LOCALAPPDATA 'WhisperDictation\Engines\whisper-1.8.3'
+    $engine = Join-Path $env:LOCALAPPDATA 'WhisperDictation\Engines\whisper-1.8.7'
     Expand-Archive -LiteralPath $whisperZip -DestinationPath $engine -Force
     $cli = Get-ChildItem -LiteralPath $engine -Filter whisper-cli.exe -Recurse | Select-Object -First 1
     if (-not $cli) { throw 'Whisper archive did not contain whisper-cli.exe.' }

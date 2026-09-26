@@ -41,8 +41,10 @@ you prefer. Administrator permission may be requested by dependency installers;
 do not run the entire installation as root. macOS uses Homebrew (installing it
 if missing); Linux uses apt; Windows requires Microsoft's App Installer/WinGet
 and installs Python, FFmpeg, the C++ runtime and a checksum-pinned Whisper build.
-The app snapshot is downloaded automatically; Git is only needed if Linux must
-build the Whisper engine. Dependencies and model downloads need internet access.
+The app snapshot is downloaded automatically. Windows installs the checksum-pinned
+Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching release
+and commit. Git is only needed for that Linux fallback. Dependencies and model
+downloads need internet access.
 
 When installation finishes, **Whisper Dictation opens automatically**. The
 first-run screens help the user:
@@ -57,7 +59,8 @@ user presses **Record**. Later, the app is opened from Applications, the Start
 Menu, or the Linux application menu—no application commands are required. The
 app displays recording/transcription status, the latest transcript, clipboard
 copying, and recoverable-audio actions. Settings and Help are available inside
-the window. No shell profile or system `PATH` is silently changed.
+the window. The interface scrolls on smaller displays instead of hiding setup or
+recovery controls. No shell profile or system `PATH` is silently changed.
 
 For reproducible deployment, download bootstrap from a reviewed commit and set
 `DICTATION_REF` to that commit (Windows: pass `-Ref`). The quick commands track
@@ -142,8 +145,11 @@ API key is not a local speech model. Install another model using
 than silently using a different model.
 
 Downloads are staged in a resumable partial file and checked for a GGML header
-before activation. For full integrity verification, set
-`DICTATION_MODEL_SHA256` to a trusted SHA-256 digest when installing.
+before activation. The built-in English and multilingual base models are verified
+against pinned SHA-256 digests. For another model, set `DICTATION_MODEL_SHA256`
+to a trusted digest; otherwise the installer clearly warns that only the GGML
+header was checked. Model files selected in the app are also rejected early when
+they do not have a whisper.cpp GGML header.
 
 Larger models trade memory and speed for potential accuracy gains; measure them
 on your microphone, accent, and vocabulary. Use a multilingual model with

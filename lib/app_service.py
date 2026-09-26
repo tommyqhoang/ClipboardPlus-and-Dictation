@@ -69,7 +69,7 @@ class Service:
         if desktop.platform_name() == "windows" and device == "default":
             raise d.DictationError("Choose a microphone using Find microphones.")
         candidate = d.Config(self.paths)
-        path = (
+        path = onboarding.validate_model(
             Path(model).expanduser()
             if model
             else onboarding.download_model(self.paths.config.parent / "models", language)
@@ -83,7 +83,20 @@ class Service:
         )
         candidate.check(recording=True)
         d.private_dir(self.paths.config.parent)
-        d.atomic(self.paths.config, json.dumps(candidate.values, indent=2))
+        # Save the user's file settings, not temporary DICTATION_* environment
+        # overrides inherited by this desktop process.
+        saved = d.DEFAULTS | d.read_json(self.paths.config)
+        for key in ("ffmpeg", "whisper_bin"):
+            if not saved[key]:
+                saved[key] = candidate.values[key]
+        saved.update(
+            backend="local",
+            model=str(path),
+            language=language,
+            device=device.strip(),
+            allow_remote=False,
+        )
+        d.atomic(self.paths.config, json.dumps(saved, indent=2))
 
     def action(self, action: str) -> None:
         config = d.Config(self.paths)

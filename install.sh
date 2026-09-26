@@ -10,6 +10,8 @@ MODEL_NAME="${DICTATION_MODEL_NAME:-ggml-base.en.bin}"
 MODEL_URL="${DICTATION_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_NAME}}"
 MODEL_DEST="${MODEL_DIR}/${MODEL_NAME}"
 MODEL_LINK="${MODEL_DIR}/dictation-model.bin"
+WHISPER_VERSION="v1.8.7"
+WHISPER_COMMIT="48f628a84833905ee4a0658ee6d4a5c915ce1997"
 SKIP_MODEL=0
 SKIP_PACKAGES=0
 SKIP_DOWNLOAD=0
@@ -78,24 +80,30 @@ install_whisper() {
 }
 
 install_whisper_from_source() {
-  local src_dir="${HOME}/.local/opt/whisper.cpp"
+  local src_dir="${HOME}/.local/opt/whisper.cpp-${WHISPER_VERSION}"
   local bin_path="${src_dir}/build/bin/whisper-cli"
-
-  if [[ -x "$bin_path" ]]; then
-    echo "Source-built whisper-cli already present: $bin_path"
-    return 0
-  fi
 
   mkdir -p "${HOME}/.local/opt"
   if [[ -d "$src_dir/.git" ]]; then
-    echo "Updating whisper.cpp source in $src_dir"
-    git -C "$src_dir" pull --ff-only
+    if [[ "$(git -C "$src_dir" rev-parse HEAD)" != "$WHISPER_COMMIT" ]]; then
+      echo "$src_dir is not the expected $WHISPER_VERSION source; remove it or set DICTATION_WHISPER_BIN." >&2
+      return 1
+    fi
+    if [[ -x "$bin_path" ]]; then
+      echo "Pinned source-built whisper-cli already present: $bin_path"
+      return 0
+    fi
   elif [[ -e "$src_dir" ]]; then
     echo "$src_dir exists but is not a git checkout; remove it or set DICTATION_WHISPER_BIN." >&2
     return 1
   else
-    echo "Cloning whisper.cpp source into $src_dir"
-    git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git "$src_dir"
+    echo "Cloning whisper.cpp $WHISPER_VERSION into $src_dir"
+    git clone --depth 1 --branch "$WHISPER_VERSION" \
+      https://github.com/ggml-org/whisper.cpp.git "$src_dir"
+    if [[ "$(git -C "$src_dir" rev-parse HEAD)" != "$WHISPER_COMMIT" ]]; then
+      echo "Downloaded whisper.cpp source did not match the pinned commit." >&2
+      return 1
+    fi
   fi
 
   echo "Building whisper-cli from source"
@@ -113,13 +121,22 @@ install_whisper_from_source() {
 install_model() {
   local partial_dest="${MODEL_DEST}.part"
   local candidate="$MODEL_DEST"
+  local expected_sha256="${DICTATION_MODEL_SHA256:-}"
+
+  if [[ -z "$expected_sha256" ]]; then
+    case "$MODEL_NAME" in
+      ggml-base.en.bin) expected_sha256="a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002" ;;
+      ggml-base.bin) expected_sha256="60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe" ;;
+    esac
+  fi
 
   mkdir -p "$MODEL_DIR"
   if [[ -s "$MODEL_DEST" ]]; then
     echo "Model already present: $MODEL_DEST"
   else
     echo "Downloading Whisper model: $MODEL_NAME"
-    curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 15 \
+    curl --proto '=https' --proto-redir '=https' --fail --location --retry 3 \
+      --retry-delay 2 --connect-timeout 15 \
       --continue-at - --output "$partial_dest" "$MODEL_URL"
     if [[ ! -s "$partial_dest" ]]; then
       echo "Model download completed without producing a usable file." >&2
@@ -129,7 +146,7 @@ install_model() {
   fi
 
   # Reject common HTML/error downloads. The optional SHA-256 verifies the entire file.
-  python3 - "$candidate" "${DICTATION_MODEL_SHA256:-}" <<'PY'
+  python3 - "$candidate" "$expected_sha256" <<'PY'
 import hashlib
 import pathlib
 import sys
@@ -145,6 +162,9 @@ with path.open("rb") as stream:
         if digest.hexdigest() != sys.argv[2].lower():
             sys.exit("Model SHA-256 mismatch. Select a trusted model download.")
 PY
+  if [[ -z "$expected_sha256" ]]; then
+    echo "Warning: this custom model has only a GGML header check. Set DICTATION_MODEL_SHA256 for full verification." >&2
+  fi
   if [[ "$candidate" == "$partial_dest" ]]; then
     mv -f "$partial_dest" "$MODEL_DEST"
     echo "Downloaded model: $MODEL_DEST"
@@ -238,7 +258,7 @@ main() {
   if [[ "$SKIP_MODEL" == 0 && "$SKIP_DOWNLOAD" == 0 ]]; then
     install_model
   fi
-  if [[ "$SKIP_MODEL" == 0 && -z "${DICTATION_WHISPER_BIN:-}" ]] && ! need whisper-cli && [[ ! -x "${HOME}/.local/opt/whisper.cpp/build/bin/whisper-cli" ]]; then
+  if [[ "$SKIP_MODEL" == 0 && -z "${DICTATION_WHISPER_BIN:-}" ]] && ! need whisper-cli && [[ ! -x "${HOME}/.local/opt/whisper.cpp-${WHISPER_VERSION}/build/bin/whisper-cli" ]]; then
     echo "whisper-cli was not found. Re-run without --no-packages or set DICTATION_WHISPER_BIN." >&2
     return 1
   fi

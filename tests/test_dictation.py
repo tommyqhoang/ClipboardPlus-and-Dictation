@@ -338,6 +338,11 @@ class DictationTests(unittest.TestCase):
             self.config.values["endpoint"] = endpoint
             with self.assertRaises(d.DictationError):
                 self.config.check()
+        self.config.values.update(
+            endpoint="http://localhost/inference", api_key_env="not an env name"
+        )
+        with self.assertRaisesRegex(d.DictationError, "environment variable NAME"):
+            self.config.check()
 
     def test_bad_config_type_and_no_audio(self):
         d.private_dir(self.paths.config.parent)
@@ -436,6 +441,42 @@ install_gnome_shortcut
         )
         self.assertIn("['/existing/', '/org/gnome/", result.stdout)
         self.assertNotIn("/existing/''", result.stdout)
+
+    @unittest.skipIf(sys.platform == "win32", "Debian shell installer")
+    def test_source_fallback_is_version_and_commit_pinned(self):
+        script = r"""
+source "$1/install.sh"
+HOME="$2"
+git() {
+  if [[ "$1" == clone ]]; then
+    printf '%s\n' "$*" >"$HOME/clone-arguments"
+    destination="${!#}"
+    mkdir -p "$destination/.git"
+  else
+    printf '%s\n' "$WHISPER_COMMIT"
+  fi
+}
+cmake() {
+  if [[ "$1" == --build ]]; then
+    mkdir -p "$2/bin"
+    : >"$2/bin/whisper-cli"
+    chmod +x "$2/bin/whisper-cli"
+  fi
+}
+nproc() { printf '1\n'; }
+install_whisper_from_source
+"""
+        home = self.root / "source-install"
+        result = subprocess.run(
+            ["bash", "-c", script, "test", str(ROOT), str(home)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        clone = (home / "clone-arguments").read_text()
+        self.assertIn("--branch v1.8.7", clone)
+        self.assertIn("ggml-org/whisper.cpp.git", clone)
+        self.assertTrue((home / ".local/opt/whisper.cpp-v1.8.7/build/bin/whisper-cli").exists())
 
     @unittest.skipIf(sys.platform == "win32", "Debian shell installer")
     def test_model_download_staging(self):

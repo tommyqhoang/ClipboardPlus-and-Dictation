@@ -27,8 +27,11 @@ class App:
         self.last_text = ""
         self.buttons: list[ttk.Button] = []
         self.root.title("Whisper Dictation")
-        self.root.geometry("760x700")
-        self.root.minsize(640, 620)
+        width = min(760, max(360, self.root.winfo_screenwidth() - 80))
+        height = min(700, max(360, self.root.winfo_screenheight() - 100))
+        self.wraplength = max(260, width - 100)
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(min(520, width), min(420, height))
         self.root.configure(background="#f5f7fa")
         style = ttk.Style(root)
         style.theme_use("clam")
@@ -41,8 +44,19 @@ class App:
         style.configure("TButton", font=("TkDefaultFont", 12), padding=(14, 10))
         style.configure("Primary.TButton", background="#126b65", foreground="white")
         style.map("Primary.TButton", background=[("active", "#0d5651"), ("disabled", "#8baba8")])
-        self.frame = ttk.Frame(root, padding=30)
-        self.frame.pack(fill="both", expand=True)
+        container = ttk.Frame(root)
+        container.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(
+            container, background="#f5f7fa", borderwidth=0, highlightthickness=0
+        )
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.frame = ttk.Frame(self.canvas, padding=30)
+        self.frame_window = self.canvas.create_window((0, 0), window=self.frame, anchor="nw")
+        self.frame.bind("<Configure>", self.resize_scroll_region)
+        self.canvas.bind("<Configure>", self.resize_content)
         self.status = tk.StringVar(value="")
         self.language = tk.StringVar(value="English")
         self.device = tk.StringVar(value="default")
@@ -54,16 +68,23 @@ class App:
             self.welcome()
         self.timer = self.root.after(150, self.poll)
 
+    def resize_scroll_region(self, event: tk.Event[Any]) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def resize_content(self, event: tk.Event[Any]) -> None:
+        self.canvas.itemconfigure(self.frame_window, width=event.width)
+
     def reset(self, page: str, title: str, subtitle: str) -> None:
         self.page = page
         self.buttons = []
         for child in self.frame.winfo_children():
             child.destroy()
+        self.canvas.yview_moveto(0)
         ttk.Label(self.frame, text="WHISPER DICTATION", style="Hint.TLabel").pack(
             anchor="w", pady=(0, 18)
         )
         ttk.Label(self.frame, text=title, style="Title.TLabel").pack(anchor="w", pady=(0, 10))
-        ttk.Label(self.frame, text=subtitle, wraplength=580, style="Hint.TLabel").pack(
+        ttk.Label(self.frame, text=subtitle, wraplength=self.wraplength, style="Hint.TLabel").pack(
             anchor="w", pady=(0, 22)
         )
         self.status.set("")
@@ -82,7 +103,10 @@ class App:
     def footer(self) -> None:
         self.progress = ttk.Progressbar(self.frame, mode="indeterminate")
         self.status_label = ttk.Label(
-            self.frame, textvariable=self.status, wraplength=580, style="Hint.TLabel"
+            self.frame,
+            textvariable=self.status,
+            wraplength=self.wraplength,
+            style="Hint.TLabel",
         )
         self.status_label.pack(anchor="w")
 
@@ -95,12 +119,12 @@ class App:
         ttk.Label(
             self.frame,
             text="1   Choose your language and microphone\n\n2   Get a free local speech model\n\n3   Record, stop, and paste anywhere",
-            wraplength=580,
+            wraplength=self.wraplength,
         ).pack(anchor="w", pady=18)
         ttk.Label(
             self.frame,
             text="Local transcription runs on your computer. No account or subscription. We won’t turn on your microphone until you press Record.",
-            wraplength=580,
+            wraplength=self.wraplength,
             style="Hint.TLabel",
         ).pack(anchor="w", pady=18)
         self.button("Get started", self.begin_setup, True)
@@ -139,7 +163,7 @@ class App:
             self.frame,
             text="Speech model — leave blank for a verified free download (148 MB)",
             style="Hint.TLabel",
-            wraplength=580,
+            wraplength=self.wraplength,
         ).pack(anchor="w", pady=(14, 5))
         ttk.Entry(self.frame, textvariable=self.model).pack(fill="x")
         self.button("Use an existing model file…", self.choose_model)
@@ -183,12 +207,12 @@ class App:
         ttk.Label(
             self.frame,
             text=f"1   Press Record and speak naturally.\n\n2   Press Stop when you’re finished.\n\n3   Your words are copied. Paste with {paste}.\n\nSay “new paragraph” to start a new paragraph.",
-            wraplength=580,
+            wraplength=self.wraplength,
         ).pack(anchor="w", pady=18)
         ttk.Label(
             self.frame,
             text="Try: “Hello world. New paragraph. This is my first dictation.”\n\nIf transcription fails, use Retry. Cancel stops and discards an active recording. You can replay this guide from Help.",
-            wraplength=580,
+            wraplength=self.wraplength,
             style="Hint.TLabel",
         ).pack(anchor="w", pady=18)
         self.button("Open dictation", self.finish_setup, True)
@@ -281,6 +305,7 @@ class App:
         phase = str(current["phase"])
         recording = active and phase == "recording"
         retained = current["retained_audio"]
+        message = workflow.display_text(str(current.get("message", ""))).strip()
         self.record.configure(text="Stop and transcribe" if recording else "Record")
         self.record.state(
             ["!disabled"] if recording or (not active and not retained) else ["disabled"]
@@ -294,13 +319,25 @@ class App:
         if active:
             self.status.set(
                 f"{'Recording' if recording else 'Transcribing'} · {int(current.get('elapsed_seconds', 0))}s"
+                + (f" — {message}" if message else "")
             )
         elif phase in ("error", "interrupted"):
-            self.status.set("Recording saved. Retry, or check your microphone in Settings.")
+            self.status.set(
+                message
+                or "The session stopped unexpectedly. Retry the saved recording or check Settings."
+            )
         elif retained:
             self.status.set("A recording is saved. Retry or discard it before starting another.")
-        elif self.status.get().startswith(("Recording", "Transcribing", "Working")):
-            self.status.set("Ready. Your last transcript is shown below.")
+        elif message:
+            self.status.set(message)
+        elif not self.status.get() or self.status.get().startswith(
+            ("Recording", "Transcribing", "Working")
+        ):
+            self.status.set(
+                "Ready. Your last transcript is shown below."
+                if self.service.paths.text.exists()
+                else "Ready to record."
+            )
         source = (
             self.service.paths.preview
             if active and self.service.paths.preview.exists()

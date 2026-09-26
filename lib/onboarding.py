@@ -20,6 +20,23 @@ MODELS = {
 }
 
 
+def validate_model(path: Path) -> Path:
+    """Reject common wrong-file selections before the first recording."""
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        raise dictation.DictationError("Model not found; settings were not changed.")
+    try:
+        with path.open("rb") as stream:
+            magic = stream.read(4)
+    except OSError as exc:
+        raise dictation.DictationError("The selected model could not be read.") from exc
+    if magic != b"lmgg":
+        raise dictation.DictationError(
+            "The selected file is not a whisper.cpp GGML model; settings were not changed."
+        )
+    return path
+
+
 def download_model(folder: Path, language: str) -> Path:
     name, expected = MODELS[language]
     destination = dictation.private_dir(folder) / f"ggml-{name}.bin"
@@ -73,13 +90,11 @@ def run(paths: dictation.Paths) -> None:
     model = input(
         "Your compatible GGML model path (Enter to download the free base model): "
     ).strip()
-    model_path = (
+    model_path = validate_model(
         Path(model).expanduser().resolve()
         if model
         else download_model(paths.config.parent / "models", language)
     )
-    if not model_path.is_file():
-        raise dictation.DictationError("Model not found; settings were not changed.")
     values.update(backend="local", model=str(model_path), language=language, allow_remote=False)
     for key, binary in (("whisper_bin", "whisper-cli"), ("ffmpeg", "ffmpeg")):
         values[key] = shutil.which(binary) or values[key]
@@ -100,8 +115,21 @@ def run(paths: dictation.Paths) -> None:
     candidate = dictation.Config(paths)
     candidate.values = values
     candidate.check(recording=True)
+    saved = dictation.DEFAULTS | existing
+    for key in ("ffmpeg", "whisper_bin"):
+        if not saved[key]:
+            saved[key] = values[key]
+    saved.update(
+        backend="local",
+        model=str(model_path),
+        language=language,
+        device=values["device"],
+        prompt=values["prompt"],
+        live=values["live"],
+        allow_remote=False,
+    )
     dictation.private_dir(paths.config.parent)
-    dictation.atomic(paths.config, json.dumps(values, indent=2))
+    dictation.atomic(paths.config, json.dumps(saved, indent=2))
     print(f"Settings saved: {paths.config}")
     print("Ready: run dictate-toggle to record; run it again to stop, then paste.")
     print("Try: 'Hello world. New paragraph. This is my first dictation.'")
