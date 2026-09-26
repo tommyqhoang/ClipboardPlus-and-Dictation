@@ -17,6 +17,14 @@ import dictation
 import onboarding
 
 
+class Response(io.BytesIO):
+    """Minimal HTTP response: a readable body plus headers."""
+
+    def __init__(self, data: bytes, length: bool = True):
+        super().__init__(data)
+        self.headers = {"Content-Length": str(len(data))} if length else {}
+
+
 class OnboardingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -98,29 +106,98 @@ class OnboardingTests(unittest.TestCase):
         folder = Path(self.temp.name) / "models"
         with (
             patch.dict(onboarding.MODELS, {"en": ("base.en", hashlib.sha256(data).hexdigest())}),
-            patch.object(
-                onboarding.urllib.request, "urlopen", return_value=io.BytesIO(data)
-            ) as request,
+            patch.object(onboarding, "open_url", return_value=Response(data)) as request,
         ):
-            path = onboarding.download_model(folder, "en")
+            progress = []
+            path = onboarding.download_model(folder, "en", lambda *step: progress.append(step))
             self.assertEqual(path.read_bytes(), data)
+            self.assertEqual(progress, [(len(data), len(data))])
             self.assertEqual(onboarding.download_model(folder, "en"), path)
             self.assertEqual(request.call_count, 1)
             path.write_bytes(b"corrupt")
             with self.assertRaises(dictation.DictationError):
                 onboarding.download_model(folder, "en")
             path.unlink()
-        with patch.object(onboarding.urllib.request, "urlopen", return_value=io.BytesIO(b"bad")):
+        with patch.object(onboarding, "open_url", return_value=Response(b"bad", length=False)):
             with self.assertRaises(dictation.DictationError):
                 onboarding.download_model(folder, "en")
         self.assertEqual(list(folder.iterdir()), [])
 
     def test_download_network_failure_cleans_partial(self):
         folder = Path(self.temp.name) / "models"
-        with patch.object(onboarding.urllib.request, "urlopen", side_effect=OSError("offline")):
+        with patch.object(onboarding, "open_url", side_effect=OSError("offline")):
             with self.assertRaises(OSError):
                 onboarding.download_model(folder, "auto")
         self.assertEqual(list(folder.iterdir()), [])
+
+    def test_download_removes_only_stale_partials(self):
+        folder = Path(self.temp.name) / "models"
+        folder.mkdir()
+        stale, active = folder / "model-old.part", folder / "model-new.part"
+        stale.write_bytes(b"")
+        active.write_bytes(b"")
+        old = stale.stat().st_mtime - onboarding.STALE_PARTIAL_SECONDS - 1
+        os.utime(stale, (old, old))
+        with patch.object(onboarding, "open_url", side_effect=OSError("offline")):
+            with self.assertRaises(OSError):
+                onboarding.download_model(folder, "en")
+        self.assertEqual([path.name for path in folder.iterdir()], ["model-new.part"])
+
+    def test_connect_skips_unreachable_address_family_quickly(self):
+        v6 = (onboarding.socket.AF_INET6, onboarding.socket.SOCK_STREAM, 6, "", ("::1", 443, 0, 0))
+        v4 = (onboarding.socket.AF_INET, onboarding.socket.SOCK_STREAM, 6, "", ("1.2.3.4", 443))
+        attempts = []
+
+        class Socket:
+            def __init__(self, family, kind, proto):
+                self.family = family
+
+            def settimeout(self, value):
+                attempts.append((self.family, value))
+
+            def bind(self, address):
+                attempts.append(("bind", address))
+
+            def connect(self, target):
+                if self.family == onboarding.socket.AF_INET6:
+                    raise TimeoutError("unreachable")
+
+            def close(self):
+                attempts.append((self.family, "closed"))
+
+        with (
+            patch.object(onboarding.socket, "getaddrinfo", return_value=[v6, v6, v4]),
+            patch.object(onboarding.socket, "socket", Socket),
+        ):
+            sock = onboarding.connect(("example.org", 443), 60, ("0.0.0.0", 0))
+        self.assertEqual(sock.family, onboarding.socket.AF_INET)
+        # The IPv4 address is tried second, not after every IPv6 address.
+        self.assertEqual(
+            [entry for entry in attempts if entry[1] == onboarding.CONNECT_ATTEMPT_SECONDS],
+            [(v6[0], 4.0), (v4[0], 4.0)],
+        )
+        self.assertIn((v4[0], 60.0), attempts)
+        self.assertIn((v6[0], "closed"), attempts)
+        with (
+            patch.object(onboarding.socket, "getaddrinfo", return_value=[v6]),
+            patch.object(onboarding.socket, "socket", Socket),
+        ):
+            with self.assertRaises(TimeoutError):
+                onboarding.connect(("example.org", 443))
+        with patch.object(onboarding.socket, "getaddrinfo", return_value=[]):
+            with self.assertRaisesRegex(OSError, "No network address"):
+                onboarding.connect(("example.org", 443))
+
+    def test_open_url_uses_fast_connection(self):
+        with patch.object(onboarding.urllib.request.OpenerDirector, "open") as request:
+            onboarding.open_url("https://example.org/model.bin")
+        request.assert_called_once_with("https://example.org/model.bin", timeout=60)
+        handler = onboarding._Handler()
+        with patch.object(handler, "do_open") as do_open:
+            handler.https_open(onboarding.urllib.request.Request("https://example.org"))
+        self.assertIs(do_open.call_args.args[0], onboarding._Connection)
+        connection = onboarding._Connection("example.org")
+        self.assertIs(connection._create_connection, onboarding.connect)
 
     def test_cli_setup_errors_are_friendly(self):
         result = subprocess.run(

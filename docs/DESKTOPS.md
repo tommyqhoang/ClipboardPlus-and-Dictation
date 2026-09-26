@@ -10,9 +10,9 @@ commands.
 
 | Platform | Launcher | Local dependencies |
 | --- | --- | --- |
-| Debian/Ubuntu Linux | Whisper Dictation in the application menu | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp |
-| macOS | `~/Applications/Whisper Dictation.app` | Homebrew Python/Tk, FFmpeg, whisper.cpp |
-| Windows x64 | Whisper Dictation in the Start Menu | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp |
+| Debian/Ubuntu Linux | Top bar icon (starts at login), application menu, GNOME Ctrl+Alt+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray and Pillow in a private venv |
+| macOS | Menu bar icon from `~/Applications/Whisper Dictation.app` (starts at login), ⌃⌥D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC in a private venv |
+| Windows x64 | System tray icon (starts at login), Start Menu, Ctrl+Alt+D | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp; pystray and Pillow in a private venv |
 
 The Windows bootstrap currently pins whisper.cpp 1.8.7 and verifies the upstream
 release digest. Debian/Ubuntu uses its package when available; the source fallback

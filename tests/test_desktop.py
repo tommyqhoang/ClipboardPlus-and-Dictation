@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import importlib.util
+import json
 import os
 import plistlib
 import subprocess
@@ -188,10 +189,18 @@ class DesktopTests(unittest.TestCase):
     def test_windows_shortcut_uses_structured_paths(self):
         setup = setup_module()
         with patch.object(setup.subprocess, "run") as run:
-            setup.windows_shortcut(Path("path with spaces") / "app.py")
-            self.assertIn(b"path with spaces", run.call_args.kwargs["input"])
-            self.assertIn(b"dictation.py", run.call_args.kwargs["input"])
+            setup.windows_shortcut(
+                Path("path with spaces") / "tray.py", Path("C:/venv/pythonw.exe")
+            )
+            payload = json.loads(run.call_args.kwargs["input"])
+            self.assertIn("path with spaces", payload["arguments"])
+            self.assertEqual(payload["python"], str(Path("C:/venv/pythonw.exe")))
+            self.assertTrue(any("app.py" in item for item in payload["legacy_arguments"]))
             self.assertNotIn("path with spaces", run.call_args.args[0][-1])
+            # The tray registers the shortcut; a Start Menu hotkey would collide.
+            self.assertIn("$link.Hotkey=''", setup.SHORTCUT_SCRIPT)
+            setup.windows_shortcut(Path("tray.py"))
+            self.assertIn("python", json.loads(run.call_args.kwargs["input"])["python"])
 
     def test_application_launchers_and_launch(self):
         setup = setup_module()
@@ -200,32 +209,110 @@ class DesktopTests(unittest.TestCase):
             prefix = root / ".local"
             (prefix / "lib").mkdir(parents=True)
             (prefix / "lib/app.py").write_text("# app")
-            with patch.object(setup.desktop, "platform_name", return_value="linux"):
+            venv = Path("/venv/bin/python")
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup, "gui_environment", return_value=venv),
+                patch.object(setup.hotkeys, "set_login_item") as login,
+                patch.object(setup, "stop_menubar") as stop,
+            ):
                 setup.install_app_launcher(prefix)
+                login.assert_called_once_with(True, [str(venv), str(prefix / "lib/tray.py")])
                 entry = (prefix / "share/applications/whisper-dictation.desktop").read_text()
                 self.assertIn("Name=Whisper Dictation", entry)
-                self.assertIn("app.py", entry)
+                self.assertIn('Exec="/venv/bin/python"', entry)
+                self.assertIn("tray.py", entry)
                 self.assertIn("Terminal=false", entry)
+                self.assertIn(f"Icon={prefix / 'lib/whisper-dictation.png'}", entry)
                 with patch.object(setup.subprocess, "Popen") as process:
-                    setup.launch(prefix)
+                    setup.launch(prefix)  # No private environment yet: the window.
                     self.assertIn(str(prefix / "lib/app.py"), process.call_args.args[0])
-            with patch.object(setup.desktop, "platform_name", return_value="macos"):
+                    windowed = setup.gui_python(prefix)[1]
+                    windowed.parent.mkdir(parents=True)
+                    windowed.touch()
+                    setup.launch(prefix)
+                    self.assertEqual(
+                        process.call_args.args[0], [str(windowed), str(prefix / "lib/tray.py")]
+                    )
+                self.assertEqual(stop.call_count, 2)
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="macos"),
+                patch.object(setup, "gui_environment", return_value=venv),
+                patch.object(setup.hotkeys, "set_login_item") as login,
+                patch.object(setup, "stop_menubar") as stop,
+            ):
                 setup.install_app_launcher(prefix)
                 bundle = root / "Applications/Whisper Dictation.app"
+                login.assert_called_once_with(True, ["/usr/bin/open", str(bundle)])
                 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
                 self.assertEqual(info["CFBundleIdentifier"], "org.whisperdictation.desktop")
                 self.assertIn("Record speech only", info["NSMicrophoneUsageDescription"])
+                self.assertEqual(info["CFBundleIconFile"], "AppIcon")
+                self.assertTrue((bundle / "Contents/Resources/AppIcon.icns").is_file())
+                self.assertTrue(info["LSUIElement"])
                 executable = bundle / "Contents/MacOS/WhisperDictation"
-                self.assertIn("app.py", executable.read_text())
+                self.assertIn("/venv/bin/python", executable.read_text())
+                self.assertIn("menubar.py", executable.read_text())
+                self.assertIn(f"WHISPER_DICTATION_BUNDLE='{bundle}'", executable.read_text())
                 with patch.object(setup.subprocess, "run") as run:
                     setup.launch(prefix)
                     self.assertEqual(run.call_args.args[0][:1], ["/usr/bin/open"])
+                stop.assert_called_once()
             with (
                 patch.object(setup.desktop, "platform_name", return_value="windows"),
+                patch.object(setup, "gui_environment", return_value=Path("C:/v/pythonw.exe")),
+                patch.object(setup.hotkeys, "set_login_item"),
                 patch.object(setup, "windows_shortcut") as shortcut,
             ):
                 setup.install_app_launcher(prefix)
-                self.assertEqual(shortcut.call_args.args[0].name, "app.py")
+                self.assertEqual(shortcut.call_args.args[0].name, "tray.py")
+                self.assertEqual(shortcut.call_args.args[1], Path("C:/v/pythonw.exe"))
+                python, windowed = setup.gui_python(prefix)
+                self.assertEqual((python.name, windowed.name), ("python.exe", "pythonw.exe"))
+
+    def test_gui_environment_installs_once(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder)
+            python = prefix / "share/whisper-dictation/venv/bin/python"
+            for platform, requirement in (("macos", "pyobjc"), ("linux", "pystray")):
+                with (
+                    patch.object(setup.desktop, "platform_name", return_value=platform),
+                    patch.object(setup.subprocess, "run") as run,
+                ):
+                    run.return_value.returncode = 1
+                    self.assertEqual(setup.gui_environment(prefix), python)
+                    commands = [call.args[0] for call in run.call_args_list]
+                    self.assertIn("venv", commands[0])
+                    self.assertEqual("--system-site-packages" in commands[0], platform == "linux")
+                    self.assertTrue(any(requirement in part for part in commands[1]))
+            python.parent.mkdir(parents=True)
+            python.touch()
+            with patch.object(setup.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                setup.gui_environment(prefix)
+                run.assert_called_once()  # Only the import probe.
+            with patch.object(
+                setup.subprocess,
+                "run",
+                side_effect=[Mock(returncode=1), setup.subprocess.CalledProcessError(1, "venv")],
+            ):
+                with self.assertRaisesRegex(dictation.DictationError, "tray component"):
+                    setup.gui_environment(prefix)
+
+    def test_stop_menubar_requests_quit_and_waits(self):
+        setup = setup_module()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": folder.name}):
+            paths = dictation.Paths()
+        dictation.private_dir(paths.runtime)
+        setup.stop_menubar(paths)  # Not running: returns at once.
+        self.assertFalse((paths.runtime / "menubar-quit").exists())
+        held = desktop.lock(paths.runtime / "menubar.lock")
+        with patch.object(setup.time, "sleep", side_effect=lambda _: os.close(held)):
+            setup.stop_menubar(paths)
+        self.assertTrue((paths.runtime / "menubar-quit").exists())
 
     def test_launcher_refuses_unrelated_macos_bundle_and_missing_install(self):
         setup = setup_module()

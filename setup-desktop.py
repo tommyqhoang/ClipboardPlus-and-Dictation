@@ -10,12 +10,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import desktop
 import dictation
+import hotkeys
 
+REPOSITORY = Path(__file__).resolve().parent
 SHORTCUT_SCRIPT = """
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=[Text.UTF8Encoding]::new()
@@ -24,7 +27,7 @@ $p=[Console]::In.ReadToEnd() | ConvertFrom-Json
 $path=Join-Path ([Environment]::GetFolderPath('Programs')) 'Whisper Dictation.lnk'
 $shell=New-Object -ComObject WScript.Shell
 $link=$shell.CreateShortcut($path)
-if ((Test-Path -LiteralPath $path) -and ($link.Arguments -ne $p.arguments) -and ($link.Arguments -ne $p.legacy_arguments)) {
+if ((Test-Path -LiteralPath $path) -and ($link.Arguments -ne $p.arguments) -and ($p.legacy_arguments -notcontains $link.Arguments)) {
     throw 'An unrelated shortcut already uses this name.'
 }
 if ($p.remove) {
@@ -33,22 +36,30 @@ if ($p.remove) {
     $link.TargetPath=$p.python
     $link.Arguments=$p.arguments
     $link.WorkingDirectory=$p.directory
-    $link.Hotkey='CTRL+ALT+D'
+    $link.Hotkey=''
     $link.Description='Open Whisper Dictation'
+    if ($p.icon -and (Test-Path -LiteralPath $p.icon)) {$link.IconLocation=$p.icon}
     $link.Save()
 }
 """
 
 
-def windows_shortcut(module: Path, remove: bool = False) -> None:
-    python = Path(sys.executable).with_name("pythonw.exe")
-    if not python.exists():
-        python = Path(sys.executable)
+def windows_shortcut(module: Path, python: Path | None = None, remove: bool = False) -> None:
+    """Start Menu entry for the tray app. The tray registers the global shortcut."""
+    if python is None:
+        python = Path(sys.executable).with_name("pythonw.exe")
+        if not python.exists():
+            python = Path(sys.executable)
     payload = {
         "python": str(python),
         "arguments": subprocess.list2cmdline([str(module)]),
-        "legacy_arguments": subprocess.list2cmdline([str(module.with_name("dictation.py"))]),
+        # Earlier versions pointed the shortcut at these modules.
+        "legacy_arguments": [
+            subprocess.list2cmdline([str(module.with_name(name))])
+            for name in ("app.py", "dictation.py")
+        ],
         "directory": str(module.parent),
+        "icon": str(module.with_name("whisper-dictation.ico")),
         "remove": remove,
     }
     subprocess.run(
@@ -59,6 +70,83 @@ def windows_shortcut(module: Path, remove: bool = False) -> None:
     )
 
 
+ICONS = (
+    (REPOSITORY / "lib/whisper-dictation.png", "whisper-dictation.png"),
+    (REPOSITORY / "lib/menubar-icon.png", "menubar-icon.png"),
+    (REPOSITORY / "lib/menubar-recording.png", "menubar-recording.png"),
+    (REPOSITORY / "assets/icon.ico", "whisper-dictation.ico"),
+)
+MODULES = (
+    "dictation.py",
+    "desktop.py",
+    "onboarding.py",
+    "rewriting.py",
+    "workflow.py",
+    "app_service.py",
+    "app.py",
+    "hotkeys.py",
+    "menubar.py",
+)
+# The menu bar (macOS, PyObjC) and tray (Windows/Linux, pystray) apps run from a
+# private environment so the system or Homebrew Python is never modified.
+GUI_REQUIREMENTS = {
+    "macos": ("pyobjc-framework-Cocoa==12.2.2",),
+    "other": ("pystray==0.19.5", "Pillow==12.3.0"),
+}
+
+
+def gui_python(prefix: Path) -> tuple[Path, Path]:
+    """The private environment's Python and its no-console variant."""
+    venv = prefix / "share/whisper-dictation/venv"
+    if desktop.platform_name() == "windows":
+        return venv / "Scripts/python.exe", venv / "Scripts/pythonw.exe"
+    return venv / "bin/python", venv / "bin/python"
+
+
+def gui_environment(prefix: Path) -> Path:
+    """Create the private environment; returns its windowed Python."""
+    platform = desktop.platform_name()
+    venv = prefix / "share/whisper-dictation/venv"
+    python, windowed = gui_python(prefix)
+    modules = "AppKit" if platform == "macos" else "pystray, PIL"
+    probe = [str(python), "-c", f"import {modules}, tkinter"]
+    if python.exists() and subprocess.run(probe, capture_output=True, check=False).returncode == 0:
+        return windowed
+    print("Installing the menu bar/tray component (one time)...", flush=True)
+    create = [sys.executable, "-m", "venv", "--clear", str(venv)]
+    if platform == "linux":
+        create.insert(3, "--system-site-packages")  # Sees the distribution's GTK bindings.
+    requirements = GUI_REQUIREMENTS["macos" if platform == "macos" else "other"]
+    try:
+        subprocess.run(create, check=True)
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--quiet"]
+            + list(requirements),
+            check=True,
+            timeout=600,
+        )
+        subprocess.run(probe, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise dictation.DictationError(
+            "Could not install the menu bar/tray component. Check your internet connection "
+            "and retry."
+        ) from exc
+    return windowed
+
+
+def stop_menubar(paths: dictation.Paths) -> None:
+    """Ask a running menu bar app to quit so an upgrade takes effect."""
+    lock = paths.runtime / "menubar.lock"
+    for attempt in range(50):
+        fd = desktop.lock(lock)
+        if fd is not None:
+            os.close(fd)
+            return
+        if attempt == 0:
+            dictation.atomic(paths.runtime / "menubar-quit", "quit")
+        time.sleep(0.1)
+
+
 def install(prefix: Path, shortcut: bool = True) -> Path:
     paths = dictation.Paths()
     if dictation.busy(paths):
@@ -67,17 +155,12 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
     bindir = prefix / "bin"
     dictation.private_dir(module.parent)
     dictation.private_dir(bindir)
-    for filename in (
-        "dictation.py",
-        "desktop.py",
-        "onboarding.py",
-        "rewriting.py",
-        "workflow.py",
-        "app_service.py",
-        "app.py",
-    ):
-        source = Path(__file__).resolve().parent / "lib" / filename
+    for filename in MODULES:
+        source = REPOSITORY / "lib" / filename
         dictation.atomic(module.parent / filename, source.read_text(encoding="utf-8"))
+    for source, name in ICONS:
+        if source.is_file():
+            shutil.copyfile(source, module.parent / name)
     if desktop.platform_name() == "windows":
         launcher = bindir / "dictate-toggle.cmd"
         python = str(Path(sys.executable)).replace("%", "%%")
@@ -124,10 +207,18 @@ def app_bundle(prefix: Path) -> Path:
     return prefix.parent / "Applications/Whisper Dictation.app"
 
 
+def tray_command(prefix: Path, python: Path) -> list[str]:
+    return [str(python), str(prefix / "lib/tray.py")]
+
+
 def install_app_launcher(prefix: Path) -> None:
     module = prefix / "lib/app.py"
+    preferences = hotkeys.Preferences(dictation.Paths())
+    if desktop.platform_name() != "macos":
+        python = gui_environment(prefix)
+        hotkeys.set_login_item(preferences.open_at_login(), tray_command(prefix, python))
     if desktop.platform_name() == "windows":
-        windows_shortcut(module)
+        windows_shortcut(prefix / "lib/tray.py", python)
     elif desktop.platform_name() == "macos":
         bundle = app_bundle(prefix)
         info = bundle / "Contents/Info.plist"
@@ -141,6 +232,7 @@ def install_app_launcher(prefix: Path) -> None:
             )
         executable = bundle / "Contents/MacOS/WhisperDictation"
         executable.parent.mkdir(parents=True, exist_ok=True)
+        python = gui_environment(prefix)
         dictation.atomic(
             info,
             plistlib.dumps(
@@ -150,16 +242,30 @@ def install_app_launcher(prefix: Path) -> None:
                     "CFBundleDisplayName": "Whisper Dictation",
                     "CFBundleExecutable": "WhisperDictation",
                     "CFBundlePackageType": "APPL",
-                    "CFBundleVersion": "1",
+                    "CFBundleIconFile": "AppIcon",
+                    "CFBundleVersion": "3",
+                    # A menu bar app: no Dock icon or app switcher entry.
+                    "LSUIElement": True,
                     "NSMicrophoneUsageDescription": "Record speech only when you press Record.",
                 }
             ).decode("utf-8"),
         )
         dictation.atomic(
             executable,
-            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(module))}\n",
+            # The interpreter lives in another bundle, so name ours explicitly.
+            f"#!/bin/sh\nexport WHISPER_DICTATION_BUNDLE={shlex.quote(str(bundle))}\n"
+            f"exec {shlex.quote(str(python))} "
+            f"{shlex.quote(str(module.with_name('menubar.py')))}\n",
         )
         executable.chmod(0o755)
+        icon = REPOSITORY / "assets/AppIcon.icns"
+        if icon.is_file():
+            resources = bundle / "Contents/Resources"
+            resources.mkdir(exist_ok=True)
+            shutil.copyfile(icon, resources / "AppIcon.icns")
+        # Finder caches bundle icons; a new modification time refreshes it.
+        os.utime(bundle)
+        hotkeys.set_login_item(preferences.open_at_login(), ["/usr/bin/open", str(bundle)])
     else:
         entry = prefix / "share/applications/whisper-dictation.desktop"
         entry.parent.mkdir(parents=True, exist_ok=True)
@@ -177,7 +283,7 @@ def install_app_launcher(prefix: Path) -> None:
 
         dictation.atomic(
             entry,
-            f"[Desktop Entry]\nType=Application\nName=Whisper Dictation\nComment=Speak, stop, and paste\nExec={quote(sys.executable)} {quote(str(module))}\nTerminal=false\nCategories=Utility;Audio;\n",
+            f"[Desktop Entry]\nType=Application\nName=Whisper Dictation\nComment=Speak, stop, and paste\nExec={quote(str(python))} {quote(str(prefix / 'lib/tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\n",
         )
 
 
@@ -186,13 +292,18 @@ def launch(prefix: Path) -> None:
     if not module.is_file():
         raise dictation.DictationError("The desktop app is not installed at this location.")
     if desktop.platform_name() == "macos":
+        stop_menubar(dictation.Paths())
         subprocess.run(["/usr/bin/open", str(app_bundle(prefix))], check=True, timeout=15)
     else:
-        python = Path(sys.executable)
-        if desktop.platform_name() == "windows" and python.with_name("pythonw.exe").exists():
-            python = python.with_name("pythonw.exe")
+        stop_menubar(dictation.Paths())
+        windowed = gui_python(prefix)[1]
+        command = (
+            tray_command(prefix, windowed)
+            if windowed.exists()
+            else [hotkeys.python_for_gui(), str(module)]  # Installed with --no-shortcut.
+        )
         subprocess.Popen(
-            [str(python), str(module)],
+            command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -207,7 +318,12 @@ def uninstall(prefix: Path) -> None:
     if dictation.busy(dictation.Paths()):
         raise dictation.DictationError("Finish or cancel the active session before uninstalling.")
     if dictation.read_json(receipt).get("shortcut") and desktop.platform_name() == "windows":
-        windows_shortcut(prefix / "lib/app.py", remove=True)
+        windows_shortcut(prefix / "lib/tray.py", gui_python(prefix)[1], remove=True)
+    if desktop.platform_name() != "macos":
+        stop_menubar(dictation.Paths())
+        windowed = gui_python(prefix)[1]
+        if windowed.exists():
+            hotkeys.set_login_item(False, tray_command(prefix, windowed))
     for relative in (
         "lib/dictation.py",
         "lib/desktop.py",
@@ -216,6 +332,14 @@ def uninstall(prefix: Path) -> None:
         "lib/workflow.py",
         "lib/app.py",
         "lib/app_service.py",
+        "lib/hotkeys.py",
+        "lib/menubar.py",
+        "lib/tray.py",
+        "lib/tray-recording.png",
+        "lib/menubar-icon.png",
+        "lib/menubar-recording.png",
+        "lib/whisper-dictation.png",
+        "lib/whisper-dictation.ico",
         "share/applications/whisper-dictation.desktop",
         "bin/dictate-toggle",
         "bin/dictate-toggle.cmd",
@@ -223,7 +347,18 @@ def uninstall(prefix: Path) -> None:
     ):
         (prefix / relative).unlink(missing_ok=True)
     receipt.unlink()
+    venv = prefix / "share/whisper-dictation/venv"
+    # Only a directory this installer created (it holds pyvenv.cfg) is removed.
+    if (venv / "pyvenv.cfg").is_file():
+        shutil.rmtree(venv)
     if desktop.platform_name() == "macos":
+        stop_menubar(dictation.Paths())
+        agent = hotkeys.agent_path()
+        # Only remove the login item that launches this installation's bundle.
+        if agent.is_file() and str(app_bundle(prefix)) in plistlib.loads(agent.read_bytes()).get(
+            "ProgramArguments", []
+        ):
+            agent.unlink()
         bundle = app_bundle(prefix)
         info = bundle / "Contents/Info.plist"
         if (
@@ -232,9 +367,15 @@ def uninstall(prefix: Path) -> None:
             == "org.whisperdictation.desktop"
         ):
             (bundle / "Contents/MacOS/WhisperDictation").unlink(missing_ok=True)
+            (bundle / "Contents/Resources/AppIcon.icns").unlink(missing_ok=True)
             info.unlink()
             # Remove only known, now-empty directories. Never recursively erase a bundle.
-            for folder in (bundle / "Contents/MacOS", bundle / "Contents", bundle):
+            for folder in (
+                bundle / "Contents/MacOS",
+                bundle / "Contents/Resources",
+                bundle / "Contents",
+                bundle,
+            ):
                 if folder.exists() and not any(folder.iterdir()):
                     folder.rmdir()
 

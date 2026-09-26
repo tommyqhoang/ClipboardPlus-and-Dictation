@@ -217,9 +217,11 @@ class DictationTests(unittest.TestCase):
 
     def test_http_multipart_errors_and_redirect(self):
         captured = []
+        authorizations = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(handler):
+                authorizations.append(handler.headers.get("Authorization"))
                 captured.append(handler.rfile.read(int(handler.headers["Content-Length"])))
                 if handler.path == "/redirect":
                     handler.send_response(302)
@@ -245,10 +247,16 @@ class DictationTests(unittest.TestCase):
             self.config.values["endpoint"] = f"http://127.0.0.1:{server.server_port}/{path}"
             self.config.check()
             if path == "success":
-                self.assertEqual(
-                    d.transcribe(self.config, b"\x01\x00" * 5000, self.paths.cache),
-                    "HTTP transcript",
-                )
+                # A key saved by desktop setup is used when the variable is unset.
+                d.private_dir(self.paths.config.parent)
+                d.atomic(d.key_file(self.paths), "saved-key\n")
+                with patch.dict(os.environ, {self.config.s("api_key_env"): ""}):
+                    self.assertEqual(
+                        d.transcribe(self.config, b"\x01\x00" * 5000, self.paths.cache),
+                        "HTTP transcript",
+                    )
+                self.assertEqual(authorizations[-1], "Bearer saved-key")
+                d.key_file(self.paths).unlink()
                 self.assertIn(b"custom-model", captured[-1])
                 self.assertIn(b"RIFF", captured[-1])
             else:

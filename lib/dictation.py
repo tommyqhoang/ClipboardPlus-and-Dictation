@@ -122,8 +122,14 @@ DEFAULTS: dict[str, Any] = {
 ENV_NAMES = {"threads": "WHISPER_THREADS"}
 
 
+def key_file(paths: Paths) -> Path:
+    """API key saved by the desktop setup (owner-only); the environment wins."""
+    return paths.config.parent / "transcription-key"
+
+
 class Config:
     def __init__(self, paths: Paths) -> None:
+        self.paths = paths
         raw = read_json(paths.config)
         unknown = raw.keys() - DEFAULTS.keys()
         if unknown:
@@ -330,6 +336,8 @@ def transcribe(config: Config, pcm: bytes, cache: Path) -> str:
         body.extend(f"\r\n--{boundary}--\r\n".encode())
         headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
         key = os.environ.get(config.s("api_key_env"), "")
+        if not key and key_file(config.paths).is_file():
+            key = key_file(config.paths).read_text(encoding="utf-8").strip()
         if key:
             headers["Authorization"] = "Bearer " + key
         request = urllib.request.Request(config.s("endpoint"), data=bytes(body), headers=headers)

@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
+import time
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import desktop
 import dictation
@@ -37,7 +43,62 @@ def validate_model(path: Path) -> Path:
     return path
 
 
-def download_model(folder: Path, language: str) -> Path:
+# A single connection attempt; a broken address family (commonly IPv6) then
+# costs seconds instead of the full read timeout for every advertised address.
+CONNECT_ATTEMPT_SECONDS = 4.0
+# Partial files untouched this long belong to an interrupted download.
+STALE_PARTIAL_SECONDS = 600
+
+
+def connect(
+    address: tuple[str, int], timeout: object = None, source_address: Any = None
+) -> socket.socket:
+    """Connect like socket.create_connection, alternating address families."""
+    host, port = address
+    queues: dict[int, list[Any]] = {}
+    for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        queues.setdefault(info[0], []).append(info)
+    ordered: list[Any] = []
+    while any(queues.values()):
+        for queue in queues.values():
+            if queue:
+                ordered.append(queue.pop(0))
+    read_timeout = float(timeout) if isinstance(timeout, (int, float)) else None
+    attempt = min(read_timeout or CONNECT_ATTEMPT_SECONDS, CONNECT_ATTEMPT_SECONDS)
+    error: OSError = OSError(f"No network address found for {host}.")
+    for family, kind, proto, _, target in ordered:
+        sock = socket.socket(family, kind, proto)
+        try:
+            sock.settimeout(attempt)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(target)
+            sock.settimeout(read_timeout)
+            return sock
+        except OSError as exc:
+            sock.close()
+            error = exc
+    raise error
+
+
+class _Connection(http.client.HTTPSConnection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        setattr(self, "_create_connection", connect)
+
+
+class _Handler(urllib.request.HTTPSHandler):
+    def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        return self.do_open(_Connection, req, context=ssl.create_default_context())
+
+
+def open_url(url: str) -> Any:
+    return urllib.request.build_opener(_Handler).open(url, timeout=60)
+
+
+def download_model(
+    folder: Path, language: str, progress: Callable[[int, int], None] | None = None
+) -> Path:
     name, expected = MODELS[language]
     destination = dictation.private_dir(folder) / f"ggml-{name}.bin"
     if destination.is_file():
@@ -50,6 +111,9 @@ def download_model(folder: Path, language: str) -> Path:
         raise dictation.DictationError(
             "Existing model failed verification; move it aside and retry."
         )
+    for stale in folder.glob("model-*.part"):
+        if time.time() - stale.stat().st_mtime > STALE_PARTIAL_SECONDS:
+            stale.unlink(missing_ok=True)
     fd, partial = tempfile.mkstemp(prefix="model-", suffix=".part", dir=folder)
     try:
         digest = hashlib.sha256()
@@ -57,13 +121,16 @@ def download_model(folder: Path, language: str) -> Path:
         url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{destination.name}"
         print("Downloading the free base model (about 148 MB)...", flush=True)
         with os.fdopen(fd, "wb") as output:
-            with urllib.request.urlopen(url, timeout=60) as response:
+            with open_url(url) as response:
+                size = int(response.headers.get("Content-Length") or 0)
                 while block := response.read(1024 * 1024):
                     total += len(block)
                     if total > 160_000_000:
                         raise dictation.DictationError("Model download exceeded the expected size.")
                     digest.update(block)
                     output.write(block)
+                    if progress:
+                        progress(total, size)
         if digest.hexdigest() != expected:
             raise dictation.DictationError("Model checksum mismatch; download was not activated.")
         os.replace(partial, destination)
@@ -140,4 +207,4 @@ def run(paths: dictation.Paths) -> None:
     elif desktop.platform_name() == "windows":
         print("Use the Start Menu Whisper Dictation shortcut or Ctrl+Alt+D.")
     else:
-        print("GNOME installer shortcut: Super+Shift+D. Other desktops: bind dictate-toggle.")
+        print("GNOME installer shortcut: Ctrl+Alt+D. Other desktops: bind dictate-toggle.")

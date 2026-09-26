@@ -10,9 +10,16 @@ python_version = "3.10"
 strict = true
 files = ["lib", "setup-desktop.py"]
 
+[[tool.mypy.overrides]]
+# PyObjC ships without type information; its decorators are untyped.
+module = "menubar"
+disable_error_code = ["untyped-decorator"]
+
 [tool.coverage.run]
 branch = true
 source = ["lib"]
+# The AppKit layer needs a macOS GUI session and PyObjC; its logic lives in hotkeys.py.
+omit = ["lib/menubar.py"]
 patch = ["subprocess"]
 
 [tool.coverage.report]

@@ -1,7 +1,12 @@
 # Whisper Dictation
 
-Free, local dictation for Linux, macOS, and Windows. Install it once, then use a
-normal desktop window: **Record → speak → Stop → paste**.
+Free, local dictation for Linux, macOS, and Windows. Install it once, then
+**press a shortcut → speak → press it again → paste** in any app.
+
+The same icon, menu and workflow on every platform: the app lives in the macOS
+menu bar, the Windows system tray, or the Linux top bar and starts at login.
+Press **Ctrl+Alt+D** (**⌃⌥D** on a Mac) in any app, talk, press it again, and
+notifications tell you it is recording, transcribing, and then ready to paste.
 
 Linux remains the original platform. macOS and Windows support
 is new; there is no signed app bundle or MSI installer yet. See
@@ -9,9 +14,9 @@ is new; there is no signed app bundle or MSI installer yet. See
 
 | Platform | Installed launcher | Microphone | Clipboard |
 | --- | --- | --- | --- |
-| Linux/Wayland | Application menu | ALSA/PipeWire via arecord | wl-copy |
-| macOS | `~/Applications/Whisper Dictation.app` | FFmpeg AVFoundation | pbcopy |
-| Windows x64 | Start Menu | FFmpeg DirectShow | Windows clipboard |
+| Linux/Wayland | Top bar icon + GNOME shortcut | ALSA/PipeWire via arecord | wl-copy |
+| macOS | Menu bar (`~/Applications/Whisper Dictation.app`) | FFmpeg AVFoundation | pbcopy |
+| Windows x64 | System tray + Start Menu | FFmpeg DirectShow | Windows clipboard |
 
 Local Whisper is the default. You can select your own compatible local model,
 use a local transcription server, or explicitly enable an external transcription
@@ -49,18 +54,55 @@ downloads need internet access.
 When installation finishes, **Whisper Dictation opens automatically**. The
 first-run screens help the user:
 
-1. Choose English or multilingual transcription.
-2. Find and select a microphone.
-3. Download a verified free local model, or select an existing compatible model.
-4. Learn the Record, Stop, Cancel, Copy, Retry, and Paste workflow.
+1. Choose English or multilingual transcription and select a microphone
+   (microphones are found automatically).
+2. Choose the transcription AI:
+   - **Free on-device AI** (recommended): a verified 148 MB Whisper model,
+     downloaded once; audio never leaves the computer.
+   - **A Whisper model file you already have.**
+   - **Your own AI service**: OpenAI, Groq, or any OpenAI-compatible
+     `/audio/transcriptions` endpoint, with your API key. Audio is sent to that
+     service, which may charge.
+3. A short walkthrough of the shortcut workflow, and a recommendation for
+   [Clipboard+](https://clipboardplus.apercallc.com) to keep a history of every
+   transcript.
 
-The walkthrough does not begin recording. The microphone starts only after the
-user presses **Record**. Later, the app is opened from Applications, the Start
-Menu, or the Linux application menu—no application commands are required. The
-app displays recording/transcription status, the latest transcript, clipboard
-copying, and recoverable-audio actions. Settings and Help are available inside
-the window. The interface scrolls on smaller displays instead of hiding setup or
-recovery controls. No shell profile or system `PATH` is silently changed.
+The walkthrough does not begin recording. The microphone starts only when you
+press the shortcut.
+
+### Everyday use (all platforms)
+
+- **Ctrl+Alt+D** (⌃⌥D on macOS) starts recording from any app. Press it again
+  to stop. Notifications show *Recording*, *Transcribing…*, and
+  *Transcript copied*; then paste with Ctrl+V (⌘V). The icon turns red while
+  recording.
+- The icon's menu is the same everywhere: Start/Stop, Cancel Recording, Copy
+  Last Transcript, **Shortcut** (presets or *Record New Shortcut…*),
+  **Open at Login**, **Clipboard History (Clipboard+)…**, and **Settings…**
+  (language, microphone, and AI).
+- Your own service's API key is stored in the settings folder as
+  `transcription-key`, readable only by your user account. An environment
+  variable named by `api_key_env` still takes precedence.
+
+Platform details:
+
+- **macOS**: menu bar only (no Dock icon). The shortcut is a system hotkey, so no
+  Accessibility permission is needed; macOS asks for microphone access on the
+  first recording. Open at login is the LaunchAgent
+  `~/Library/LaunchAgents/org.whisperdictation.menubar.plist`.
+- **Windows**: system tray; the shortcut is registered with `RegisterHotKey`.
+  Open at login is the `WhisperDictation` value under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+- **Linux**: Wayland does not let apps capture global keys, so the shortcut is a
+  GNOME custom keybinding that runs `~/.local/bin/dictate-toggle`; changing it
+  from the menu updates GNOME. On other desktops, bind that command yourself.
+  The top bar icon needs AppIndicator support (built into Ubuntu; an extension
+  on stock GNOME). Open at login is `~/.config/autostart/whisper-dictation.desktop`.
+
+The menu bar/tray component (PyObjC on macOS; pystray and Pillow elsewhere) is
+installed into `~/.local/share/whisper-dictation/venv` (Windows: under the app
+folder in `%LOCALAPPDATA%`), so the system Python is not modified. No shell
+profile or system `PATH` is silently changed.
 
 For reproducible deployment, download bootstrap from a reviewed commit and set
 `DICTATION_REF` to that commit (Windows: pass `-Ref`). The quick commands track
@@ -99,7 +141,7 @@ Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 
 The installer installs Debian dependencies, downloads the base English model,
 builds whisper.cpp if necessary, adds Whisper Dictation to the application menu,
-and requests the optional GNOME shortcut Super+Shift+D. Open the app to complete
+and requests the optional GNOME shortcut Ctrl+Alt+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations
 skip GNOME registration. Use `--no-packages` when dependencies are already installed.
 
@@ -286,13 +328,16 @@ share normalization, recovery, and clipboard delivery.
 
 ```bash
 python3 -m unittest discover -s tests -v
-ruff check lib tests setup-desktop.py
-ruff format --check lib tests setup-desktop.py
-mypy --strict lib setup-desktop.py
+ruff check lib tests tools setup-desktop.py
+ruff format --check lib tests tools setup-desktop.py
+mypy --strict lib tools setup-desktop.py
 bash -n bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/with-xvfb.sh
 shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh
 python3 -m compileall -q lib setup-desktop.py
 ```
+
+The app icon is generated, not hand-edited: run `python3 tools/make_icon.py` on
+macOS to rebuild `lib/whisper-dictation.png` and the `assets/` icon files.
 
 Tests use a subprocess recorder and transcription fixture plus an actual local
 HTTP server. They do not establish speech accuracy, hardware latency, or live

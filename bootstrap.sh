@@ -3,7 +3,7 @@
 set -euo pipefail
 
 main() (
-  local ref="${DICTATION_REF:-main}" work archive platform python_prefix
+  local ref="${DICTATION_REF:-main}" work archive platform python_prefix python=python3
   if [[ ! "$ref" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "DICTATION_REF must be a tag, branch name, or commit without slashes." >&2
     return 1
@@ -29,8 +29,10 @@ main() (
     fi
     brew install python@3.14 python-tk@3.14 ffmpeg whisper.cpp
     python_prefix="$(brew --prefix python@3.14)"
-    PATH="${python_prefix}/libexec/bin:${PATH}"
-    export PATH
+    # Use the Homebrew Python that has Tk, not whichever python3 is first on PATH.
+    if [[ -x "${python_prefix}/bin/python3" ]]; then
+      python="${python_prefix}/bin/python3"
+    fi
   elif ! command -v curl >/dev/null 2>&1; then
     sudo apt-get update
     sudo apt-get install -y curl ca-certificates
@@ -47,10 +49,10 @@ main() (
   if [[ "$platform" == Linux ]]; then
     bash "$work/app/install.sh" --no-model
   else
-    python3 "$work/app/setup-desktop.py"
+    "$python" "$work/app/setup-desktop.py"
   fi
   echo "Opening Whisper Dictation. Finish setup in the app window."
-  python3 "$work/app/setup-desktop.py" --launch-only
+  "$python" "$work/app/setup-desktop.py" --launch-only
 )
 
 # Under `bash -c "$(curl ...)"` BASH_SOURCE is empty, so fall back to $0.

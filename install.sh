@@ -17,7 +17,7 @@ SKIP_PACKAGES=0
 SKIP_DOWNLOAD=0
 KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
 KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
-DEFAULT_BINDING="${DICTATION_BINDING:-<Super><Shift>d}"
+DEFAULT_BINDING="${DICTATION_BINDING:-<Control><Alt>d}"
 
 need() {
   command -v "$1" >/dev/null 2>&1
@@ -35,12 +35,15 @@ install_packages() {
     ca-certificates
     cmake
     curl
+    gir1.2-ayatanaappindicator3-0.1
     git
     gnome-session-canberra
     libnotify-bin
     perl
     python3
+    python3-gi
     python3-tk
+    python3-venv
     util-linux
     wl-clipboard
   )

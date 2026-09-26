@@ -5,11 +5,28 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import urllib.parse
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import desktop
 import dictation as d
 import onboarding
+
+# Speech-to-text services with an OpenAI-compatible /audio/transcriptions API.
+PROVIDERS = {
+    "OpenAI": ("https://api.openai.com/v1/audio/transcriptions", "gpt-4o-mini-transcribe"),
+    "Groq": ("https://api.groq.com/openai/v1/audio/transcriptions", "whisper-large-v3-turbo"),
+    "Other (OpenAI-compatible)": ("", ""),
+}
+
+
+@dataclass(frozen=True)
+class Remote:
+    endpoint: str
+    model: str
+    key: str
 
 
 class Service:
@@ -61,7 +78,14 @@ class Service:
             )
         return list(dict.fromkeys(devices))
 
-    def prepare(self, language: str, device: str, model: str) -> None:
+    def prepare(
+        self,
+        language: str,
+        device: str,
+        model: str,
+        progress: Callable[[int, int], None] | None = None,
+        remote: Remote | None = None,
+    ) -> None:
         if d.busy(self.paths):
             raise d.DictationError("Finish recording before changing setup.")
         if language not in ("en", "auto") or not device.strip():
@@ -69,33 +93,43 @@ class Service:
         if desktop.platform_name() == "windows" and device == "default":
             raise d.DictationError("Choose a microphone using Find microphones.")
         candidate = d.Config(self.paths)
-        path = onboarding.validate_model(
-            Path(model).expanduser()
-            if model
-            else onboarding.download_model(self.paths.config.parent / "models", language)
-        )
-        candidate.values.update(
-            backend="local",
-            model=str(path.resolve()),
-            language=language,
-            device=device.strip(),
-            allow_remote=False,
-        )
+        key_file = d.key_file(self.paths)
+        settings: dict[str, object]
+        if remote is not None:
+            host = urllib.parse.urlsplit(remote.endpoint).hostname
+            loopback = host in ("localhost", "127.0.0.1", "::1")
+            if not remote.key and not key_file.is_file() and not loopback:
+                raise d.DictationError("Enter the API key for your transcription service.")
+            # Choosing a service is the explicit consent to send audio to it.
+            settings = dict(
+                backend="http",
+                endpoint=remote.endpoint.strip(),
+                api_model=remote.model.strip(),
+                allow_remote=not loopback,
+            )
+        else:
+            path = onboarding.validate_model(
+                Path(model).expanduser()
+                if model
+                else onboarding.download_model(
+                    self.paths.config.parent / "models", language, progress
+                )
+            )
+            settings = dict(backend="local", model=str(path.resolve()), allow_remote=False)
+        candidate.values.update(language=language, device=device.strip(), **settings)
         candidate.check(recording=True)
         d.private_dir(self.paths.config.parent)
+        if remote is not None and remote.key:
+            d.atomic(key_file, remote.key.strip())  # atomic() creates owner-only files.
+        elif remote is None:
+            key_file.unlink(missing_ok=True)
         # Save the user's file settings, not temporary DICTATION_* environment
         # overrides inherited by this desktop process.
         saved = d.DEFAULTS | d.read_json(self.paths.config)
         for key in ("ffmpeg", "whisper_bin"):
             if not saved[key]:
                 saved[key] = candidate.values[key]
-        saved.update(
-            backend="local",
-            model=str(path),
-            language=language,
-            device=device.strip(),
-            allow_remote=False,
-        )
+        saved.update(language=language, device=device.strip(), **settings)
         d.atomic(self.paths.config, json.dumps(saved, indent=2))
 
     def action(self, action: str) -> None:

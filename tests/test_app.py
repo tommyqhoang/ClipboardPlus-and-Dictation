@@ -67,6 +67,37 @@ class ServiceTests(ServiceCase):
             with self.assertRaises(d.DictationError):
                 self.service.prepare("en", "default", "")
 
+    def test_prepare_with_own_ai_service_saves_private_key(self):
+        remote = app_service.Remote("https://api.example.com/v1/audio", "fast-model", "sk-test")
+        with patch.object(d.Config, "check"):
+            with self.assertRaisesRegex(d.DictationError, "API key"):
+                self.service.prepare(
+                    "en", "USB Mic", "", remote=app_service.Remote(remote.endpoint, "m", "")
+                )
+            self.service.prepare("en", "USB Mic", "", remote=remote)
+            saved = d.read_json(self.paths.config)
+            self.assertEqual(saved["backend"], "http")
+            self.assertEqual(saved["endpoint"], "https://api.example.com/v1/audio")
+            self.assertEqual(saved["api_model"], "fast-model")
+            self.assertTrue(saved["allow_remote"])
+            key = d.key_file(self.paths)
+            self.assertEqual(key.read_text(), "sk-test")
+            if sys.platform != "win32":
+                self.assertEqual(key.stat().st_mode & 0o777, 0o600)
+            # Blank key keeps the saved one; a local server needs none.
+            self.service.prepare(
+                "en", "USB Mic", "", remote=app_service.Remote(remote.endpoint, "m", "")
+            )
+            self.assertEqual(key.read_text(), "sk-test")
+            local = app_service.Remote("http://127.0.0.1:8080/inference", "", "")
+            self.service.prepare("en", "USB Mic", "", remote=local)
+            self.assertFalse(d.read_json(self.paths.config)["allow_remote"])
+            model = self.folder / "model.bin"
+            model.write_bytes(b"lmgg-fixture")
+            self.service.prepare("en", "USB Mic", str(model))
+            self.assertFalse(key.exists())  # Switching back to on-device forgets the key.
+            self.assertEqual(d.read_json(self.paths.config)["backend"], "local")
+
     def test_microphone_parsing_without_capturing(self):
         samples = {
             "alsa": (
@@ -155,6 +186,7 @@ class WindowTests(ServiceCase):
         self.tick()
 
     def test_first_launch_walkthrough_no_recording(self):
+        self.window.tray = False
         self.assertEqual(self.window.page, "welcome")
         with (
             patch.object(self.service, "action") as record,
@@ -184,11 +216,184 @@ class WindowTests(ServiceCase):
             self.assertTrue(d.read_json(self.service.marker)["complete"])
             record.assert_not_called()
 
+    def test_settings_discovers_microphones_and_reports_download(self):
+        with patch.object(self.service, "microphones", return_value=["Built-in", "USB Mic"]):
+            self.window.settings()
+            self.root.update()  # Runs the scheduled discovery.
+            self.finish()
+        self.assertEqual(self.window.device.get(), "Built-in")
+        self.assertIn("2 microphones found", self.window.status.get())
+        self.window.model_source.set("file")
+        self.window.model.set("")
+        self.window.prepare()
+        self.assertIsNone(self.window.pending)
+        self.assertIn("Choose a model file", self.window.status.get())
+        self.window.model_source.set("download")
+        release = __import__("threading").Event()
+
+        def download(language, device, model, progress, remote=None):
+            self.assertEqual(model, "")
+            progress(50_000_000, 150_000_000)
+            release.wait(5)
+
+        with patch.object(self.service, "prepare", side_effect=download):
+            self.window.prepare()
+            for _ in range(100):
+                if self.window.download[0]:
+                    break
+                time.sleep(0.01)
+            self.tick()
+            self.assertIn("50 MB of 150 MB (33%)", self.window.status.get())
+            self.assertEqual(str(self.window.progress.cget("mode")), "determinate")
+            release.set()
+            self.finish()
+        self.assertEqual(self.window.page, "tutorial")
+        self.window.download = (1_000_000, 0)
+        self.window.show_download()
+        self.assertIn("1 MB", self.window.status.get())
+        self.window.find_microphones()  # Ignored outside the settings page.
+        self.assertIsNone(self.window.pending)
+
+    def test_macos_setup_shows_shortcut_and_closes(self):
+        self.window.tray = True
+        with patch.object(desktop, "platform_name", return_value="macos"):
+            self.window.tutorial()
+        labels = []
+        stack = [self.window.frame]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            if widget.winfo_class() == "TLabel":
+                labels.append(str(widget.cget("text")))
+        self.assertTrue(any("Press ⌃⌥D in any app" in text for text in labels))
+        self.assertEqual(self.window.bar_actions.winfo_children()[0].cget("text"), "Done")
+        self.window.finish_setup()
+        self.finish()
+        self.assertEqual(self.window.page, "closed")
+
+    def test_settings_page_argument(self):
+        self.window.destroy()
+        with patch.object(self.service, "completed", return_value=True):
+            self.root = self.gui.tk.Tk()
+            self.root.withdraw()
+            self.window = self.gui.App(self.root, self.service, "settings")
+        self.assertEqual(self.window.page, "settings")
+        with patch.object(self.gui.tk, "Tk"), patch.object(self.gui, "App") as window:
+            self.assertEqual(self.gui.main(["--settings"]), 0)
+            self.assertEqual(window.call_args.args[2], "settings")
+            self.assertEqual(self.gui.main(["--shortcut"]), 0)
+            self.assertEqual(window.call_args.args[2], "shortcut")
+            self.assertEqual(self.gui.main([]), 0)
+            self.assertEqual(window.call_args.args[2], "")
+
+    def test_own_ai_service_choice(self):
+        with patch.object(self.service, "microphones", return_value=["USB Mic"]):
+            self.window.settings()
+        service = self.window.choices["service"][0]
+        self.assertEqual(service.winfo_manager(), "")  # Hidden until chosen.
+        self.window.model_source.set("service")
+        self.window.show_choice()
+        self.assertEqual(service.winfo_manager(), "pack")
+        self.window.provider.set("Groq")
+        self.window.choose_provider()
+        self.assertIn("groq.com", self.window.endpoint.get())
+        self.window.endpoint.set("")
+        self.window.prepare()
+        self.assertIn("service URL", self.window.status.get())
+        self.window.choose_provider()
+        self.window.api_key.set("gsk-test")
+        self.window.device.set("USB Mic")
+        with patch.object(self.service, "prepare") as prepare:
+            self.window.prepare()
+            self.finish()
+        remote = prepare.call_args.args[4]
+        self.assertEqual((remote.model, remote.key), ("whisper-large-v3-turbo", "gsk-test"))
+        # Reopening settings for a configured service selects it again.
+        d.private_dir(self.paths.config.parent)
+        d.atomic(
+            self.paths.config,
+            '{"backend": "http", "endpoint": "https://custom.example/v1", "api_model": "m"}',
+        )
+        with patch.object(self.service, "microphones", return_value=["USB Mic"]):
+            self.window.settings()
+        self.assertEqual(self.window.model_source.get(), "service")
+        self.assertEqual(self.window.provider.get(), "Other (OpenAI-compatible)")
+        self.assertEqual(self.window.endpoint.get(), "https://custom.example/v1")
+
+    def test_tutorial_recommends_clipboard_plus(self):
+        with patch.object(desktop, "platform_name", return_value="windows"):
+            self.window.tutorial()
+            texts = self.texts()
+        self.assertTrue(any("Press Ctrl+Alt+D in any app" in text for text in texts))
+        self.assertTrue(any("system tray" in text for text in texts))
+        button = next(
+            widget
+            for widget in self.window.buttons
+            if widget.cget("text") == "Get Clipboard+ (recommended)"
+        )
+        with patch("webbrowser.open") as browser:
+            button.invoke()
+        browser.assert_called_once_with("https://clipboardplus.apercallc.com")
+        with patch.object(desktop, "platform_name", return_value="linux"):
+            self.window.tutorial()
+            self.assertTrue(any("dictate-toggle" in text for text in self.texts()))
+
+    def texts(self):
+        found, stack = [], [self.window.frame]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            if widget.winfo_class() == "TLabel":
+                found.append(str(widget.cget("text")))
+        return found
+
+    def test_shortcut_window_captures_keys(self):
+        self.window.shortcut_page()
+        capture = self.paths.runtime / "shortcut-capture"
+        self.assertTrue(capture.exists())
+
+        def key(kind, keysym):
+            event = Mock(keysym=keysym)
+            return (
+                self.window.shortcut_key(event)
+                if kind == "press"
+                else self.window.shortcut_release(event)
+            )
+
+        self.assertEqual(key("press", "Shift_L"), "break")
+        key("press", "d")
+        self.assertIn("Include", self.window.shortcut_hint.cget("text"))
+        self.assertIn("disabled", self.window.save_shortcut_button.state())
+        key("release", "Shift_L")
+        key("press", "Control_L")
+        key("press", "Alt_L")
+        key("press", "space")
+        self.assertNotIn("disabled", self.window.save_shortcut_button.state())
+        self.window.save_shortcut()
+        self.assertEqual(
+            self.gui.hotkeys.Preferences(self.paths).shortcut(),
+            self.gui.hotkeys.Shortcut(("ctrl", "alt"), "Space"),
+        )
+        self.assertEqual(self.window.page, "closed")
+        self.assertFalse(capture.exists())
+
+    def test_scrollbar_hides_when_content_fits(self):
+        self.window.scroll(0.0, 1.0)
+        self.assertEqual(self.window.scrollbar.winfo_manager(), "")
+        self.window.scroll(0.0, 0.5)
+        self.assertEqual(self.window.scrollbar.winfo_manager(), "pack")
+
     def test_existing_setup_and_recording_controls(self):
         with patch.object(self.service, "ready", return_value=True):
             self.window.begin_setup()
         self.assertEqual(self.window.page, "tutorial")
-        self.window.home()
+        self.window.tray = False
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.settings()
+        cancel = self.window.bar_actions.winfo_children()[-1]
+        self.assertEqual(cancel.cget("text"), "Cancel")
+        cancel.invoke()
+        self.assertEqual(self.window.page, "home")
         self.tick()
         self.assertIn("disabled", self.window.cancel.state())
         d.atomic(self.paths.text, "Words to copy")
