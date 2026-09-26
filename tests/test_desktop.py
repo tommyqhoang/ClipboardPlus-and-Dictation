@@ -347,6 +347,27 @@ class DesktopTests(unittest.TestCase):
                 with self.assertRaisesRegex(dictation.DictationError, "tray component"):
                     setup.gui_environment(prefix)
 
+    def test_the_environment_carries_what_the_clipboard_watchers_import(self):
+        setup = setup_module()
+        # Pillow turns copied images into PNG on macOS/Windows and makes thumbnails;
+        # python-xlib is how the X11 watcher sees the clipboard (also under XWayland).
+        wanted = {
+            "macos": ("pyobjc-framework-Cocoa", "Pillow"),
+            "linux": ("pystray", "Pillow", "python-xlib"),
+            "windows": ("pystray", "Pillow"),
+        }
+        for platform, names in wanted.items():
+            with self.subTest(platform=platform):
+                pinned = " ".join(setup.GUI_REQUIREMENTS[platform])
+                for name in names:
+                    self.assertIn(name + "==", pinned)
+                code = setup.probe_code(platform)
+                self.assertIn("PIL", code)
+                self.assertEqual("Xlib" in code, platform == "linux")
+                self.assertIn("tkinter", code)
+        # An install made before the clipboard existed fails the probe and is rebuilt.
+        self.assertIn("AppKit", setup.probe_code("macos"))
+
     def test_base_python_skips_interpreter_without_tk(self):
         setup = setup_module()
 
@@ -381,6 +402,49 @@ class DesktopTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(dictation.DictationError, "no _tkinter"):
                     setup.gui_environment(Path(folder))
+
+    def clipboard_runtime(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        with patch.dict(
+            os.environ,
+            {
+                "XDG_RUNTIME_DIR": folder.name + "/runtime",
+                "XDG_CONFIG_HOME": folder.name + "/config",
+            },
+        ):
+            paths = dictation.Paths()
+        dictation.private_dir(paths.runtime)
+        for name in ("clip-status.json", "clip-sync-now", "clip-ignore.json"):
+            (paths.runtime / name).write_text("{}")
+        dictation.private_dir(paths.clipboard)
+        (paths.clipboard / "clips.db").write_bytes(b"history")
+        return paths
+
+    def test_uninstall_stops_the_clipboard_service_and_keeps_the_history(self):
+        setup = setup_module()
+        paths = self.clipboard_runtime()
+        held = desktop.lock(paths.runtime / "clipservice.lock")
+        asked = []
+
+        def service_exits(_):
+            asked.append((paths.runtime / "clip-quit").exists())
+            os.close(held)
+
+        with patch.object(setup.time, "sleep", side_effect=service_exits):
+            setup.stop_clipboard_service(paths)
+        self.assertEqual(asked, [True])  # It was asked to quit, and waited for it.
+        self.assertFalse(list(paths.runtime.glob("clip-*")))
+        self.assertEqual((paths.clipboard / "clips.db").read_bytes(), b"history")
+
+    def test_uninstall_leaves_a_stopped_service_alone_and_asks_nothing_of_it(self):
+        setup = setup_module()
+        paths = self.clipboard_runtime()
+        with patch.object(setup.time, "sleep") as sleep:
+            setup.stop_clipboard_service(paths)
+        sleep.assert_not_called()
+        self.assertFalse((paths.runtime / "clip-quit").exists())
+        self.assertFalse((paths.runtime / "clip-status.json").exists())
 
     def test_stop_menubar_requests_quit_and_waits(self):
         setup = setup_module()

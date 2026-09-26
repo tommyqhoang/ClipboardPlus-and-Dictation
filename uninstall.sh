@@ -15,6 +15,7 @@ if busy(Paths()):
 runtime = Paths().runtime
 if runtime.is_dir():
     (runtime / "menubar-quit").write_text("quit")  # Closes the tray app.
+    (runtime / "clip-quit").write_text("quit")  # And the clipboard service (history is kept).
 PY
 fi
 if command -v gsettings >/dev/null 2>&1; then

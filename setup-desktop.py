@@ -116,8 +116,9 @@ MODULES = (
 # The menu bar (macOS, PyObjC) and tray (Windows/Linux, pystray) apps run from a
 # private environment so the system or Homebrew Python is never modified.
 GUI_REQUIREMENTS = {
-    "macos": ("pyobjc-framework-Cocoa==12.2.2",),
-    "other": ("pystray==0.19.5", "Pillow==12.3.0"),
+    "macos": ("pyobjc-framework-Cocoa==12.2.2", "Pillow==12.3.0"),
+    "linux": ("pystray==0.19.5", "Pillow==12.3.0", "python-xlib==0.33"),
+    "windows": ("pystray==0.19.5", "Pillow==12.3.0"),
 }
 
 
@@ -161,26 +162,30 @@ def base_python(platform: str) -> str:
     return sys.executable
 
 
+def probe_code(platform: str) -> str:
+    """Imports that prove the private environment is complete (one that predates the
+    clipboard history lacks some, fails this, and is rebuilt)."""
+    if platform == "macos":
+        return "import AppKit, PIL, tkinter"
+    # Importing pystray connects to the display, which an SSH or TTY install lacks,
+    # so only check that it is installed.
+    extra = ", Xlib" if platform == "linux" else ""
+    return f"import importlib.util, PIL, tkinter{extra}; assert importlib.util.find_spec('pystray')"
+
+
 def gui_environment(prefix: Path) -> Path:
     """Create the private environment; returns its windowed Python."""
     platform = desktop.platform_name()
     venv = prefix / "share/whisper-dictation/venv"
     python, windowed = gui_python(prefix)
-    # Importing pystray connects to the display, which an SSH or TTY install lacks,
-    # so only check that it is installed.
-    code = (
-        "import AppKit, tkinter"
-        if platform == "macos"
-        else "import importlib.util, PIL, tkinter; assert importlib.util.find_spec('pystray')"
-    )
-    probe = [str(python), "-c", code]
+    probe = [str(python), "-c", probe_code(platform)]
     if python.exists() and subprocess.run(probe, capture_output=True, check=False).returncode == 0:
         return windowed
     print("Installing the menu bar/tray component (one time)...", flush=True)
     create = [base_python(platform), "-m", "venv", "--clear", str(venv)]
     if platform == "linux":
         create.insert(3, "--system-site-packages")  # Sees the distribution's GTK bindings.
-    requirements = GUI_REQUIREMENTS["macos" if platform == "macos" else "other"]
+    requirements = GUI_REQUIREMENTS[platform]
     try:
         subprocess.run(create, check=True)
         subprocess.run(
@@ -377,6 +382,26 @@ def launch(prefix: Path) -> None:
         )
 
 
+def stop_clipboard_service(paths: dictation.Paths) -> None:
+    """Ask the clipboard service to quit and clear its runtime files.
+
+    The clipboard history itself is kept, like every other user file: it is removed
+    only by "Delete all clipboard data" in Settings.
+    """
+    dictation.private_dir(paths.runtime)
+    lock = paths.runtime / "clipservice.lock"
+    for attempt in range(50):
+        fd = desktop.lock(lock)
+        if fd is not None:
+            os.close(fd)
+            break
+        if attempt == 0:
+            dictation.atomic(paths.runtime / "clip-quit", "quit")
+        time.sleep(0.1)
+    for name in ("clip-quit", "clip-status.json", "clip-sync-now", "clip-ignore.json"):
+        (paths.runtime / name).unlink(missing_ok=True)
+
+
 def uninstall(prefix: Path) -> None:
     receipt = prefix / ".dictation-install.json"
     if not receipt.is_file():
@@ -385,6 +410,7 @@ def uninstall(prefix: Path) -> None:
         raise dictation.DictationError("Finish or cancel the active session before uninstalling.")
     if dictation.read_json(receipt).get("shortcut") and desktop.platform_name() == "windows":
         windows_shortcut(prefix / "lib/tray.py", gui_python(prefix)[1], remove=True)
+    stop_clipboard_service(dictation.Paths())
     if desktop.platform_name() != "macos":
         stop_menubar(dictation.Paths())
         windowed = gui_python(prefix)[1]
