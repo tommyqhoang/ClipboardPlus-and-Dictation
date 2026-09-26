@@ -20,7 +20,8 @@ import dictation as d
 
 # Shown wherever the app names itself. Identifiers, folders and the bundle id keep the
 # original "whisper-dictation" spelling so upgrades keep working.
-APP_NAME = "Whisper Dictation & Clipboard+"
+# Formerly "Whisper Dictation & Clipboard+"; now named like the rest of Clipboard+.
+APP_NAME = "Clipboard+ Desktop"
 MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
 MAC_SYMBOLS = {"ctrl": "⌃", "alt": "⌥", "shift": "⇧", "cmd": "⌘"}
 # Carbon (macOS) modifier masks from Events.h.

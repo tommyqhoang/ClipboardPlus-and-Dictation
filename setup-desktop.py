@@ -64,7 +64,7 @@ def windows_shortcut(module: Path, python: Path | None = None, remove: bool = Fa
     payload = {
         "name": hotkeys.APP_NAME + ".lnk",
         "description": "Open " + hotkeys.APP_NAME,
-        "old_names": ["Whisper Dictation.lnk"],
+        "old_names": ["Whisper Dictation.lnk", "Whisper Dictation & Clipboard+.lnk"],
         "python": str(python),
         "arguments": subprocess.list2cmdline([str(module)]),
         # Earlier versions pointed the shortcut at these modules.

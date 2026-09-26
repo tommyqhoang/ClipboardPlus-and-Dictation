@@ -231,7 +231,7 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(len(set(hotkeys.PRESETS)), len(hotkeys.PRESETS))
 
     def test_the_app_name_is_used_for_the_login_entry_and_gnome_binding(self):
-        self.assertEqual(hotkeys.APP_NAME, "Whisper Dictation & Clipboard+")
+        self.assertEqual(hotkeys.APP_NAME, "Clipboard+ Desktop")
         calls = []
 
         def run(args, **_):

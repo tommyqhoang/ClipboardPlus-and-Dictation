@@ -1,4 +1,4 @@
-"""Whisper Dictation & Clipboard+ desktop window and first-run walkthrough."""
+"""Clipboard+ Desktop window and first-run walkthrough."""
 
 from __future__ import annotations
 

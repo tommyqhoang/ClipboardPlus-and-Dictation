@@ -1,4 +1,6 @@
-# Whisper Dictation & Clipboard+
+# Clipboard+ Desktop
+
+*Formerly Whisper Dictation & Clipboard+.* Download page: https://clipboardplus.apercallc.com/desktop.html
 
 Free desktop app for Linux, macOS, and Windows with two features you can use
 separately or together:

@@ -195,7 +195,9 @@ class DesktopTests(unittest.TestCase):
             setup.windows_shortcut(Path("tray.py"), Path("C:/venv/pythonw.exe"))
         payload = json.loads(run.call_args.kwargs["input"])
         self.assertEqual(payload["name"], setup.hotkeys.APP_NAME + ".lnk")
-        self.assertEqual(payload["old_names"], ["Whisper Dictation.lnk"])
+        self.assertEqual(
+            payload["old_names"], ["Whisper Dictation.lnk", "Whisper Dictation & Clipboard+.lnk"]
+        )
         script = run.call_args.args[0][-1]
         self.assertIn("$p.name", script)
         self.assertIn("$p.old_names", script)
