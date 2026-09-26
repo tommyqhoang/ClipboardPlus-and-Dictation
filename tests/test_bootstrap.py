@@ -54,6 +54,19 @@ main
             self.assertNotIn("walkthrough", result.stdout)
             self.assertEqual(leftovers, [])
 
+    def test_documented_bash_c_invocation_runs_main(self):
+        # README usage: bash -c "$(curl ...)" leaves BASH_SOURCE empty.
+        script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=os.environ | {"DICTATION_REF": "../unsafe"},
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("DICTATION_REF must be", result.stderr)
+        self.assertNotIn("unbound variable", result.stderr)
+
     def test_windows_engine_download_is_versioned_and_checksum_pinned(self):
         script = (ROOT / "bootstrap.ps1").read_text(encoding="utf-8")
         self.assertIn("releases/download/v1.8.7/whisper-bin-x64.zip", script)

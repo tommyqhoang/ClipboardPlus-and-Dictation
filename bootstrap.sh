@@ -53,6 +53,7 @@ main() (
   python3 "$work/app/setup-desktop.py" --launch-only
 )
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# Under `bash -c "$(curl ...)"` BASH_SOURCE is empty, so fall back to $0.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
   main "$@"
 fi
