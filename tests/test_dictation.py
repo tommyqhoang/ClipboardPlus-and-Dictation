@@ -132,6 +132,19 @@ class DictationTests(unittest.TestCase):
         self.cli("--transcribe")
         self.assertFalse(self.paths.audio.exists())
 
+    def test_finishing_always_says_it_is_ready_to_paste(self):
+        self.paths.audio.write_bytes(b"\0" * 3200)
+        with (
+            patch.object(d, "transcribe", return_value="hello"),
+            patch.object(d, "notify") as told,
+        ):
+            self.assertEqual(d.finish(self.config, self.paths), "copied")
+        self.assertIn("Ready to paste", told.call_args.args[1])
+        self.paths.audio.write_bytes(b"\0" * 3200)
+        with patch.object(d, "transcribe", return_value=""), patch.object(d, "notify") as told:
+            self.assertEqual(d.finish(self.config, self.paths), "empty")
+        self.assertIn("No speech", told.call_args.args[1])
+
     def test_messages_speak_in_app_terms(self):
         with (
             patch.object(d.desktop, "available", return_value=True),

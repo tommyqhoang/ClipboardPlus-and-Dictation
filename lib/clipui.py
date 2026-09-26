@@ -615,11 +615,7 @@ class ClipboardPage:
         except d.DictationError as exc:
             self.app.status.set(str(exc))
             return
-        if getattr(self.app, "quick", False):
-            # Opened to pick something: get out of the way so it can be pasted.
-            self.app.root.after(120, self.app.close)
-        else:
-            self.app.status.set("Copied. Paste it anywhere.")
+        self.app.status.set("Copied. Paste it anywhere.")
 
     def delete(self, item_id: int) -> None:
         item = self.store.get(item_id)

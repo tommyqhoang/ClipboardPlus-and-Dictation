@@ -4,8 +4,8 @@ while transcribing, then a short "Copied" confirmation that fades away.
 Started by the dictation worker for one session (its token is the only argument). It
 never records anything itself: the levels come from the tail of the audio file the
 recorder is already writing, and its state from the session's state file. It never
-takes the keyboard focus, so the paste target stays where the user left it. It prints
-"ready" once shown; a worker that does not hear that falls back to notifications.
+takes the keyboard focus, so the paste target stays where the user left it. It adds to
+the desktop notifications rather than replacing them.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ import desktop
 import dictation as d
 import hotkeys
 
-WIDTH, HEIGHT, DRAFT_HEIGHT = 440, 64, 90
-MARGIN = 72  # Above the bottom edge of the screen (clear of docks and panels).
+WIDTH, HEIGHT, DRAFT_HEIGHT = 480, 76, 104
+MARGIN = 110  # Above the bottom edge of the screen (clear of docks and panels).
 BARS = 19
 FRAME_MS = 33  # About 30 frames a second.
 SAMPLE_RATE = 16_000  # The recorder writes raw 16-bit mono PCM at this rate.
@@ -122,8 +122,8 @@ class Overlay:
         self.hint = f"{shortcut.label()} to stop"
         family = str(font.nametofont("TkDefaultFont").actual()["family"])
         self.fonts = {
-            "title": (family, 11, "bold"),
-            "small": (family, 9, "normal"),
+            "title": (family, 12, "bold"),
+            "small": (family, 10, "normal"),
             "draft": (family, 9, "italic"),
         }
         self._window()
@@ -144,7 +144,7 @@ class Overlay:
             width=WIDTH,
             height=HEIGHT,
             background=BACKGROUND,
-            highlightthickness=1,
+            highlightthickness=2,  # A colored edge that says what is happening.
             highlightbackground=EDGE,
             borderwidth=0,
         )
@@ -186,10 +186,10 @@ class Overlay:
     def _buttons(self) -> dict[str, tuple[int, int, int, int]]:
         if self.mode != "recording":
             return {}
-        top = (HEIGHT - 28) // 2
+        top = (HEIGHT - 32) // 2
         return {
-            "stop": (WIDTH - 72, top, WIDTH - 44, top + 28),
-            "cancel": (WIDTH - 38, top, WIDTH - 10, top + 28),
+            "stop": (WIDTH - 84, top, WIDTH - 52, top + 32),
+            "cancel": (WIDTH - 44, top, WIDTH - 12, top + 32),
         }
 
     def _under(self, x: int, y: int) -> str:
@@ -329,17 +329,21 @@ class Overlay:
     def draw(self, now: float) -> None:
         canvas = self.canvas
         canvas.delete("all")
+        edge = {"recording": RECORD, "transcribing": ACCENT, "copied": SUCCESS, "error": DANGER}
+        canvas.configure(highlightbackground=edge.get(self.mode, EDGE))
         self._badge(now)
         title, detail = self._words(now)
-        canvas.create_text(58, 24, text=title, anchor="w", fill=TEXT, font=self.fonts["title"])
+        canvas.create_text(
+            64, HEIGHT // 2 - 11, text=title, anchor="w", fill=TEXT, font=self.fonts["title"]
+        )
         if self.mode == "error":
             canvas.create_text(
-                58, 36, text=detail, anchor="nw", fill=MUTED, font=self.fonts["small"],
+                64, HEIGHT // 2 + 2, text=detail, anchor="nw", fill=MUTED, font=self.fonts["small"],
                 width=WIDTH - 76,
             )  # fmt: skip
         else:
             canvas.create_text(
-                58, 43, text=detail, anchor="w", fill=MUTED, font=self.fonts["small"]
+                64, HEIGHT // 2 + 12, text=detail, anchor="w", fill=MUTED, font=self.fonts["small"]
             )
         self._bars()
         for name, (left, top, right, bottom) in self._buttons().items():
@@ -364,7 +368,7 @@ class Overlay:
 
     def _badge(self, now: float) -> None:
         """The round sign on the left: pulse, spinner, check or cross."""
-        canvas, cx, cy = self.canvas, 30, HEIGHT // 2
+        canvas, cx, cy = self.canvas, 34, HEIGHT // 2
         if self.mode == "recording":
             pulse = (now * 1.2) % 1.0
             ring = 7 + pulse * 11
@@ -417,12 +421,12 @@ class Overlay:
     def _bars(self) -> None:
         if self.mode not in ("recording", "transcribing", "starting"):
             return
-        right = WIDTH - (84 if self.mode == "recording" else 18)
+        right = WIDTH - (96 if self.mode == "recording" else 20)
         left = right - BARS * 5
         middle = HEIGHT // 2
         color = ACCENT if self.mode == "recording" else ACCENT_DIM
         for i, height in enumerate(self.heights):
-            reach = max(1.5, height * 20)
+            reach = max(1.5, height * 24)
             x = left + i * 5
             fill = _mix(ACCENT_DIM, color, min(1.0, height * 1.6))
             self.canvas.create_line(
@@ -449,11 +453,9 @@ def main() -> int:
     try:
         root = tk.Tk(className="dictation-overlay")
     except tk.TclError:
-        return 3  # No display: the worker notices "ready" never came.
+        return 3  # No display: the notifications still tell the story.
     overlay = Overlay(root, d.Paths(), sys.argv[1])
     root.update_idletasks()
-    print("ready", flush=True)
-    sys.stdout.close()
     overlay.tick()
     root.mainloop()
     return 0

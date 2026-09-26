@@ -93,8 +93,8 @@ seconds and keeps nothing).
   it off in *Settings → Keyboard shortcuts*.
 - In the window, Ctrl+F (⌘F) searches the clipboard history, Ctrl+, (⌘,) opens
   Settings and Ctrl+W (⌘W) closes it. In the search box, ↑/↓ choose a result,
-  Enter copies it and Esc clears the search. Opened by the history shortcut, the
-  window closes as soon as you copy something (or press Esc), ready to paste.
+  Enter copies it and Esc clears the search. Opened by the history shortcut, a
+  second Esc closes the window.
 - The icon's menu: a status line, Start/Stop, Cancel Recording (while recording),
   Copy Last Transcript (dictation items appear only while Dictation is on),
   **Clipboard History…**, **Pause Clipboard Capture** (for an hour, or until you

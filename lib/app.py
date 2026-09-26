@@ -136,7 +136,7 @@ class App:
         self.setup_mode = ""
         self.setup_steps: list[str] = []  # The first-run screens this setup shows.
         self.clipboard_page: clipui.ClipboardPage | None = None
-        # Opened by the history shortcut or menu: like a picker, it closes once you copy.
+        # Opened by the history shortcut or menu: Esc (with no search typed) closes it.
         self.quick = page == "clipboard"
         self.clipboard_store: clipstore.Store | None = None
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -567,7 +567,7 @@ class App:
         )
 
     def tab(self, name: str) -> None:
-        self.quick = False  # Browsing now: copying no longer closes the window.
+        self.quick = False  # Browsing now: Esc no longer closes the window.
         if name == "clipboard":
             self.clipboard()
         elif name == "dictation":
@@ -1653,7 +1653,7 @@ class App:
     def open_page(self, request: str) -> None:
         """Honor a page request from the tray or a shortcut when it is safe to leave."""
         if request == "clipboard":
-            self.quick = True  # Opened to pick something: copying closes the window.
+            self.quick = True  # Opened to pick something: Esc closes the window.
         if request == "clipboard" and self.page == "clipboard" and self.clipboard_page:
             self.clipboard_page.focus_search()
             return

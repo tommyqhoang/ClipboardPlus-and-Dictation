@@ -359,17 +359,18 @@ class PageTests(PageCase):
         self.page.refresh()  # A new copy arriving keeps a valid selection.
         self.assertLess(self.page.selected, len(self.page.rows))
 
-    def test_a_picker_window_closes_after_copying_and_on_escape(self):
+    def test_copying_keeps_the_window_open_and_escape_closes_a_picker(self):
         item = self.store.add_text("paste me", now=1.0)
         self.page.reload()
         self.window.quick = True
         with (
             patch.object(self.service, "copy_item"),
             patch.object(self.window, "close") as close,
-            patch.object(self.root, "after", side_effect=lambda _ms, f: f()),
         ):
             self.page.copy(item.id)
-        close.assert_called_once()
+            self.root.update()
+        close.assert_not_called()  # Copy several things in a row if you like.
+        self.assertEqual(self.window.status.get(), "Copied. Paste it anywhere.")
         with patch.object(self.window, "close") as close:
             self.page.query.set("paste")
             self.page.escape()  # First Escape clears the search.

@@ -5,7 +5,6 @@ from __future__ import annotations
 import array
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -68,31 +67,6 @@ class HelperTests(unittest.TestCase):
 
 
 class WorkerHandoverTests(unittest.TestCase):
-    def test_ready_means_the_pill_is_up(self):
-        script = "import sys; print('ready', flush=True); sys.stdin.read()"
-        process = subprocess.Popen(
-            [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE
-        )
-        self.addCleanup(process.wait)
-        self.addCleanup(process.stdin.close)
-        self.assertTrue(d.overlay_ready(process))
-
-    def test_silence_or_an_early_exit_falls_back_to_notifications(self):
-        self.assertFalse(d.overlay_ready(None))
-        quiet = subprocess.Popen(
-            [sys.executable, "-c", "raise SystemExit(3)"], stdout=subprocess.PIPE
-        )
-        self.assertFalse(d.overlay_ready(quiet))
-        quiet.wait()
-        quiet.stdout.close()
-        stuck = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(5)"], stdout=subprocess.PIPE
-        )
-        self.addCleanup(stuck.stdout.close)
-        self.addCleanup(stuck.wait)
-        self.addCleanup(stuck.kill)
-        self.assertFalse(d.overlay_ready(stuck, timeout=0.2))
-
     def test_the_installed_private_python_is_preferred(self):
         with tempfile.TemporaryDirectory() as folder:
             prefix = Path(folder)
