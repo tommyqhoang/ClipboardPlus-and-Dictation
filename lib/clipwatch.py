@@ -53,12 +53,29 @@ def limit_clip(
     return Clip(text=text, image_png=image)
 
 
+_PNG_END = b"IEND\xaeB`\x82"
+
+
+def trim_png(data: bytes) -> bytes:
+    """A PNG without trailing bytes: some clipboards return a block larger than the image."""
+    end = data.rfind(_PNG_END)
+    return data if end == -1 else data[: end + len(_PNG_END)]
+
+
 def _platform_watcher(platform: str) -> Watcher:
     # Imported lazily: each module needs libraries that exist only on its platform.
     if platform == "linux":
         import clipwatch_linux
 
         return clipwatch_linux.create()
+    if platform == "macos":
+        import clipwatch_macos
+
+        return clipwatch_macos.create()
+    if platform == "windows":
+        import clipwatch_windows
+
+        return clipwatch_windows.create()
     raise Unavailable(f"Clipboard history is not supported on {platform}.")
 
 

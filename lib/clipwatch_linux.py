@@ -32,6 +32,7 @@ IMAGE_TARGET = "image/png"
 CONCEALED_TARGET = "x-kde-passwordManagerHint"
 _READ_TIMEOUT = 2.0  # Per step of a selection transfer.
 _TRANSFER_TIMEOUT = 10.0  # A whole transfer, however large.
+STARTUP_GRACE_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -308,6 +309,7 @@ class WlPasteSource:
         reader: Callable[[Sequence[str], int], bytes | None] | None = None,
         max_text: int = clipstore.MAX_TEXT_BYTES,
         max_image: int = clipstore.MAX_IMAGE_BYTES,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         # Each change runs the command once with the content on stdin: drain it, then
         # print one line, which is the signal read by wait().
@@ -319,22 +321,30 @@ class WlPasteSource:
         )
         self._reader = reader or _read_command
         self._max = {"text": max_text, "image": max_image}
+        self._clock = clock
+        self._started = clock()
 
     def wait(self, timeout: float) -> bool:
-        if self._process.poll() is not None:
-            raise Unavailable("The clipboard watcher stopped unexpectedly.")
-        stdout = self._process.stdout
-        if stdout is None:
-            raise Unavailable("The clipboard watcher has no output.")
-        ready, _, _ = select.select([stdout], [], [], max(0.0, timeout))
-        if not ready:
-            return False
-        stdout.readline()
-        # Collapse a burst into one change.
-        while select.select([stdout], [], [], 0.05)[0]:
-            if not stdout.readline():
-                break
-        return True
+        deadline = self._clock() + max(0.0, timeout)
+        while True:
+            if self._process.poll() is not None:
+                raise Unavailable("The clipboard watcher stopped unexpectedly.")
+            stdout = self._process.stdout
+            if stdout is None:
+                raise Unavailable("The clipboard watcher has no output.")
+            remaining = max(0.0, deadline - self._clock())
+            ready, _, _ = select.select([stdout], [], [], remaining)
+            if not ready:
+                return False
+            stdout.readline()
+            # Collapse a burst into one change.
+            while select.select([stdout], [], [], 0.05)[0]:
+                if not stdout.readline():
+                    break
+            if self._clock() - self._started >= STARTUP_GRACE_SECONDS:
+                return True
+            # wl-paste reports what was already on the clipboard when it started; that
+            # was copied before capture began, so it is not ours to keep.
 
     def read(self) -> Clip:
         listing = self._reader(["wl-paste", "--list-types"], 64_000)

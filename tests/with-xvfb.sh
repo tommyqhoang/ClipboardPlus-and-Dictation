@@ -26,4 +26,6 @@ while [ ! -s "$display_file" ]; do
 done
 DISPLAY=":$(sed -n '1p' "$display_file")"
 export DISPLAY
+# Tests that take over the X clipboard run only against this private display.
+export WWD_PRIVATE_DISPLAY=1
 "$@"

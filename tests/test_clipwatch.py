@@ -44,6 +44,12 @@ class SharedTests(unittest.TestCase):
         secret = clipwatch.Clip(text="hunter2", image_png=b"png", concealed=True)
         self.assertEqual(clipwatch.limit_clip(secret), clipwatch.Clip(concealed=True))
 
+    def test_trim_png_cuts_trailing_padding_only(self):
+        png = make_png()
+        self.assertEqual(clipwatch.trim_png(png + b"\x00\x00"), png)
+        self.assertEqual(clipwatch.trim_png(png), png)
+        self.assertEqual(clipwatch.trim_png(b"not a png"), b"not a png")
+
     def test_any_object_with_the_two_methods_is_a_watcher(self):
         class Fake:
             def next_change(self, timeout: float) -> clipwatch.Clip | None:
@@ -127,7 +133,11 @@ class WlPasteTests(unittest.TestCase):
             data = clipboard.get(command[-1])
             return None if data is None or len(data) > max_bytes else data
 
-        source = linux.WlPasteSource(process, reader, max_text=1000, max_image=1000)
+        # Well past the startup grace period, so changes count.
+        source = linux.WlPasteSource(
+            process, reader, max_text=1000, max_image=1000, clock=lambda: 1e9
+        )
+        source._started = 0.0
         return source, process, reads
 
     def test_wait_reports_a_change_and_times_out_otherwise(self):
@@ -137,6 +147,18 @@ class WlPasteTests(unittest.TestCase):
         process.change()  # A second line is the same burst, not another change.
         self.assertTrue(source.wait(1))
         self.assertFalse(source.wait(0.05))
+
+    def test_the_startup_notification_for_existing_content_is_ignored(self):
+        clock = [100.0]
+        process = FakeWatchProcess()
+        self.addCleanup(process.stdout.close)
+        self.addCleanup(os.close, process.write_fd)
+        source = linux.WlPasteSource(process, lambda c, m: b"", clock=lambda: clock[0])
+        process.change()  # wl-paste reports the current selection right after it starts.
+        self.assertFalse(source.wait(0.05))
+        clock[0] += 5
+        process.change()  # A real copy later on.
+        self.assertTrue(source.wait(1))
 
     def test_reads_text_using_the_best_target(self):
         source, _, reads = self.source(
@@ -242,6 +264,11 @@ class CreateTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_XLIB, "python-xlib is not installed")
+@unittest.skipUnless(
+    os.environ.get("WWD_PRIVATE_DISPLAY"),
+    "these tests take over the X clipboard: run them through tests/with-xvfb.sh, "
+    "never against a real desktop",
+)
 class X11Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

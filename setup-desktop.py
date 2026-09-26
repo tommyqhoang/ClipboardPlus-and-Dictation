@@ -106,6 +106,8 @@ MODULES = (
     "clipstore.py",
     "clipwatch.py",
     "clipwatch_linux.py",
+    "clipwatch_macos.py",
+    "clipwatch_windows.py",
 )
 # The menu bar (macOS, PyObjC) and tray (Windows/Linux, pystray) apps run from a
 # private environment so the system or Homebrew Python is never modified.
@@ -399,6 +401,8 @@ def uninstall(prefix: Path) -> None:
         "lib/clipstore.py",
         "lib/clipwatch.py",
         "lib/clipwatch_linux.py",
+        "lib/clipwatch_macos.py",
+        "lib/clipwatch_windows.py",
         "lib/tray-recording.png",
         "lib/menubar-icon.png",
         "lib/menubar-recording.png",
