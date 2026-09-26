@@ -24,9 +24,9 @@ if command -v gsettings >/dev/null 2>&1; then
     gsettings reset-recursively "$KEYBINDING_SCHEMA"
   fi
 fi
-rm -f "$BIN_DEST" "${HOME}/.local/lib/dictation.py" "${HOME}/.local/lib/desktop.py" "${HOME}/.local/lib/onboarding.py" "${HOME}/.local/lib/rewriting.py" "${HOME}/.local/lib/workflow.py" "${HOME}/.local/lib/app.py" "${HOME}/.local/lib/app_service.py" "${HOME}/.local/lib/hotkeys.py" "${HOME}/.local/lib/menubar.py" "${HOME}/.local/lib/tray.py" "${HOME}/.local/lib/clipboardplus.py" "${HOME}/.local/lib/tray-recording.png" "${HOME}/.local/lib/menubar-icon.png" "${HOME}/.local/lib/menubar-recording.png" "${HOME}/.config/autostart/whisper-dictation.desktop" "${HOME}/.local/lib/whisper-dictation.png" "${HOME}/.local/lib/whisper-dictation.ico" "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/bin/Whisper Dictation.command"
+rm -f "$BIN_DEST" "${HOME}/.local/lib/dictation.py" "${HOME}/.local/lib/desktop.py" "${HOME}/.local/lib/onboarding.py" "${HOME}/.local/lib/rewriting.py" "${HOME}/.local/lib/workflow.py" "${HOME}/.local/lib/app.py" "${HOME}/.local/lib/app_service.py" "${HOME}/.local/lib/hotkeys.py" "${HOME}/.local/lib/menubar.py" "${HOME}/.local/lib/tray.py" "${HOME}/.local/lib/clipboardplus.py" "${HOME}/.local/lib/clipstore.py" "${HOME}/.local/lib/tray-recording.png" "${HOME}/.local/lib/menubar-icon.png" "${HOME}/.local/lib/menubar-recording.png" "${HOME}/.config/autostart/whisper-dictation.desktop" "${HOME}/.local/lib/whisper-dictation.png" "${HOME}/.local/lib/whisper-dictation.ico" "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/bin/Whisper Dictation.command"
 rm -f "${HOME}/.local/.dictation-install.json"
-for module in dictation desktop onboarding rewriting workflow app app_service hotkeys menubar tray clipboardplus; do
+for module in dictation desktop onboarding rewriting workflow app app_service hotkeys menubar tray clipboardplus clipstore; do
   rm -f "${HOME}/.local/lib/__pycache__/${module}".*.pyc
 done
 rmdir "${HOME}/.local/lib/__pycache__" 2>/dev/null || true

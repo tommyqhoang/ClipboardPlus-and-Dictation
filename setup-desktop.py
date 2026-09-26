@@ -103,6 +103,7 @@ MODULES = (
     "menubar.py",
     "tray.py",
     "clipboardplus.py",
+    "clipstore.py",
 )
 # The menu bar (macOS, PyObjC) and tray (Windows/Linux, pystray) apps run from a
 # private environment so the system or Homebrew Python is never modified.
@@ -393,6 +394,7 @@ def uninstall(prefix: Path) -> None:
         "lib/menubar.py",
         "lib/tray.py",
         "lib/clipboardplus.py",
+        "lib/clipstore.py",
         "lib/tray-recording.png",
         "lib/menubar-icon.png",
         "lib/menubar-recording.png",
