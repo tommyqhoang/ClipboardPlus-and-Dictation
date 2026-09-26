@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 import stat
@@ -356,7 +357,7 @@ class ConcurrencyAndSchemaTests(StoreCase):
         reopened = clipstore.Store(self.directory)
         self.addCleanup(reopened.close)
         self.assertEqual([i.text for i in reopened.list()], ["persisted"])
-        with sqlite3.connect(self.directory / "clips.db") as raw:
+        with contextlib.closing(sqlite3.connect(self.directory / "clips.db")) as raw:
             self.assertEqual(
                 raw.execute("PRAGMA user_version").fetchone()[0], clipstore.SCHEMA_VERSION
             )

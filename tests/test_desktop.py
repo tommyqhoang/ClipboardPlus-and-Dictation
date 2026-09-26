@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -247,7 +247,7 @@ class DesktopTests(unittest.TestCase):
             prefix = root / ".local"
             (prefix / "lib").mkdir(parents=True)
             (prefix / "lib/app.py").write_text("# app")
-            venv = Path("/venv/bin/python")
+            venv = PurePosixPath("/venv/bin/python")
             with (
                 patch.object(setup.desktop, "platform_name", return_value="linux"),
                 patch.object(setup, "gui_environment", return_value=venv),
@@ -329,11 +329,15 @@ class DesktopTests(unittest.TestCase):
                     self.assertTrue(any(requirement in part for part in commands[1]))
             python.parent.mkdir(parents=True)
             python.touch()
-            with patch.object(setup.subprocess, "run") as run:
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup.subprocess, "run") as run,
+            ):
                 run.return_value.returncode = 0
                 setup.gui_environment(prefix)
                 run.assert_called_once()  # Only the import probe.
             with (
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
                 patch.object(setup, "base_python", return_value="python3"),
                 patch.object(
                     setup.subprocess,

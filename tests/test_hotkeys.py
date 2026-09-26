@@ -6,7 +6,7 @@ import plistlib
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -134,7 +134,7 @@ class HotkeyTests(unittest.TestCase):
             return Mock(returncode=0, stdout=output, stderr="")
 
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
-            self.assertTrue(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/bin/toggle"), run))
+            self.assertTrue(hotkeys.gnome_shortcut(hotkeys.DEFAULT, PurePosixPath("/bin/toggle"), run))
             self.assertIn(
                 ["set", *hotkeys.GNOME_LIST, f"['/other/', {hotkeys.GNOME_PATH!r}]"], calls
             )
@@ -155,12 +155,12 @@ class HotkeyTests(unittest.TestCase):
 
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
             # Pausing (while a new shortcut is recorded) clears the keys but keeps the entry.
-            self.assertTrue(hotkeys.gnome_shortcut(None, Path("/bin/toggle"), run))
+            self.assertTrue(hotkeys.gnome_shortcut(None, PurePosixPath("/bin/toggle"), run))
             self.assertEqual(calls[-1][-2:], ["binding", ""])
             calls.clear()
-            hotkeys.gnome_remove(Path("/other/toggle"), run)  # Someone else's command.
+            hotkeys.gnome_remove(PurePosixPath("/other/toggle"), run)  # Someone else's command.
             self.assertFalse(any(call[0] in ("set", "reset-recursively") for call in calls))
-            hotkeys.gnome_remove(Path("/bin/toggle"), run)
+            hotkeys.gnome_remove(PurePosixPath("/bin/toggle"), run)
             self.assertIn(["set", *hotkeys.GNOME_LIST, "['/other/']"], calls)
             self.assertEqual(calls[-1][0], "reset-recursively")
 
@@ -201,7 +201,7 @@ class HotkeyTests(unittest.TestCase):
             return Mock(returncode=0, stdout="[]", stderr="")
 
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
-            hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/bin/toggle"), run)
+            hotkeys.gnome_shortcut(hotkeys.DEFAULT, PurePosixPath("/bin/toggle"), run)
         self.assertTrue(any(call[-2:] == ["name", hotkeys.APP_NAME] for call in calls))
         hotkeys.set_login_item(True, ["/x/python", "/x/tray.py"], self.folder, "linux")
         entry = (self.folder / ".config/autostart/whisper-dictation.desktop").read_text()

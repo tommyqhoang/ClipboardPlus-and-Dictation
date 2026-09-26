@@ -119,6 +119,7 @@ class FakeWatchProcess:
         return 0
 
 
+@unittest.skipIf(sys.platform == "win32", "wl-paste is Wayland-only; select() needs sockets here")
 class WlPasteTests(unittest.TestCase):
     def source(self, clipboard: dict[str, bytes], types_output: str | None = None):
         process = FakeWatchProcess()
