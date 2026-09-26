@@ -109,6 +109,7 @@ MODULES = (
     "clipwatch_macos.py",
     "clipwatch_windows.py",
     "clipservice.py",
+    "clipsync.py",
     "clipcontrol.py",
     "clipui.py",
 )
@@ -407,6 +408,7 @@ def uninstall(prefix: Path) -> None:
         "lib/clipwatch_macos.py",
         "lib/clipwatch_windows.py",
         "lib/clipservice.py",
+        "lib/clipsync.py",
         "lib/clipcontrol.py",
         "lib/clipui.py",
         "lib/tray-recording.png",

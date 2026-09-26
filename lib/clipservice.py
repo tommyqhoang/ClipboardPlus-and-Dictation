@@ -13,11 +13,14 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
+import clipboardplus as cp
 import clipstore
+import clipsync
 import clipwatch
 import desktop
 import dictation as d
@@ -29,6 +32,8 @@ STATUS_SECONDS = 10.0  # Heartbeat: others see the service is alive.
 STALE_SECONDS = 35.0
 RETRY_SECONDS = 30.0
 ERROR_PAUSE_SECONDS = 1.0  # Keeps a failing watcher from spinning the CPU.
+SYNC_SOON_SECONDS = 5.0  # A local change is sent this soon.
+SYNC_NOW = "clip-sync-now"  # Runtime file: sync at once (Settings, dictation).
 
 
 def _sha(text: str) -> str:
@@ -62,6 +67,8 @@ def record_transcript(paths: d.Paths, text: str, clock: Callable[[], float] = ti
             store.add_text(text, "dictation", clock())
         finally:
             store.close()
+        if cp.linked(paths.config.parent):
+            d.atomic(paths.runtime / SYNC_NOW, "1")  # Send it to the account now.
     except (OSError, sqlite3.Error, clipstore.StoreError, d.DictationError):
         return
 
@@ -72,6 +79,8 @@ def write_status(
     count: int = 0,
     message: str = "",
     clock: Callable[[], float] = time.time,
+    sync: str = "off",
+    synced: float = 0.0,
 ) -> None:
     d.private_dir(paths.runtime)
     d.atomic(
@@ -81,6 +90,8 @@ def write_status(
                 "state": state,
                 "count": count,
                 "message": message,
+                "sync": sync,  # off, syncing, ok, offline, error or auth
+                "synced": synced,  # When the account last synced fine.
                 "updated": clock(),
                 "pid": os.getpid(),
             }
@@ -90,7 +101,14 @@ def write_status(
 
 def read_status(paths: d.Paths, clock: Callable[[], float] = time.time) -> dict[str, Any]:
     """The service's last report; "stopped" when there is none or it stopped updating."""
-    stopped: dict[str, Any] = {"state": "stopped", "count": 0, "message": "", "updated": 0.0}
+    stopped: dict[str, Any] = {
+        "state": "stopped",
+        "count": 0,
+        "message": "",
+        "sync": "off",
+        "synced": 0.0,
+        "updated": 0.0,
+    }
     try:
         status = d.read_json(paths.runtime / "clip-status.json")
     except (d.DictationError, OSError):
@@ -137,6 +155,107 @@ class CachedPreferences:
         return self._settings
 
 
+class SyncEngine(Protocol):
+    state: str
+
+    def run_once(self) -> clipsync.Report: ...
+    def retry_delay(self) -> float | None: ...
+
+
+def _default_engine(store: clipstore.Store, key: str) -> SyncEngine:
+    return clipsync.Engine(store, cp.Cloud(key))
+
+
+class Syncer:
+    """Runs the sync engine for the service: on a schedule, soon after a local change,
+    or on request, always on its own thread so a slow network never delays capture."""
+
+    def __init__(
+        self,
+        store: clipstore.Store,
+        paths: d.Paths,
+        clock: Callable[[], float] = time.time,
+        engine_factory: Callable[[clipstore.Store, str], SyncEngine] = _default_engine,
+        threaded: bool = True,
+    ) -> None:
+        self._store = store
+        self._paths = paths
+        self._clock = clock
+        self._factory = engine_factory
+        self._threaded = threaded
+        self._engine: SyncEngine | None = None
+        self._stamp: tuple[int, int, int] | None = None
+        self._due = 0.0
+        self._thread: threading.Thread | None = None
+        self._state = "off"
+        self.synced = 0.0
+
+    @property
+    def state(self) -> str:
+        """off, syncing, ok, offline, error or auth."""
+        if self._engine is None:
+            return "off"
+        if self._running() or self._engine.state == "idle":
+            return "syncing"
+        return self._engine.state
+
+    def poke(self, now: float) -> None:
+        """Something changed here: send it soon."""
+        self._due = min(self._due, now + SYNC_SOON_SECONDS)
+
+    def step(self, now: float) -> None:
+        if self._running():
+            return
+        self._reload(now)
+        request = self._paths.runtime / SYNC_NOW
+        if request.exists():
+            request.unlink(missing_ok=True)
+            if self._engine is not None:
+                self._due = now
+        engine = self._engine
+        if engine is None or engine.state == "auth" or now < self._due:
+            return
+        if self._threaded:
+            self._thread = threading.Thread(target=self._run, args=(engine,), daemon=True)
+            self._thread.start()
+        else:
+            self._run(engine)
+
+    def wait(self, timeout: float) -> None:
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def close(self) -> None:
+        self.wait(30.0)
+
+    def _running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _reload(self, now: float) -> None:
+        """Follow the saved key: a new, removed or re-saved key starts a fresh engine."""
+        path = cp.key_path(self._paths.config.parent)
+        try:
+            info = path.stat()
+            stamp: tuple[int, int, int] | None = (info.st_mtime_ns, info.st_size, info.st_ino)
+        except OSError:
+            stamp = None
+        if stamp == self._stamp:
+            return
+        self._stamp = stamp
+        key = cp.read_key(self._paths.config.parent) if stamp else ""
+        self._engine = self._factory(self._store, key) if key else None
+        self._due = now
+
+    def _run(self, engine: SyncEngine) -> None:
+        engine.run_once()
+        finished = self._clock()
+        delay = engine.retry_delay()
+        self._due = finished + (clipsync.INTERVAL_SECONDS if delay is None else delay)
+        if engine.state == "ok":
+            self.synced = finished
+
+
 class Service:
     def __init__(
         self,
@@ -146,7 +265,9 @@ class Service:
         enabled: Callable[[], bool],
         paths: d.Paths,
         clock: Callable[[], float] = time.time,
+        syncer: Syncer | None = None,
     ) -> None:
+        self._syncer = syncer
         self._store = store
         self._watcher = watcher
         self._settings = settings
@@ -155,7 +276,7 @@ class Service:
         self._clock = clock
         self._error = ""
         self._next_prune = clock() + PRUNE_SECONDS
-        self._status: tuple[str, int, str] | None = None
+        self._status: tuple[str, int, str, str] | None = None
         self._status_at = 0.0
 
     def paused(self) -> bool:
@@ -181,6 +302,8 @@ class Service:
             self._error = ""
         if clip is not None:
             ok = self._capture(clip, now) and ok
+        if self._syncer is not None:
+            self._syncer.step(now)
         self._maintain(now)
         return ok
 
@@ -194,12 +317,17 @@ class Service:
             if clip.text:
                 if not self._is_own_write(clip.text, now):
                     self._store.add_text(clip.text, "desktop", now)
+                    self._changed(now)
             elif clip.image_png and settings.images:
                 self._store.add_image(clip.image_png, "desktop", now)
         except sqlite3.Error:
             self._fail("The clipboard history is busy; retrying.", now)
             return False
         return True
+
+    def _changed(self, now: float) -> None:
+        if self._syncer is not None:
+            self._syncer.poke(now)
 
     def _is_own_write(self, text: str, now: float) -> bool:
         try:
@@ -240,10 +368,12 @@ class Service:
             count = self._store.count()
         except sqlite3.Error:
             count = 0
-        report = (state, count, self._error)
+        sync = self._syncer.state if self._syncer is not None else "off"
+        report = (state, count, self._error, sync)
         if report != self._status or now - self._status_at >= STATUS_SECONDS:
             try:
-                write_status(self._paths, state, count, self._error, lambda: now)
+                synced = self._syncer.synced if self._syncer is not None else 0.0
+                write_status(self._paths, state, count, self._error, lambda: now, sync, synced)
             except OSError:
                 return
             self._status, self._status_at = report, now
@@ -282,6 +412,7 @@ def run(
 
     prefs = CachedPreferences(hotkeys.Preferences(paths))
     store: clipstore.Store | None = None
+    syncer: Syncer | None = None
     watcher: clipwatch.Watcher | None = None
     service: Service | None = None
     try:
@@ -294,7 +425,10 @@ def run(
                     nap(retry_seconds)
                     continue
                 store = store or clipstore.Store(paths.clipboard)
-                service = Service(store, watcher, prefs.settings, prefs.enabled, paths, clock)
+                syncer = syncer or Syncer(store, paths, clock)
+                service = Service(
+                    store, watcher, prefs.settings, prefs.enabled, paths, clock, syncer
+                )
                 continue  # Re-check for a quit request before waiting on the clipboard.
             assert service is not None
             try:
@@ -309,6 +443,8 @@ def run(
     finally:
         if watcher is not None:
             watcher.close()
+        if syncer is not None:
+            syncer.close()
         if store is not None:
             store.close()
         write_status(paths, "stopped", 0, "", clock)

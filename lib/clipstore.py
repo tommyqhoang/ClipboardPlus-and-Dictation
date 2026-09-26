@@ -21,6 +21,10 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from clipboardplus import CloudItem
 
 SCHEMA_VERSION = 1
 MAX_TEXT_BYTES = 1_000_000
@@ -297,10 +301,14 @@ class Store:
         return [self._item(row) for row in rows]
 
     def dirty(self, limit: int = 100) -> Items:
-        """Text and links waiting to be sent to the account, oldest first."""
+        """Text and links waiting to be sent to the account, oldest first.
+
+        Items the account already has (linked) are not listed: a changed favorite
+        reaches it through `pending_favorites`.
+        """
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM items WHERE dirty = 1 AND sync_skip = 0 "
+                "SELECT * FROM items WHERE dirty = 1 AND sync_skip = 0 AND cloud_id = '' "
                 "AND kind IN ('text', 'url') ORDER BY created_at ASC, id ASC LIMIT ?",
                 (max(1, limit),),
             ).fetchall()
@@ -324,7 +332,7 @@ class Store:
             return None
         clean = raw.decode("utf-8")
         kind = "url" if _URL.fullmatch(clean.strip()) else "text"
-        sha = hashlib.sha256(b"text\0" + raw).hexdigest()
+        sha = _text_sha(raw)
         stamp = time.time() if now is None else now
         with self._transaction() as db:
             existing = db.execute("SELECT id FROM items WHERE sha = ?", (sha,)).fetchone()
@@ -502,11 +510,57 @@ class Store:
                     continue
 
     # -- cloud bookkeeping (used by the sync engine) -----------------------
-    def mark_pushed(self, item_id: int, cloud_key: str) -> None:
+    def _find(self, where: str, args: Sequence[object]) -> Item | None:
+        with self._lock:
+            row = self._db.execute(
+                f"SELECT * FROM items WHERE {where} ORDER BY id LIMIT 1", tuple(args)
+            ).fetchone()
+        return self._item(row) if row else None
+
+    def find_by_cloud_id(self, cloud_id: str) -> Item | None:
+        return self._find("cloud_id = ?", (cloud_id,)) if cloud_id else None
+
+    def find_by_key(self, cloud_key: str) -> Item | None:
+        return self._find("cloud_key = ?", (cloud_key,)) if cloud_key else None
+
+    def find_by_key_prefix(self, prefix: str) -> Item | None:
+        """An item whose cloud key starts with `prefix` (`type|time|`)."""
+        if not prefix:
+            return None
+        return self._find("cloud_key != '' AND substr(cloud_key, 1, ?) = ?", (len(prefix), prefix))
+
+    def find_text(self, text: str) -> Item | None:
+        """The item holding exactly this text or link, if any."""
+        raw = text.encode("utf-8", "replace")
+        sha = _text_sha(raw)
+        return self._find("sha = ?", (sha,))
+
+    def mark_pushed(
+        self,
+        item_id: int,
+        cloud_key: str,
+        cloud_favorite: bool | None = None,
+        updated_at: float | None = None,
+    ) -> None:
+        """Record that the account has this item.
+
+        `cloud_favorite` is the favorite state the account now holds (the current one
+        when omitted). The item stays dirty when it changed after `updated_at` or its
+        favorite still differs from the account's, so no change is ever lost.
+        """
         with self._transaction() as db:
+            row = db.execute(
+                "SELECT favorite, updated_at FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                return
+            held = bool(row["favorite"]) if cloud_favorite is None else cloud_favorite
+            current = (updated_at is None or row["updated_at"] == updated_at) and bool(
+                row["favorite"]
+            ) == held
             db.execute(
-                "UPDATE items SET cloud_key = ?, cloud_favorite = favorite, dirty = 0 WHERE id = ?",
-                (cloud_key, item_id),
+                "UPDATE items SET cloud_key = ?, cloud_favorite = ?, dirty = ? WHERE id = ?",
+                (cloud_key, int(held), 0 if current else 1, item_id),
             )
 
     def link(self, item_id: int, cloud_id: str, cloud_favorite: bool) -> None:
@@ -516,12 +570,82 @@ class Store:
                 (cloud_id, int(cloud_favorite), item_id),
             )
 
+    def add_cloud(self, item: CloudItem, cloud_key: str) -> Item | None:
+        """Insert an item the account has and this device does not (never sent back)."""
+        raw = item.text.encode("utf-8", "replace")
+        if not raw.strip() or len(raw) > MAX_TEXT_BYTES:
+            return None
+        clean = raw.decode("utf-8")
+        kind = "url" if item.kind == "url" else "text"
+        sha = _text_sha(raw)
+        with self._transaction() as db:
+            if db.execute("SELECT 1 FROM items WHERE sha = ?", (sha,)).fetchone():
+                return None
+            cursor = db.execute(
+                "INSERT INTO items (kind, text, bytes, sha, created_at, updated_at, favorite, "
+                "label, source, cloud_id, cloud_key, cloud_favorite, dirty) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?, ?, ?, 0)",
+                (
+                    kind,
+                    clean,
+                    len(raw),
+                    sha,
+                    item.created_ms / 1000,
+                    item.updated_at,
+                    int(item.favorite),
+                    item.label,
+                    item.id,
+                    cloud_key,
+                    int(item.favorite),
+                ),
+            )
+            return self._fetch(db, int(cursor.lastrowid or 0))
+
+    def apply_cloud(self, item_id: int, *, favorite: bool, label: str, updated_at: float) -> None:
+        """Adopt the account's favorite and label (a change made elsewhere)."""
+        with self._transaction() as db:
+            db.execute(
+                "UPDATE items SET favorite = ?, cloud_favorite = ?, label = ?, updated_at = ?, "
+                "dirty = 0 WHERE id = ?",
+                (int(favorite), int(favorite), label, updated_at, item_id),
+            )
+
+    def pending_favorites(self, limit: int = 100) -> Items:
+        """Linked items whose favorite differs from the account's."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM items WHERE cloud_id != '' AND favorite != cloud_favorite "
+                "ORDER BY updated_at ASC, id ASC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
+    def set_skip(self, item_id: int) -> None:
+        """Never send this item (the account refused it or it is too large)."""
+        with self._transaction() as db:
+            db.execute("UPDATE items SET sync_skip = 1 WHERE id = ?", (item_id,))
+
+    def delete_local(self, item_id: int) -> None:
+        """Remove an item deleted elsewhere. The account is not told again."""
+        self._remove([item_id], tombstones=False)
+
     def tombstones(self) -> Tombstones:
         with self._lock:
             rows = self._db.execute(
                 "SELECT cloud_id, cloud_key, deleted_at FROM tombstones ORDER BY deleted_at"
             ).fetchall()
         return [Tombstone(row["cloud_id"], row["cloud_key"], row["deleted_at"]) for row in rows]
+
+    def clear_tombstone(self, tombstone: Tombstone) -> None:
+        with self._transaction() as db:
+            db.execute(
+                "DELETE FROM tombstones WHERE cloud_id = ? AND cloud_key = ? AND deleted_at = ?",
+                (tombstone.cloud_id, tombstone.cloud_key, tombstone.deleted_at),
+            )
+
+    def drop_tombstones(self) -> None:
+        with self._transaction() as db:
+            db.execute("DELETE FROM tombstones")
 
     def meta_get(self, key: str, default: str = "") -> str:
         with self._lock:
@@ -535,6 +659,10 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+
+def _text_sha(raw: bytes) -> str:
+    return hashlib.sha256(b"text\0" + raw).hexdigest()
 
 
 def _fold(text: object) -> str:
