@@ -44,8 +44,9 @@ results are not a completed GitHub Actions run or an actual Windows installation
 Evidence for the clipboard manager and account sync, kept apart because it has
 different limits from the dictation evidence above.
 
-- 465 tests pass (2 skipped) under a virtual X server with Python 3.11 and 3.14;
-  383 (29 to 30 skipped because they need Tk, an X server or Pillow) pass without a
+- 472 tests pass (2 skipped) under a virtual X server (Python 3.11 with python-xlib for the
+  X11 tests, and the project's private environment for the rest);
+  390 (29 to 30 skipped because they need Tk, an X server or Pillow) pass without a
   display on Python 3.10 and 3.14. `ruff`, `ruff format`, `mypy --strict`, ShellCheck
   and shfmt are clean.
 - Combined statement and branch coverage across `lib` is 93% (4,426 statements, 1,304
