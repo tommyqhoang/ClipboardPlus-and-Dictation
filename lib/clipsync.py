@@ -26,6 +26,7 @@ BACKOFF_MAX_SECONDS = 600.0
 MAX_PUSH_BATCHES = 10  # Per round: up to 1000 items, then the next round continues.
 CURSOR = clipstore.META_CURSOR
 CLEAR_PENDING = clipstore.META_CLEAR
+CLEARED = clipstore.META_CLEARED
 
 
 class CloudClient(Protocol):
@@ -68,6 +69,7 @@ class Engine:
         self._jitter = jitter
         self._failures = 0
         self._delay: float | None = None
+        self._cleared = 0.0  # Account items copied before this were cleared here.
         # idle (not run yet), ok, offline, error, or auth (the key was refused).
         self.state = "idle"
 
@@ -157,6 +159,10 @@ class Engine:
         cursor = self._store.meta_get(CURSOR)
         since = float(cursor) - OVERLAP_SECONDS if cursor else None
         pulled = self._cloud.pull(since)
+        try:
+            self._cleared = float(self._store.meta_get(CLEARED) or 0.0)
+        except ValueError:
+            self._cleared = 0.0
         # Items the user deleted here but the account has not heard about yet must
         # not come back.
         doomed = self._store.tombstones()
@@ -189,6 +195,8 @@ class Engine:
             if local is not None and local.cloud_id not in ("", cloud_item.id):
                 return False  # The account holds this content twice; one is enough here.
         if local is None:
+            if cloud_item.created_ms / 1000 <= self._cleared:
+                return False  # Cleared here: an older copy must not come back.
             return self._store.add_cloud(cloud_item, key) is not None
 
         pending = local.favorite != local.cloud_favorite

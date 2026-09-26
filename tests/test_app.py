@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -372,6 +373,12 @@ class WindowTests(ServiceCase):
         self.window.pending.result(timeout=5)
         self.tick()
 
+    def settle(self):
+        """Wait for background lookups (microphones), then let the window use them."""
+        for future, _ in list(self.window.lookups):
+            future.result(timeout=5)
+        self.tick()
+
     def test_first_launch_walkthrough_no_recording(self):
         self.window.tray = False
         self.assertEqual(self.window.page, "welcome")
@@ -390,7 +397,7 @@ class WindowTests(ServiceCase):
                 self.window.choose_model()
             with patch.object(self.service, "microphones", return_value=["USB Mic"]):
                 self.window.find_microphones()
-                self.finish()
+                self.settle()
             self.assertEqual(self.window.device.get(), "USB Mic")
             with patch.object(self.service, "prepare") as prepare:
                 self.window.prepare()
@@ -406,8 +413,8 @@ class WindowTests(ServiceCase):
     def test_settings_discovers_microphones_and_reports_download(self):
         with patch.object(self.service, "microphones", return_value=["Built-in", "USB Mic"]):
             self.window.settings()
-            self.root.update()  # Runs the scheduled discovery.
-            self.finish()
+            self.root.update_idletasks()  # Runs the scheduled discovery.
+            self.settle()
         self.assertEqual(self.window.device.get(), "Built-in")
         self.assertIn("2 microphones found", self.window.status.get())
         self.window.model_source.set("file")
@@ -582,6 +589,34 @@ class WindowTests(ServiceCase):
         self.assertEqual(self.window.page, "closed")
         self.assertFalse(capture.exists())
 
+    def test_the_mouse_wheel_scrolls_a_long_page(self):
+        seen = []
+        self.window.canvas.yview_scroll = lambda steps, what: seen.append(steps)
+        event = SimpleNamespace(widget=self.window.frame, num=5, delta=0)
+        self.window.wheel(event)
+        self.assertEqual(seen, [])  # Nothing to scroll while the page fits.
+        self.window.scroll(0.0, 0.5)
+        self.window.wheel(event)
+        self.window.wheel(SimpleNamespace(widget=self.window.frame, num=4, delta=0))
+        self.assertEqual(seen, [3, -3])
+        self.window.wheel(SimpleNamespace(widget="popdown", num=5, delta=0))
+        self.assertEqual(len(seen), 2)  # A combobox list scrolls itself.
+
+    def test_settings_after_setup_is_a_settings_page_that_saves_in_place(self):
+        with (
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+            patch.object(self.service, "prepare"),
+        ):
+            self.window.settings()
+            self.assertEqual(self.window.step.get(), "")
+            labels = [b.cget("text") for b in self.window.bar_actions.winfo_children()]
+            self.assertEqual(labels, ["Save", "Close"])
+            self.window.prepare()
+            self.finish()
+        self.assertEqual(self.window.page, "settings")
+        self.assertEqual(self.window.status.get(), "Settings saved.")
+
     def test_scrollbar_hides_when_content_fits(self):
         self.window.scroll(0.0, 1.0)
         self.assertEqual(self.window.scrollbar.winfo_manager(), "")
@@ -596,7 +631,7 @@ class WindowTests(ServiceCase):
         with patch.object(self.service, "completed", return_value=True):
             self.window.settings()
         cancel = self.window.bar_actions.winfo_children()[-1]
-        self.assertEqual(cancel.cget("text"), "Cancel")
+        self.assertEqual(cancel.cget("text"), "Close")
         cancel.invoke()
         self.assertEqual(self.window.page, "home")
         self.tick()

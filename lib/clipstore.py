@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 1
 META_CURSOR = "sync_cursor"  # When the account last synced fine.
 META_CLEAR = "clear_pending"  # A clear-everywhere the account has not been told about.
+META_CLEARED = "cleared_at"  # When the history was last cleared: older account items stay out.
 MAX_TEXT_BYTES = 1_000_000
 MAX_IMAGE_BYTES = 10_000_000
 MAX_IMAGE_PIXELS = 50_000_000  # Refuses decompression bombs before any decoding.
@@ -667,7 +668,9 @@ class Store:
                 "sync_skip = 0, dirty = CASE WHEN kind IN ('text', 'url') THEN 1 ELSE 0 END"
             )
             db.execute("DELETE FROM tombstones")
-            db.execute("DELETE FROM meta WHERE key IN (?, ?)", (META_CURSOR, META_CLEAR))
+            db.execute(
+                "DELETE FROM meta WHERE key IN (?, ?, ?)", (META_CURSOR, META_CLEAR, META_CLEARED)
+            )
 
     def drop_tombstones(self) -> None:
         with self._transaction() as db:

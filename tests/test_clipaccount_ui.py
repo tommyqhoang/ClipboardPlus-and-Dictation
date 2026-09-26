@@ -15,6 +15,7 @@ import app_service
 import clipservice
 import clipstore
 import hotkeys
+from support import make_png
 from test_app import ServiceCase
 
 KEY = "cp_live_" + "a1b2c3d4" * 6
@@ -232,6 +233,15 @@ class SignInTests(AccountCase):
         self.assertIn("Connected as me@example.com", self.joined())
         self.assertIn("Connected to Clipboard+", self.window.status.get())
 
+    def test_a_google_account_is_offered_the_key_form(self):
+        cp = app_service.clipboardplus
+        self.fill()
+        self.run_with(
+            self.patched(login=cp.AuthError(cp.GOOGLE_ONLY)), lambda: self.press("Sign in")
+        )
+        self.assertEqual(self.window.account.mode, "key")
+        self.assertIn(cp.GOOGLE_ONLY, self.joined())
+
     def test_signing_in_uses_login_not_register(self):
         self.fill()
         register, login, _ = self.run_with(self.patched(), lambda: self.press("Sign in"))
@@ -442,11 +452,16 @@ class ClearDialogTests(AccountCase):
         dialog.confirm()
         self.assertEqual(dialog.result, (False, True))
 
-    def test_with_an_account_the_scope_is_asked_and_defaults_to_this_device(self):
+    def test_with_an_account_the_scope_is_asked_and_defaults_to_everywhere(self):
         dialog = self.make(linked=True)
         labels = " | ".join(self.labels(dialog))
         self.assertIn("This device only", labels)
         self.assertIn("Everywhere", labels)
+        self.assertIn("images", labels)
+        dialog.confirm()
+        self.assertEqual(dialog.result, (True, True))
+        dialog = self.make(linked=True)
+        dialog.scope.set("device")
         dialog.confirm()
         self.assertEqual(dialog.result, (False, True))
 
@@ -492,6 +507,17 @@ class ClipboardPageClearTests(AccountCase):
             self.page.clear()
         self.assertEqual((self.store.count(), self.store.tombstones()), (0, []))
         self.assertEqual(self.store.meta_get("clear_pending"), "")
+
+    def test_a_clear_is_remembered_and_reported(self):
+        self.store.add_text("old", now=1.0)
+        self.store.add_image(make_png(4, 4), now=2.0)
+        with patch.object(self.page, "ask_clear", return_value=(False, False)):
+            self.page.clear()
+        self.assertEqual(self.store.count(), 0)
+        self.assertTrue(float(self.store.meta_get(clipstore.META_CLEARED)) > 0)
+        self.assertEqual(self.window.status.get(), "Cleared 2 items.")
+        images = self.paths.clipboard / "images"
+        self.assertEqual([p for p in images.iterdir() if p.suffix == ".png"], [])
 
     def test_cancelling_clears_nothing(self):
         self.store.add_text("old", now=1.0)

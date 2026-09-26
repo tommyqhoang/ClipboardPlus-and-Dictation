@@ -74,13 +74,21 @@ class WindowsHotKey:
 
 
 class GnomeHotKey:
-    """GNOME runs the toggle command itself; Wayland apps cannot grab keys."""
+    """GNOME runs the command itself; Wayland apps cannot grab keys."""
 
-    def __init__(self, _callback: Callable[[], None]) -> None:
-        self.command = HERE.parent / "bin/dictate-toggle"
+    def __init__(
+        self,
+        _callback: Callable[[], None],
+        command: Path | list[str] | None = None,
+        path: str = hotkeys.GNOME_PATH,
+        name: str = hotkeys.APP_NAME,
+    ) -> None:
+        self.command = command or HERE.parent / "bin/dictate-toggle"
+        self.path, self.name = path, name
 
     def register(self, shortcut: hotkeys.Shortcut | None) -> bool:
-        return hotkeys.gnome_shortcut(shortcut, self.command) or shortcut is None
+        bound = hotkeys.gnome_shortcut(shortcut, self.command, path=self.path, name=self.name)
+        return bound or shortcut is None
 
 
 class Tray:
@@ -92,6 +100,8 @@ class Tray:
         self.clip = clipcontrol.ClipboardControl(self.paths, self.preferences)
         self.clip.changed()  # The first look is not a change.
         self.dictation_registered = False
+        self.history: hotkeys.Shortcut | None = None  # The history shortcut registered now.
+        self.history_synced = False
         self.shortcut = self.preferences.shortcut()
         self.stamp = self.preferences.stamp()
         self.hotkey_ok = False
@@ -150,14 +160,14 @@ class Tray:
                     visible=dictation_on,
                 ),
                 item(
-                    "Clipboard History…",
-                    lambda: self.open_window("--clipboard"),
+                    lambda _: self.history_text(),
+                    self.open_history,
                     default=True,
                     visible=lambda _: self.clip.features().clipboard and not dictation_on(None),
                 ),
                 item(
-                    "Clipboard History…",
-                    lambda: self.open_window("--clipboard"),
+                    lambda _: self.history_text(),
+                    self.open_history,
                     visible=lambda _: self.clip.features().clipboard and dictation_on(None),
                 ),
                 item(
@@ -209,6 +219,9 @@ class Tray:
 
     def open_window(self, page: str) -> None:
         open_app_window(page)
+
+    def open_history(self) -> None:
+        self.open_window("--clipboard")
 
     def toggle(self) -> None:
         self.pressed()
@@ -269,6 +282,10 @@ class Tray:
         features = self.clip.features()
         return features.clipboard and features.dictation
 
+    def history_text(self) -> str:
+        shortcut = self.clip.history_shortcut()
+        return f"Clipboard History…  ({shortcut.label()})" if shortcut else "Clipboard History…"
+
     def clipboard_text(self) -> str:
         return self.clip.status_line()
 
@@ -304,6 +321,17 @@ class Tray:
             hotkeys.record_status(self.paths, self.hotkey_ok)
             if not self.hotkey_ok and desktop.platform_name() == "windows":
                 self.notify(f"{self.shortcut.label()} is in use by another app. Pick another.")
+        self.history_key = (
+            WindowsHotKey(self.open_history)
+            if desktop.platform_name() == "windows"
+            else GnomeHotKey(
+                self.open_history,
+                hotkeys.history_command(HERE),
+                hotkeys.GNOME_HISTORY_PATH,
+                f"{hotkeys.APP_NAME}: clipboard history",
+            )
+        )
+        self.sync_history_shortcut()
         self.sync_login()
         if not self.service.completed():
             self.open_window("--setup")
@@ -323,10 +351,22 @@ class Tray:
             self.hotkey.register(None)
             self.dictation_registered = False
 
+    def sync_history_shortcut(self) -> None:
+        """Register the clipboard history shortcut the user chose (none while Clipboard is off)."""
+        wanted = self.clip.history_shortcut()
+        if self.history_synced and wanted == self.history:
+            return
+        self.history, self.history_synced = wanted, True
+        ok = self.history_key.register(wanted)
+        hotkeys.record_status(self.paths, ok, hotkeys.HISTORY_STATUS)
+        if not ok and wanted is not None and desktop.platform_name() == "windows":
+            self.notify(f"{wanted.label()} is in use by another app. Choose another in Settings.")
+
     def tick(self) -> None:
         self.clip.supervise()
         if self.clip.changed():
             self.sync_dictation_shortcut()
+            self.sync_history_shortcut()
             self.icon.update_menu()
         if (self.paths.runtime / "menubar-quit").exists():
             (self.paths.runtime / "menubar-quit").unlink(missing_ok=True)

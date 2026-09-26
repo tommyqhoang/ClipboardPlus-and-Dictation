@@ -456,6 +456,10 @@ def uninstall(prefix: Path) -> None:
         cache.rmdir()
     if desktop.platform_name() == "linux":
         hotkeys.gnome_remove(prefix / "bin/dictate-toggle")
+        hotkeys.gnome_remove(
+            hotkeys.history_command(prefix / "lib", str(gui_python(prefix)[1])),
+            path=hotkeys.GNOME_HISTORY_PATH,
+        )
     receipt.unlink()
     venv = prefix / "share/whisper-dictation/venv"
     # Only a directory this installer created (it holds pyvenv.cfg) is removed.

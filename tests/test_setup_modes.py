@@ -127,7 +127,7 @@ class SettingsTests(ModeCase):
         self.prefs.save(features=hotkeys.Features(False, True))
         self.open_settings()
         joined = " ".join(self.texts())
-        self.assertIn("Keep the newest", joined)
+        self.assertIn("Keep up to this many items", joined)
         self.assertNotIn("Microphone", joined)
 
     def test_a_dictation_only_user_is_not_shown_clipboard_options(self):

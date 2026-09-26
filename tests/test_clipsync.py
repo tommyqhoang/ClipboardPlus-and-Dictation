@@ -146,6 +146,30 @@ class SyncCase(unittest.TestCase):
         return found
 
 
+class ClearedTests(SyncCase):
+    def test_a_cleared_history_does_not_come_back_from_the_account(self):
+        self.cloud.add("from before", ts=START - 30)
+        self.store.meta_set(clipstore.META_CLEARED, repr(START - 10))
+        self.cloud.add("copied later", ts=START - 5)
+        self.engine.run_once()
+        self.assertEqual(self.texts(), ["copied later"])
+
+    def test_items_kept_here_still_link_after_a_clear(self):
+        kept = self.store.add_text("kept", now=START - 60)
+        self.store.set_favorite(kept.id, True)
+        self.cloud.add("kept", ts=START - 60, favorite=True)
+        self.store.meta_set(clipstore.META_CLEARED, repr(START - 10))
+        self.engine.run_once()
+        self.assertTrue(self.local("kept").cloud_id)
+
+    def test_a_new_account_is_not_hidden_by_an_old_clear(self):
+        self.store.meta_set(clipstore.META_CLEARED, repr(START))
+        self.store.reset_sync()
+        self.cloud.add("history", ts=START - 500)
+        self.engine.run_once()
+        self.assertEqual(self.texts(), ["history"])
+
+
 class PushTests(SyncCase):
     def test_only_dirty_text_and_links_are_sent_never_images(self):
         self.store.add_text("hello", now=START - 50)

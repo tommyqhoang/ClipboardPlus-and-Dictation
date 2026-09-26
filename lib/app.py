@@ -5,7 +5,9 @@ from __future__ import annotations
 import concurrent.futures
 import dataclasses
 import functools
+import json
 import os
+import shlex
 import subprocess
 import sys
 import tkinter as tk
@@ -48,16 +50,28 @@ class App:
     def __init__(self, root: tk.Tk, service: Service, page: str = "") -> None:
         self.root, self.service = root, service
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # Quiet lookups (microphones) that must not lock the page like `submit` does.
+        self.helper = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.lookups: list[tuple[concurrent.futures.Future[Any], Callable[[Any], None]]] = []
         self.pending: concurrent.futures.Future[Any] | None = None
         self.done: Callable[[Any], None] = lambda value: None
         self.page = ""
         self.closing = False
         self.last_text = ""
+        self.transcript_seen: tuple[Any, ...] = ()
         self.download = (0, 0)
         self.buttons: list[ttk.Button] = []
         self.root.title(hotkeys.APP_NAME)
-        width = min(720, max(360, self.root.winfo_screenwidth() - 80))
-        height = min(700, max(360, self.root.winfo_screenheight() - 100))
+        self.rewrap_timer: str | None = None
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        width = min(720, max(360, screen_width - 80))
+        height = min(700, max(360, screen_height - 100))
+        saved = self.saved_size()
+        if saved is not None:
+            # The size the user left it at, as long as it still fits this screen.
+            width = max(360, min(saved[0], screen_width - 40))
+            height = max(360, min(saved[1], screen_height - 60))
         self.wraplength = max(260, width - 110)
         self.root.geometry(f"{width}x{height}")
         self.root.minsize(min(520, width), min(460, height))
@@ -72,7 +86,11 @@ class App:
         container = ttk.Frame(root)
         container.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(
-            container, background=BACKGROUND, borderwidth=0, highlightthickness=0
+            container,
+            background=BACKGROUND,
+            borderwidth=0,
+            highlightthickness=0,
+            yscrollincrement=20,
         )
         self.scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scroll)
@@ -81,6 +99,14 @@ class App:
         self.frame_window = self.canvas.create_window((0, 0), window=self.frame, anchor="nw")
         self.frame.bind("<Configure>", self.resize_scroll_region)
         self.canvas.bind("<Configure>", self.resize_content)
+        # Windows and macOS send <MouseWheel>; X11 sends buttons 4 and 5.
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.bind_all(sequence, self.wheel, add="+")
+        command = "Command" if sys.platform == "darwin" else "Control"
+        for key, action in (("f", self.find), ("comma", self.go_settings), ("w", self.close)):
+            self.root.bind_all(
+                f"<{command}-{key}>", functools.partial(self.on_key, action), add="+"
+            )
         self.language = tk.StringVar(value="English")
         self.device = tk.StringVar(value="default")
         self.model = tk.StringVar(value="")
@@ -107,6 +133,29 @@ class App:
         else:
             self.welcome()
         self.timer = self.root.after(150, self.poll)
+
+    def size_file(self) -> Path:
+        return self.service.paths.config.parent / "window.json"
+
+    def saved_size(self) -> tuple[int, int] | None:
+        try:
+            raw = d.read_json(self.size_file())
+        except (d.DictationError, OSError, ValueError):
+            return None
+        width, height = raw.get("width"), raw.get("height")
+        if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+            return width, height
+        return None
+
+    def save_size(self) -> None:
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        if width < 200 or height < 200:
+            return  # Never shown (or withdrawn): keep what was saved.
+        try:
+            d.private_dir(self.size_file().parent)
+            d.atomic(self.size_file(), json.dumps({"width": width, "height": height}))
+        except OSError:
+            pass  # Only a convenience.
 
     def load_icon(self) -> tk.PhotoImage | None:
         try:
@@ -289,11 +338,55 @@ class App:
             self.scrollbar.pack(side="right", fill="y", before=self.canvas)
         self.scrollbar.set(first, last)
 
+    def wheel(self, event: tk.Event[Any]) -> None:
+        """Scroll the page with the mouse wheel or trackpad, wherever the pointer is."""
+        widget = event.widget
+        if (
+            not self.scrollbar.winfo_manager()
+            or not isinstance(widget, tk.Misc)  # A combobox's list is only a name.
+            or isinstance(widget, (tk.Text, tk.Listbox))  # They scroll themselves.
+            or widget.winfo_toplevel() is not self.root
+        ):
+            return
+        if event.num in (4, 5):
+            steps = 3 if event.num == 5 else -3
+        elif not event.delta:
+            return
+        elif sys.platform == "darwin":
+            steps = -int(event.delta)  # Small, frequent deltas from trackpads.
+        else:
+            # A notch is 120; precision touchpads send less, which still moves a step.
+            steps = -3 * int(event.delta / 120) or (-1 if event.delta > 0 else 1)
+        if steps:
+            self.canvas.yview_scroll(steps, "units")
+
     def resize_scroll_region(self, event: tk.Event[Any]) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def resize_content(self, event: tk.Event[Any]) -> None:
         self.canvas.itemconfigure(self.frame_window, width=event.width)
+        # Re-wrap once the user stops dragging, not on every pixel.
+        if self.rewrap_timer is not None:
+            self.root.after_cancel(self.rewrap_timer)
+        self.rewrap_timer = self.root.after(80, lambda: self.rewrap(event.width))
+
+    def rewrap(self, canvas_width: int) -> None:
+        """Let every wrapped label follow the window's width (they were sized for the old one)."""
+        self.rewrap_timer = None
+        wraplength = max(260, canvas_width - 110)  # As at start: the page's padding, and air.
+        change = wraplength - self.wraplength
+        if not change:
+            return
+        self.wraplength = wraplength
+        stack: list[tk.Misc] = [self.frame]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            if widget.winfo_class() == "TLabel":
+                current = int(str(widget.cget("wraplength") or 0))
+                if current > 0:
+                    widget.configure(wraplength=max(120, current + change))  # type: ignore[call-arg]
+        self.status_label.configure(wraplength=max(200, self.wraplength - 180))
 
     def reset(self, page: str, title: str, subtitle: str, step: str = "") -> None:
         if self.page == "shortcut" and page != "shortcut":
@@ -312,7 +405,7 @@ class App:
         elif not self.status_label.winfo_manager():
             self.status_label.pack(anchor="w")
         self.step.set(step)
-        if page in ("home", "clipboard") and self.service.completed():
+        if page in ("home", "clipboard", "settings") and self.service.completed():
             self.draw_tabs(page)
         ttk.Label(self.frame, text=title, style="Title.TLabel").pack(anchor="w", pady=(0, 6))
         ttk.Label(
@@ -588,8 +681,8 @@ class App:
             self.save_clipboard_options(int(items.get()), int(days.get()), images.get())
 
         for label, variable, values in (
-            ("Keep the newest", items, ("100", "500", "1000", "5000", "10000")),
-            ("items for up to (days)", days, ("7", "30", "90", "365")),
+            ("Keep up to this many items", items, ("100", "500", "1000", "5000", "10000")),
+            ("Remove items older than (days)", days, ("7", "30", "90", "365")),
         ):
             ttk.Label(card, text=label, style="Card.TLabel").pack(anchor="w", pady=(8, 2))
             box = ttk.Combobox(card, textvariable=variable, values=values, state="readonly")
@@ -610,9 +703,66 @@ class App:
             self.service.delete_clipboard_data()
             self.status.set("Clipboard data deleted.")
 
+    def shortcuts_card(self) -> None:
+        """The global shortcuts: dictation's (recorded) and the clipboard history's (chosen)."""
+        features = self.features()
+        prefs = hotkeys.Preferences(self.service.paths)
+        card = self.card("Keyboard shortcuts", "They work in any app.")
+        dictation = prefs.shortcut() if features.dictation else None
+        if dictation is not None:
+            row = ttk.Frame(card, style="Card.TFrame")
+            row.pack(fill="x")
+            ttk.Label(row, text=f"Dictation: {dictation.label()}", style="Card.TLabel").pack(
+                side="left"
+            )
+            self.button(
+                "Change…",
+                lambda: self.shortcut_page(back=self.settings),
+                parent=row,
+                side="right",
+            )
+        if not features.clipboard:
+            return
+        ttk.Label(card, text="Open clipboard history", style="Card.TLabel").pack(
+            anchor="w", pady=(10, 2)
+        )
+        choices = {s.label(): s for s in hotkeys.HISTORY_PRESETS if s != dictation}
+        current = prefs.history_shortcut()
+        if current is not None:
+            choices.setdefault(current.label(), current)
+        chosen = tk.StringVar(master=self.root, value=current.label() if current else "Off")
+        box = ttk.Combobox(card, textvariable=chosen, values=(*choices, "Off"), state="readonly")
+        box.pack(fill="x")
+
+        def choose(_: object) -> None:
+            picked = choices.get(chosen.get())
+            prefs.save(history_shortcut=picked or False)
+            self.status.set(
+                f"Press {picked.label()} anywhere to open your clipboard history."
+                if picked
+                else "The clipboard history shortcut is off."
+            )
+
+        box.bind("<<ComboboxSelected>>", choose)
+        if current is not None and not hotkeys.shortcut_working(
+            self.service.paths, hotkeys.HISTORY_STATUS
+        ):
+            problem = (
+                "This desktop can’t set shortcuts automatically. In your keyboard settings, "
+                f"assign {current.label()} to: "
+                + shlex.join(hotkeys.history_command(Path(__file__).resolve().parent))
+                if desktop.platform_name() == "linux"
+                else f"Another app already uses {current.label()}. Choose another."
+            )
+            ttk.Label(
+                card, text=problem, style="CardHint.TLabel", wraplength=self.wraplength - 50
+            ).pack(anchor="w", pady=(6, 0))
+
     def clipboard_settings(self) -> None:
         self.reset("settings", "Settings", "Clipboard history and your account.")
         self.features_card()
+        if self.service.completed():
+            self.shortcuts_card()
         self.clipboard_options_card()
         self.clipboard_plus_card()
         self.button("Done", self.leave, True, self.actions(), "right")
@@ -627,12 +777,19 @@ class App:
         place = {"macos": "menu bar", "windows": "system tray"}.get(
             desktop.platform_name(), "top bar"
         )
+        history = hotkeys.Preferences(self.service.paths).history_shortcut()
         body = self.card()
         self.steps(
             body,
             [
                 ("Copy anything", "Text, links and images are saved on this computer."),
-                ("Open your history", f"From the {place} icon, choose Clipboard History…"),
+                (
+                    "Open your history",
+                    f"Press {history.label()} in any app, or choose Clipboard History… "
+                    f"from the {place} icon."
+                    if history
+                    else f"From the {place} icon, choose Clipboard History…",
+                ),
                 ("Search, star, copy back", "Favorites are kept when you clear the history."),
             ],
         )
@@ -643,12 +800,16 @@ class App:
         if not self.features().dictation:
             self.clipboard_settings()
             return
-        self.reset(
-            "settings",
-            "Set up dictation",
-            "Choose how you’ll speak. You can change this anytime.",
-            "Step 1 of 2",
-        )
+        setup = not self.service.completed()
+        if setup:
+            self.reset(
+                "settings",
+                "Set up dictation",
+                "Choose how you’ll speak. You can change this anytime.",
+                "Step 1 of 2",
+            )
+        else:
+            self.reset("settings", "Settings", "Dictation, clipboard history and your account.")
         config = d.Config(self.service.paths)
         self.language.set(
             "English" if config.s("language") == "en" else "Multilingual / auto-detect"
@@ -748,12 +909,14 @@ class App:
             self.choose_provider()
         self.show_choice()
         self.features_card()
+        if not setup:
+            self.shortcuts_card()
         if self.features().clipboard:
             self.clipboard_options_card()
         self.clipboard_plus_card()
-        self.button("Continue", self.prepare, True, self.actions(), "right")
-        if self.service.completed():
-            self.button("Cancel", self.leave, parent=self.actions(), side="right")
+        self.button("Continue" if setup else "Save", self.prepare, True, self.actions(), "right")
+        if not setup:
+            self.button("Close", self.leave, parent=self.actions(), side="right")
         # Discovery only lists devices; it never opens the microphone.
         self.root.after_idle(self.find_microphones)
 
@@ -788,13 +951,16 @@ class App:
     def find_microphones(self) -> None:
         if self.page != "settings":
             return
-        self.submit(
-            self.service.microphones,
-            self.show_microphones,
-            "Looking for microphones…",
-        )
+        self.status.set("Looking for microphones…")
+        self.background(self.service.microphones, self.show_microphones)
+
+    def background(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
+        """Run `work` off the UI thread; `poll` passes its result to `done`. Nothing locks."""
+        self.lookups.append((self.helper.submit(work), done))
 
     def show_microphones(self, devices: list[str]) -> None:
+        if self.page != "settings" or not self.device_picker.winfo_exists():
+            return  # The user moved on while we were looking.
         self.device_picker.configure(values=devices)
         if self.device.get() not in devices:
             self.device.set(devices[0])
@@ -820,9 +986,17 @@ class App:
         def report(done: int, total: int) -> None:
             self.download = (done, total)
 
+        setup = not self.service.completed()
+
+        def done(_: object) -> None:
+            if setup:
+                self.after_dictation_setup()
+            else:
+                self.status.set("Settings saved.")  # Stay here: no walkthrough again.
+
         self.submit(
             lambda: self.service.prepare(language, device, model, report, remote),
-            lambda _: self.after_dictation_setup(),
+            done,
             "Checking your settings. Nothing is recording."
             if remote
             else "Getting your speech model ready. Nothing is recording.",
@@ -900,7 +1074,9 @@ class App:
         else:
             self.home()
 
-    def shortcut_page(self) -> None:
+    def shortcut_page(self, back: Callable[[], None] | None = None) -> None:
+        """Record a new dictation shortcut. `back` returns to a page; otherwise the window closes."""
+        self.shortcut_back = back
         self.reset(
             "shortcut",
             "Choose your shortcut",
@@ -930,7 +1106,7 @@ class App:
             "Save", self.save_shortcut, True, self.actions(), "right"
         )
         self.save_shortcut_button.state(["disabled"])
-        self.button("Cancel", self.destroy, parent=self.actions(), side="right")
+        self.button("Cancel", self.shortcut_done, parent=self.actions(), side="right")
         self.root.bind("<KeyPress>", self.shortcut_key)
         self.root.bind("<KeyRelease>", self.shortcut_release)
         self.root.focus_force()
@@ -954,7 +1130,16 @@ class App:
     def save_shortcut(self) -> None:
         if self.captured is not None:
             hotkeys.Preferences(self.service.paths).save(shortcut=self.captured)
-        self.destroy()
+        self.shortcut_done()
+        if self.captured is not None and self.page != "closed":
+            self.status.set(f"Dictation shortcut: {self.captured.label()}.")
+
+    def shortcut_done(self) -> None:
+        back = getattr(self, "shortcut_back", None)
+        if back is None:
+            self.destroy()
+        else:
+            back()  # Leaving the page ends the capture.
 
     def home(self) -> None:
         shortcut = hotkeys.Preferences(self.service.paths).shortcut().label()
@@ -1025,6 +1210,7 @@ class App:
             pady=14,
             spacing2=3,
         )
+        self.transcript_seen = ()  # A new text box: read the transcript again.
         self.transcript.tag_configure("placeholder", foreground=IDLE)
         self.transcript.pack(fill="both", expand=True)
         self.show_transcript("")
@@ -1153,20 +1339,66 @@ class App:
             if active and self.service.paths.preview.exists()
             else self.service.paths.text
         )
-        text = source.read_text(encoding="utf-8") if source.exists() else ""
-        if text != self.last_text:
-            self.show_transcript(text)
+        try:
+            info = source.stat()
+            seen: tuple[Any, ...] = (source, info.st_mtime_ns, info.st_size)
+        except OSError:
+            seen = (source, 0, -1)
+        if seen != self.transcript_seen:  # Read the file only when it changed.
+            self.transcript_seen = seen
+            text = source.read_text(encoding="utf-8") if seen[2] >= 0 else ""
+            if text != self.last_text:
+                self.show_transcript(text)
         if self.closing and not active:
             self.destroy()
 
     def open_page(self, request: str) -> None:
-        """Honor a Settings or shortcut request from the tray when it is safe to leave."""
+        """Honor a page request from the tray or a shortcut when it is safe to leave."""
+        if request == "clipboard" and self.page == "clipboard" and self.clipboard_page:
+            self.clipboard_page.focus_search()
+            return
         if self.pending is not None or self.page == request:
             return
-        if request == "shortcut" and not d.busy(self.service.paths):
+        if request == "clipboard" and self.service.completed() and self.features().clipboard:
+            self.clipboard()
+        elif request == "shortcut" and not d.busy(self.service.paths):
             self.shortcut_page()
         elif request == "settings" and self.service.completed() and not d.busy(self.service.paths):
             self.settings()
+
+    def on_key(self, action: Callable[[], None], _event: object) -> str:
+        action()
+        return "break"
+
+    def can_navigate(self) -> bool:
+        """Whether a keyboard shortcut may switch pages now (not mid-setup or mid-task)."""
+        return (
+            self.pending is None
+            and self.page not in ("shortcut", "closed")
+            and self.service.completed()
+            and not d.busy(self.service.paths)
+        )
+
+    def find(self) -> None:
+        """Ctrl/⌘+F: search the clipboard history from any page."""
+        if not self.features().clipboard or not self.can_navigate():
+            return
+        if self.page != "clipboard" or self.clipboard_page is None:
+            self.clipboard()
+        if self.clipboard_page is not None:
+            self.clipboard_page.focus_search()
+
+    def go_settings(self) -> None:
+        if self.page != "settings" and self.can_navigate():
+            self.settings()
+
+    def bring_forward(self) -> None:
+        """Show the window above others and give it the keyboard (a shortcut opened it)."""
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)  # Otherwise many desktops only flash it.
+        self.root.after_idle(lambda: self.root.attributes("-topmost", False))
+        self.root.focus_force()
 
     def poll(self) -> None:
         try:
@@ -1174,9 +1406,12 @@ class App:
             if activation.exists():
                 request = activation.read_text(encoding="utf-8")
                 activation.unlink()
-                self.root.deiconify()
-                self.root.lift()
+                self.bring_forward()
                 self.open_page(request)
+            for lookup in [entry for entry in self.lookups if entry[0].done()]:
+                self.lookups.remove(lookup)
+                future, finished = lookup
+                finished(future.result())  # A failure is reported below, like any other.
             if self.pending is not None and not self.pending.done():
                 self.show_download()
             if self.pending is not None and self.pending.done():
@@ -1234,11 +1469,16 @@ class App:
         self.root.unbind("<KeyRelease>")
 
     def destroy(self) -> None:
+        if self.root.winfo_viewable():
+            self.save_size()
         self.page = "closed"
         self.end_capture()
         self.root.after_cancel(self.timer)
+        if self.rewrap_timer is not None:
+            self.root.after_cancel(self.rewrap_timer)
         self.done = lambda _: None
         self.executor.shutdown(wait=True)
+        self.helper.shutdown(wait=False, cancel_futures=True)  # Lookups only; nothing to save.
         if self.clipboard_store is not None:
             self.clipboard_store.close()
         self.root.destroy()
@@ -1258,7 +1498,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         root = tk.Tk(className="WhisperDictation")
-        App(root, Service(paths), page)
+        window = App(root, Service(paths), page)
+        if page == "clipboard":
+            root.after_idle(window.bring_forward)  # Opened by its shortcut: ready to type.
         root.mainloop()
     finally:
         os.close(fd)

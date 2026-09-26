@@ -17,7 +17,7 @@ import hotkeys
 
 PAGE_SIZE = 50
 PREVIEW_CHARS = 140
-SEARCH_DELAY_MS = 300
+SEARCH_DELAY_MS = 150
 THUMB_PIXELS = 160
 SOURCES = {"desktop": "Desktop", "dictation": "Dictation", "cloud": "Cloud"}
 FILTERS = (("all", "All"), ("favorites", "Favorites"), ("images", "Images"), ("text", "Text"))
@@ -46,7 +46,8 @@ def preview(text: str) -> str:
 @dataclasses.dataclass
 class Row:
     item: clipstore.Item
-    frame: tk.Misc
+    frame: tk.Misc  # The outlined card; destroying it removes the whole row.
+    star: ttk.Button
 
 
 class ClipboardPage:
@@ -64,7 +65,8 @@ class ClipboardPage:
         self.filter = "all"
         self.limit = PAGE_SIZE
         self.pending_search: str | None = None
-        self._photos: list[tk.PhotoImage] = []  # Tk drops images that are not referenced.
+        # Decoded once per image and kept while shown (Tk drops unreferenced images).
+        self._thumbs: dict[str, tk.PhotoImage | None] = {}
         self._signature: tuple[Any, ...] | None = None
         self._chips: dict[str, ttk.Button] = {}
         self.query.trace_add("write", lambda *_: self._schedule_search())
@@ -75,11 +77,18 @@ class ClipboardPage:
         frame = self.app.frame
         self.banner = ttk.Frame(frame)
         self.banner.pack(fill="x")
-        ttk.Label(frame, text="Search your clipboard history", style="Hint.TLabel").pack(
-            anchor="w", pady=(0, 4)
-        )
-        entry = ttk.Entry(frame, textvariable=self.query)
+        ttk.Label(
+            frame,
+            text="Search your clipboard history · Enter copies the first result · "
+            "click any item to copy it",
+            style="Hint.TLabel",
+            wraplength=self.app.wraplength,
+        ).pack(anchor="w", pady=(0, 4))
+        entry = self.entry = ttk.Entry(frame, textvariable=self.query)
         entry.pack(fill="x", pady=(0, 8))
+        entry.bind("<Return>", lambda _: self.copy_first())
+        entry.bind("<Escape>", lambda _: self.set_query(""))
+        entry.focus_set()
         chips = ttk.Frame(frame)
         chips.pack(fill="x", pady=(0, 10))
         self._chips = {}
@@ -97,6 +106,12 @@ class ClipboardPage:
         self.footer = ttk.Frame(frame)
         self.footer.pack(fill="x", pady=(10, 0))
         self.reload()
+
+    def focus_search(self) -> None:
+        """Ready to type a search, with any earlier one selected so typing replaces it."""
+        self.entry.focus_set()
+        self.entry.select_range(0, "end")
+        self.entry.icursor("end")
 
     # -- searching ---------------------------------------------------------
     def _schedule_search(self) -> None:
@@ -148,9 +163,6 @@ class ClipboardPage:
         self._signature = self._current_signature()
         for child in self.banner.winfo_children() + self.list_frame.winfo_children():
             child.destroy()
-        for child in self.footer.winfo_children():
-            child.destroy()
-        self._photos = []
         self.rows = []
         for name, chip in self._chips.items():
             chip.configure(
@@ -164,9 +176,15 @@ class ClipboardPage:
                 side="left", padx=8
             )
         items = self._items()
+        shown = {item.image_file for item in items if item.kind == "image"}
+        self._thumbs = {name: photo for name, photo in self._thumbs.items() if name in shown}
         for item in items:
             self._add_row(item)
-        if not items:
+        self._finish(len(items))
+
+    def _finish(self, shown: int) -> None:
+        """The empty-list hint and the footer, which depend on how many rows there are."""
+        if not shown:
             searching = bool(self.query.get().strip()) or self.filter != "all"
             text = (
                 "No matches."
@@ -176,7 +194,9 @@ class ClipboardPage:
             ttk.Label(
                 self.list_frame, text=text, style="Hint.TLabel", wraplength=self.app.wraplength
             ).pack(anchor="w", pady=20)
-        if len(items) >= self.limit:
+        for child in self.footer.winfo_children():
+            child.destroy()
+        if shown >= self.limit:
             ttk.Button(
                 self.footer, text="Load more", style="Small.TButton", command=self.load_more
             ).pack(side="left")
@@ -186,36 +206,53 @@ class ClipboardPage:
             ).pack(side="right")
 
     def load_more(self) -> None:
+        """Add the next page below the rows already drawn instead of redrawing them all."""
         self.limit += PAGE_SIZE
-        self.reload()
+        have = {row.item.id for row in self.rows}
+        items = self._items()
+        for item in items:
+            if item.id not in have:
+                self._add_row(item)
+        self._finish(len(items))
 
     # -- rows --------------------------------------------------------------
     def _add_row(self, item: clipstore.Item) -> None:
         body = self.app.bordered(self.list_frame)
-        info = ttk.Frame(body, style="Card.TFrame")
+        info = ttk.Frame(body, style="Card.TFrame", cursor="hand2")
         info.pack(side="left", fill="x", expand=True)
+        clickable: list[tk.Misc] = [info]
         if item.kind == "image":
             photo = self._thumbnail(item)
             if photo is not None:
-                ttk.Label(info, image=photo, style="Card.TLabel").pack(anchor="w")
+                picture = ttk.Label(info, image=photo, style="Card.TLabel", cursor="hand2")
+                picture.pack(anchor="w")
+                clickable.append(picture)
             text = f"Image {item.width}×{item.height}"
         else:
             text = preview(item.text)
-        ttk.Label(info, text=text, style="Card.TLabel", wraplength=self.app.wraplength - 250).pack(
-            anchor="w"
+        label = ttk.Label(
+            info,
+            text=text,
+            style="Card.TLabel",
+            wraplength=self.app.wraplength - 250,
+            cursor="hand2",
         )
+        label.pack(anchor="w")
         meta = f"{relative_time(item.created_at, self._clock())} · {SOURCES.get(item.source, item.source)}"
-        ttk.Label(info, text=meta, style="CardHint.TLabel").pack(anchor="w")
+        hint = ttk.Label(info, text=meta, style="CardHint.TLabel", cursor="hand2")
+        hint.pack(anchor="w")
+        for widget in (*clickable, label, hint):
+            widget.bind("<Button-1>", lambda _: self.copy(item.id))
         actions = ttk.Frame(body, style="Card.TFrame")
         actions.pack(side="right")
-        star = "★" if item.favorite else "☆"
-        ttk.Button(
+        star = ttk.Button(
             actions,
-            text=star,
+            text="★" if item.favorite else "☆",
             width=3,
             style="Small.TButton",
             command=lambda: self.toggle_favorite(item.id),
-        ).pack(side="left", padx=2)
+        )
+        star.pack(side="left", padx=2)
         ttk.Button(
             actions, text="Copy", width=6, style="Small.TButton", command=lambda: self.copy(item.id)
         ).pack(side="left", padx=2)
@@ -226,26 +263,57 @@ class ClipboardPage:
             style="Small.TButton",
             command=lambda: self.delete(item.id),
         ).pack(side="left", padx=2)
-        self.rows.append(Row(item, body))
+        self.rows.append(Row(item, body.master, star))
 
     def _thumbnail(self, item: clipstore.Item) -> tk.PhotoImage | None:
+        if item.image_file in self._thumbs:
+            return self._thumbs[item.image_file]
         path = self.store.thumb_path(item) or self.store.image_path(item)
+        photo: tk.PhotoImage | None
         try:
             photo = tk.PhotoImage(master=self.app.root, file=str(path))
         except tk.TclError:
-            return None
-        shrink = max(1, max(photo.width(), photo.height()) // THUMB_PIXELS)
-        if shrink > 1:
-            photo = photo.subsample(shrink)
-        self._photos.append(photo)
+            photo = None
+        else:
+            shrink = max(1, max(photo.width(), photo.height()) // THUMB_PIXELS)
+            if shrink > 1:
+                photo = photo.subsample(shrink)
+        self._thumbs[item.image_file] = photo
         return photo
+
+    def _row(self, item_id: int) -> Row | None:
+        return next((row for row in self.rows if row.item.id == item_id), None)
+
+    def _remove_row(self, row: Row) -> None:
+        row.frame.destroy()
+        self.rows.remove(row)
+        if not self.rows:
+            self.reload()  # Older items, or the empty-history hint, take its place.
 
     # -- actions -----------------------------------------------------------
     def toggle_favorite(self, item_id: int) -> None:
+        """Flip the star in place; only the favorites filter loses the row."""
         item = self.store.get(item_id)
-        if item is not None:
-            self.store.set_favorite(item_id, not item.favorite)
-        self.reload()
+        row = self._row(item_id)
+        if item is None:
+            if row is not None:
+                self._remove_row(row)
+            return
+        self.store.set_favorite(item_id, not item.favorite)
+        self._signature = self._current_signature()  # Our own change needs no redraw.
+        if row is None:
+            return
+        row.item = dataclasses.replace(row.item, favorite=not item.favorite)
+        if self.filter == "favorites" and not row.item.favorite:
+            self._remove_row(row)
+        else:
+            row.star.configure(text="★" if row.item.favorite else "☆")
+
+    def copy_first(self) -> None:
+        if self.pending_search is not None:
+            self.run_pending_search()
+        if self.rows:
+            self.copy(self.rows[0].item.id)
 
     def copy(self, item_id: int) -> None:
         item = self.store.get(item_id)
@@ -260,7 +328,10 @@ class ClipboardPage:
 
     def delete(self, item_id: int) -> None:
         self.store.delete(item_id)
-        self.reload()
+        self._signature = self._current_signature()
+        row = self._row(item_id)
+        if row is not None:
+            self._remove_row(row)
 
     def ask_clear(self, linked: bool) -> tuple[bool, bool] | None:
         """(everywhere, keep favorites), or None when the user cancels."""
@@ -271,10 +342,12 @@ class ClipboardPage:
         if choice is None:
             return
         everywhere, keep_favorites = choice
-        self.app.service.clear_clipboard(
+        count = self.app.service.clear_clipboard(
             self.store, everywhere=everywhere, keep_favorites=keep_favorites
         )
         self.reload()
+        where = " here and on your Clipboard+ account" if everywhere else ""
+        self.app.status.set(f"Cleared {count} item{'s' if count != 1 else ''}{where}.")
 
     def resume(self) -> None:
         prefs = hotkeys.Preferences(self.app.service.paths)
@@ -292,29 +365,37 @@ class ClearDialog:
         window.resizable(False, False)
         window.transient(parent)  # type: ignore[call-overload]
         window.configure(background=ttk.Style(window).lookup("TFrame", "background"))
-        self.scope = tk.StringVar(master=window, value="device")
+        # Linked: clearing here clears the account too, unless the user says otherwise.
+        self.scope = tk.StringVar(master=window, value="everywhere" if linked else "device")
         self.keep_favorites = tk.BooleanVar(master=window, value=True)
         body = ttk.Frame(window, padding=22)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="This can’t be undone.").pack(anchor="w", pady=(0, 10))
+        ttk.Label(
+            body,
+            text="Text, links and copied images are deleted. This can’t be undone.",
+            wraplength=380,
+        ).pack(anchor="w", pady=(0, 10))
         if linked:
             ttk.Radiobutton(
-                body, text="This device only", value="device", variable=self.scope
-            ).pack(anchor="w")
-            ttk.Radiobutton(
                 body,
-                text="Everywhere (this device and your Clipboard+ account)",
+                text="Everywhere: this device and your Clipboard+ account",
                 value="everywhere",
                 variable=self.scope,
+            ).pack(anchor="w")
+            ttk.Radiobutton(
+                body, text="This device only", value="device", variable=self.scope
             ).pack(anchor="w", pady=(2, 8))
         ttk.Checkbutton(body, text="Keep favorites", variable=self.keep_favorites).pack(
             anchor="w", pady=(0, 14)
         )
         row = ttk.Frame(body)
         row.pack(fill="x")
-        ttk.Button(row, text="Clear history", command=self.confirm).pack(side="right")
+        ttk.Button(row, text="Clear history", style="Danger.TButton", command=self.confirm).pack(
+            side="right"
+        )
         ttk.Button(row, text="Cancel", command=self.cancel).pack(side="right", padx=(0, 8))
         window.protocol("WM_DELETE_WINDOW", self.cancel)
+        window.bind("<Escape>", lambda _: self.cancel())
 
     def confirm(self) -> None:
         self.result = (self.scope.get() == "everywhere", bool(self.keep_favorites.get()))
@@ -428,9 +509,15 @@ class AccountCard:
                 ),
             ]
         else:
-            self._entry("Email", self.email)
+            email = self._entry("Email", self.email)
             password = self._entry("Password", self.password, secret=True)
+            email.bind("<Return>", lambda _: password.focus_set())
             password.bind("<Return>", lambda _: self.sign_in(create=False))
+            self._label(
+                "Signed up with Google, or have no password? Use an API key instead.",
+                "CardHint.TLabel",
+                pady=(6, 0),
+            )
             rows = [
                 (
                     *(
@@ -502,6 +589,8 @@ class AccountCard:
             if not self.area.winfo_exists():
                 return
             self.error = problem
+            if problem == clipboardplus.GOOGLE_ONLY:
+                self.mode = "key"  # Google accounts have no password here: show the key form.
             if not problem:
                 self.key.set("")  # The key is saved privately.
                 self.mode = "account"

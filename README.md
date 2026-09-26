@@ -89,6 +89,12 @@ press the shortcut.
   to stop. Notifications show *Recording*, *Transcribing…*, and
   *Transcript copied*; then paste with Ctrl+V (⌘V). The icon turns red while
   recording.
+- **Super+Shift+F** (Win+Shift+F on Windows, ⌃⌥⇧F on macOS) opens the clipboard
+  history with the search box ready, from any app. Choose another shortcut or turn
+  it off in *Settings → Keyboard shortcuts*.
+- In the window, Ctrl+F (⌘F) searches the clipboard history, Ctrl+, (⌘,) opens
+  Settings and Ctrl+W (⌘W) closes it. In the search box, Enter copies the first
+  result and Esc clears the search.
 - The icon's menu is the same everywhere: a status line, Start/Stop, Cancel Recording,
   Copy Last Transcript (dictation items appear only while Dictation is on),
   **Clipboard History…**, **Pause Clipboard Capture** (for an hour, or until you
@@ -128,9 +134,10 @@ The window has **Clipboard**, **Dictation** and **Settings** tabs (only for the
 features you turned on). The Clipboard tab lists what you copied, newest first,
 with a preview or thumbnail, how long ago, and where it came from (Desktop,
 Dictation or Cloud). Search it, filter by All / Favorites / Images / Text, star an
-item, click a row to copy it back, or delete it. *Clear history* asks whether to
-clear **this device only** or **everywhere** (when a Clipboard+ account is
-connected) and whether to keep favorites (the default). Dictation transcripts join
+item, click a row to copy it back, or delete it. *Clear history* deletes text,
+links and copied images; with a Clipboard+ account connected it clears
+**everywhere** by default (or **this device only**), and it keeps favorites unless
+you say otherwise. Cleared items are not brought back by the next sync. Dictation transcripts join
 the history too.
 
 A small background service, started and restarted by the tray or menu bar app,
@@ -188,11 +195,11 @@ items without duplicates.
 
 ### Shortcuts
 
-| Platform | Dictation shortcut |
-| --- | --- |
-| Linux | Super+Shift+D (GNOME keybinding) |
-| Windows | Win+Shift+D |
-| macOS | ⌃⌥⇧D |
+| Platform | Dictation shortcut | Clipboard history shortcut |
+| --- | --- | --- |
+| Linux | Super+Shift+D (GNOME keybinding) | Super+Shift+F (GNOME keybinding) |
+| Windows | Win+Shift+D | Win+Shift+F |
+| macOS | ⌃⌥⇧D | ⌃⌥⇧F |
 
 These were checked against Chrome's published shortcut list, which uses Alt, Ctrl,
 Ctrl+Shift and (on a Mac) ⌘ combinations with D but no Win/Super or ⌃⌥ ones. That

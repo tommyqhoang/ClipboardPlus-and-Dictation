@@ -250,6 +250,63 @@ class PageTests(PageCase):
         self.page.refresh()
         self.assertEqual(len(self.page.rows), 2)
 
+    def test_starring_and_deleting_change_only_their_own_row(self):
+        first = self.store.add_text("one", now=1.0)
+        second = self.store.add_text("two", now=2.0)
+        self.page.reload()
+        before = {row.item.id: row.frame for row in self.page.rows}
+        self.page.toggle_favorite(first.id)
+        self.assertEqual({row.item.id: row.frame for row in self.page.rows}, before)
+        self.assertEqual(self.page._row(first.id).star.cget("text"), "★")
+        self.page.refresh()  # Our own change is not mistaken for a new copy.
+        self.assertEqual({row.item.id: row.frame for row in self.page.rows}, before)
+        self.page.delete(second.id)
+        self.assertEqual([row.frame for row in self.page.rows], [before[first.id]])
+
+    def test_unstarring_under_the_favorites_filter_drops_the_row(self):
+        item = self.store.add_text("fav", now=1.0)
+        self.store.set_favorite(item.id, True)
+        self.page.set_filter("favorites")
+        self.page.toggle_favorite(item.id)
+        self.assertEqual(self.page.rows, [])
+        self.assertTrue(any("No matches" in t for t in self.texts()))
+
+    def test_load_more_keeps_the_rows_already_drawn(self):
+        for number in range(clipui.PAGE_SIZE + 3):
+            self.store.add_text(f"item {number}", now=float(number))
+        self.page.reload()
+        before = [row.frame for row in self.page.rows]
+        self.page.load_more()
+        self.assertEqual([row.frame for row in self.page.rows][: len(before)], before)
+        self.assertEqual(len(self.page.rows), clipui.PAGE_SIZE + 3)
+
+    def test_images_are_decoded_once(self):
+        self.store.add_image(make_png(30, 20, noise=True), now=1.0)
+        with patch.object(clipui.tk, "PhotoImage", wraps=clipui.tk.PhotoImage) as decode:
+            self.page.reload()
+            self.page.reload()
+        self.assertEqual(decode.call_count, 1)
+
+    def test_enter_copies_the_top_match_and_clicking_a_row_copies_it(self):
+        self.store.add_text("older", now=1.0)
+        newest = self.store.add_text("newer", now=2.0)
+        self.page.reload()
+        with patch.object(self.page, "copy") as copy:
+            self.page.query.set("old")
+            self.page.copy_first()  # Runs the waiting search first.
+            self.assertEqual(copy.call_args.args[0], self.page.rows[0].item.id)
+            self.page.set_query("")
+            label = next(
+                w
+                for w in self.page.rows[0]
+                .frame.winfo_children()[0]
+                .winfo_children()[0]
+                .winfo_children()
+                if w.winfo_class() == "TLabel"
+            )
+            label.event_generate("<Button-1>")
+        self.assertEqual(copy.call_args.args[0], newest.id)
+
     def test_a_paused_capture_is_announced_with_a_way_back(self):
         hotkeys.Preferences(self.paths).save(clipboard=hotkeys.ClipboardSettings(paused_until=-1))
         self.page.reload()
@@ -272,6 +329,91 @@ class TabTests(PageCase):
             self.assertEqual(self.window.page, "home")
             self.window.tab("clipboard")
             self.assertEqual(self.window.page, "clipboard")
+
+
+class WindowTests(PageCase):
+    def test_the_shortcut_opens_the_clipboard_tab_ready_to_search(self):
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.settings()
+            self.window.open_page("clipboard")
+        self.assertEqual(self.window.page, "clipboard")
+        page = self.window.clipboard_page
+        page.query.set("old search")
+        with patch.object(page, "focus_search") as focus:
+            self.window.open_page("clipboard")  # Already there: just ready to type.
+        focus.assert_called_once()
+
+    def test_control_f_searches_from_any_page(self):
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.tab("dictation")
+            self.window.find()
+        self.assertEqual(self.window.page, "clipboard")
+
+    def test_labels_rewrap_when_the_window_is_resized(self):
+        self.store.add_text("long " * 80, now=1.0)
+        self.page.reload()
+        label = next(
+            w
+            for w in self.page.rows[0]
+            .frame.winfo_children()[0]
+            .winfo_children()[0]
+            .winfo_children()
+            if w.winfo_class() == "TLabel"
+        )
+        before = int(str(label.cget("wraplength")))
+        self.window.rewrap(self.window.wraplength + 110 + 200)
+        self.assertEqual(int(str(label.cget("wraplength"))), before + 200)
+        self.window.rewrap(100)  # Never narrower than readable.
+        self.assertGreaterEqual(int(str(label.cget("wraplength"))), 120)
+
+    def test_the_window_size_is_remembered(self):
+        with (
+            patch.object(self.root, "winfo_width", return_value=900),
+            patch.object(self.root, "winfo_height", return_value=640),
+        ):
+            self.window.save_size()
+        self.assertEqual(self.window.saved_size(), (900, 640))
+
+    def test_the_history_shortcut_is_chosen_in_settings(self):
+        with (
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+        ):
+            self.window.settings()
+        self.assertTrue(any("Open clipboard history" in t for t in self.texts()))
+        box = next(
+            w
+            for w in self.all_widgets()
+            if w.winfo_class() == "TCombobox" and "Off" in w.cget("values")
+        )
+        box.set("Off")
+        box.event_generate("<<ComboboxSelected>>")
+        self.assertIsNone(hotkeys.Preferences(self.paths).history_shortcut())
+        self.assertIn("off", self.window.status.get())
+
+    def test_changing_the_dictation_shortcut_returns_to_settings(self):
+        with (
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+        ):
+            self.window.settings()
+            self.buttons("Change…")[0].invoke()
+            self.assertEqual(self.window.page, "shortcut")
+            self.assertTrue((self.paths.runtime / "shortcut-capture").exists())
+            self.window.captured = hotkeys.Shortcut(("ctrl", "alt"), "K")
+            self.window.save_shortcut()
+        self.assertEqual(self.window.page, "settings")
+        self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
+        self.assertEqual(hotkeys.Preferences(self.paths).shortcut().key, "K")
+        self.assertIn("Dictation shortcut", self.window.status.get())
+
+    def all_widgets(self):
+        found, stack = [], [self.window.frame]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            found.append(widget)
+        return found
 
 
 class OptInTests(PageCase):

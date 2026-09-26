@@ -7,6 +7,7 @@ import re
 import socket
 import sqlite3
 import subprocess
+import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -175,6 +176,8 @@ class Service:
         """Clear the history on this device, and in the account too when asked."""
         everywhere = everywhere and self.clipboard_plus_linked()
         count = store.clear(keep_favorites=keep_favorites, tombstones=everywhere)
+        # The next sync must not bring back what was just cleared (images never sync).
+        store.meta_set(clipstore.META_CLEARED, repr(time.time()))
         if everywhere:
             clipsync.request_clear(store, favorites=not keep_favorites)
             self.sync_clipboard_now()

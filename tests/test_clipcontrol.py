@@ -61,6 +61,22 @@ class ControlCase(unittest.TestCase):
         self.prefs.save(features=hotkeys.Features(dictation, clipboard))
 
 
+class HistoryShortcutTests(ControlCase):
+    def test_the_history_shortcut_follows_the_clipboard_feature_and_its_setting(self):
+        self.enable(clipboard=False)
+        control = self.control()
+        control.changed()
+        self.assertIsNone(control.history_shortcut())
+        self.enable(clipboard=True)
+        self.assertTrue(control.changed())
+        self.assertEqual(control.history_shortcut(), hotkeys.DEFAULT_HISTORY)
+        self.assertFalse(control.changed())
+        self.prefs.save(history_shortcut=False)
+        control._stamp = None  # The file's time may not have moved within this test.
+        self.assertTrue(control.changed())
+        self.assertIsNone(control.history_shortcut())
+
+
 class SupervisionTests(ControlCase):
     def test_the_service_is_started_once_while_it_runs(self):
         self.enable()

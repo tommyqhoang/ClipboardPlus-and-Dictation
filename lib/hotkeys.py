@@ -13,7 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import desktop
 import dictation as d
@@ -84,6 +84,9 @@ CLIPBOARD_PLUS = "https://clipboardplus.apercallc.com"
 AGENT_LABEL = "org.whisperdictation.menubar"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 GNOME_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
+GNOME_HISTORY_PATH = (
+    "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipboard-history/"
+)
 GNOME_LIST = ("org.gnome.settings-daemon.plugins.media-keys", "custom-keybindings")
 
 
@@ -169,6 +172,23 @@ PRESETS = tuple(
 )
 
 
+def default_history_shortcut(platform: str) -> Shortcut:
+    """Opens the clipboard history: the dictation default with F (for find) instead of D."""
+    return Shortcut(default_shortcut(platform).modifiers, "F")
+
+
+DEFAULT_HISTORY = default_history_shortcut(desktop.platform_name())
+HISTORY_PRESETS = tuple(
+    dict.fromkeys(
+        (
+            DEFAULT_HISTORY,
+            Shortcut(("ctrl", "alt", "shift"), "V"),
+            Shortcut(("ctrl", "alt"), "H"),
+        )
+    )
+)
+
+
 def from_mac_event(key_code: int, flags: int, characters: str) -> Shortcut:
     key = MAC_KEY_NAMES.get(key_code) or characters.strip().upper()
     return Shortcut(canonical(n for n in EVENT_FLAGS if flags & EVENT_FLAGS[n]), key)
@@ -233,15 +253,23 @@ class Preferences:
         except OSError:
             return 0.0
 
-    def shortcut(self) -> Shortcut:
-        raw = self.read().get("shortcut")
+    @staticmethod
+    def _shortcut(raw: Any, default: Shortcut) -> Shortcut:
         if not isinstance(raw, dict):
-            return DEFAULT
+            return default
         modifiers, key = raw.get("modifiers"), raw.get("key")
         if not isinstance(modifiers, list) or not isinstance(key, str):
-            return DEFAULT
+            return default
         shortcut = Shortcut(canonical(modifiers), key)
-        return DEFAULT if shortcut.problem() else shortcut
+        return default if shortcut.problem() else shortcut
+
+    def shortcut(self) -> Shortcut:
+        return self._shortcut(self.read().get("shortcut"), DEFAULT)
+
+    def history_shortcut(self) -> Shortcut | None:
+        """The shortcut that opens the clipboard history; None when switched off."""
+        raw = self.read().get("history_shortcut")
+        return None if raw is False else self._shortcut(raw, DEFAULT_HISTORY)
 
     def features(self) -> Features:
         """Dictation only until the user chooses; at least one feature is always on."""
@@ -279,8 +307,15 @@ class Preferences:
         open_at_login: bool | None = None,
         features: Features | None = None,
         clipboard: ClipboardSettings | None = None,
+        history_shortcut: Shortcut | Literal[False] | None = None,
     ) -> None:
+        """Change the given preferences. `history_shortcut=False` switches it off."""
         values = self.read()
+        if history_shortcut is not None:
+            values["history_shortcut"] = history_shortcut and {
+                "modifiers": list(history_shortcut.modifiers),
+                "key": history_shortcut.key,
+            }
         if features is not None:
             values["features"] = {"dictation": features.dictation, "clipboard": features.clipboard}
         if clipboard is not None:
@@ -350,27 +385,45 @@ def set_login_item(
         )
 
 
-def record_status(paths: d.Paths, ok: bool) -> None:
-    """Share whether the tray or menu bar could register the shortcut with the window."""
+HISTORY_STATUS = "history-shortcut-status"
+
+
+def record_status(paths: d.Paths, ok: bool, name: str = "shortcut-status") -> None:
+    """Share whether the tray or menu bar could register a shortcut with the window."""
     d.private_dir(paths.runtime)
-    d.atomic(paths.runtime / "shortcut-status", "ok" if ok else "failed")
+    d.atomic(paths.runtime / name, "ok" if ok else "failed")
 
 
-def shortcut_working(paths: d.Paths) -> bool:
+def shortcut_working(paths: d.Paths, name: str = "shortcut-status") -> bool:
     try:
-        return (paths.runtime / "shortcut-status").read_text(encoding="utf-8") != "failed"
+        return (paths.runtime / name).read_text(encoding="utf-8") != "failed"
     except OSError:
         return True
 
 
-def gnome_shortcut(shortcut: Shortcut | None, command: Path, run: Any = subprocess.run) -> bool:
+def _gnome_command(command: Path | list[str]) -> str:
+    return shlex.join(command) if isinstance(command, list) else shlex.quote(str(command))
+
+
+def history_command(lib: Path, python: str | None = None) -> list[str]:
+    """What the clipboard history shortcut runs: the window, opened on its Clipboard tab."""
+    return [python or python_for_gui(), str(lib / "app.py"), "--clipboard"]
+
+
+def gnome_shortcut(
+    shortcut: Shortcut | None,
+    command: Path | list[str],
+    run: Any = subprocess.run,
+    path: str = GNOME_PATH,
+    name: str = APP_NAME,
+) -> bool:
     """Bind the shortcut in GNOME (Wayland apps cannot grab keys themselves).
 
     None pauses it (no keys) while a new shortcut is being recorded.
     """
     if not shutil.which("gsettings"):
         return False
-    schema = f"{GNOME_LIST[0]}.custom-keybinding:{GNOME_PATH}"
+    schema = f"{GNOME_LIST[0]}.custom-keybinding:{path}"
 
     def gsettings(*args: str) -> str:
         result = run(["gsettings", *args], capture_output=True, text=True, timeout=10)
@@ -380,22 +433,24 @@ def gnome_shortcut(shortcut: Shortcut | None, command: Path, run: Any = subproce
 
     try:
         current = gsettings("get", *GNOME_LIST)
-        if GNOME_PATH not in current:
+        if path not in current:
             entries = [] if current in ("@as []", "[]") else [current.strip("[]")]
-            gsettings("set", *GNOME_LIST, "[" + ", ".join(entries + [repr(GNOME_PATH)]) + "]")
-        gsettings("set", schema, "name", APP_NAME)
-        gsettings("set", schema, "command", shlex.quote(str(command)))
+            gsettings("set", *GNOME_LIST, "[" + ", ".join(entries + [repr(path)]) + "]")
+        gsettings("set", schema, "name", name)
+        gsettings("set", schema, "command", _gnome_command(command))
         gsettings("set", schema, "binding", shortcut.gnome() if shortcut else "")
     except (OSError, subprocess.SubprocessError):
         return False
     return True
 
 
-def gnome_remove(command: Path, run: Any = subprocess.run) -> None:
+def gnome_remove(
+    command: Path | list[str], run: Any = subprocess.run, path: str = GNOME_PATH
+) -> None:
     """Remove the GNOME shortcut, but only if it runs this installation's command."""
     if not shutil.which("gsettings"):
         return
-    schema = f"{GNOME_LIST[0]}.custom-keybinding:{GNOME_PATH}"
+    schema = f"{GNOME_LIST[0]}.custom-keybinding:{path}"
 
     def gsettings(*args: str) -> str:
         result = run(["gsettings", *args], capture_output=True, text=True, timeout=10)
@@ -404,11 +459,11 @@ def gnome_remove(command: Path, run: Any = subprocess.run) -> None:
         return str(result.stdout).strip()
 
     try:
-        if gsettings("get", schema, "command") != repr(shlex.quote(str(command))):
+        if gsettings("get", schema, "command") != repr(_gnome_command(command)):
             return
         current = gsettings("get", *GNOME_LIST)
         entries = [entry.strip() for entry in current.strip("[]").split(",") if entry.strip()]
-        remaining = [entry for entry in entries if entry.strip("'\"") != GNOME_PATH]
+        remaining = [entry for entry in entries if entry.strip("'\"") != path]
         gsettings("set", *GNOME_LIST, "[" + ", ".join(remaining) + "]")
         gsettings("reset-recursively", schema)
     except (OSError, subprocess.SubprocessError):

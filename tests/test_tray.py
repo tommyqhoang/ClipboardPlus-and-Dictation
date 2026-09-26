@@ -78,6 +78,7 @@ class TrayTests(unittest.TestCase):
         image = SimpleNamespace(open=lambda path: Path(path).name)
         self.tray = tray.Tray(pystray, image)
         self.tray.hotkey = FakeHotKey()
+        self.tray.history_key = FakeHotKey()
         popen = patch.object(tray.subprocess, "Popen")
         self.popen = popen.start()
         self.addCleanup(popen.stop)
@@ -210,6 +211,20 @@ class TrayTests(unittest.TestCase):
         self.assertIn("--setup", self.popen.call_args.args[0])
         self.tray.icon.notify = Mock(side_effect=NotImplementedError)
         self.tray.notify("ignored when unsupported")
+
+    def test_the_history_shortcut_is_registered_while_clipboard_is_on(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        self.tray.sync_history_shortcut()
+        self.assertEqual(self.tray.history_key.registered, [hotkeys.DEFAULT_HISTORY])
+        self.tray.sync_history_shortcut()  # Unchanged: not registered again.
+        self.assertEqual(len(self.tray.history_key.registered), 1)
+        self.assertIn(hotkeys.DEFAULT_HISTORY.label(), self.tray.history_text())
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, False))
+        self.tray.clip._stamp = None
+        self.tray.sync_history_shortcut()
+        self.assertEqual(self.tray.history_key.registered[-1], None)
+        self.tray.open_history()
+        self.assertIn("--clipboard", self.popen.call_args.args[0])
 
     def test_gnome_hotkey_binds_toggle_command(self):
         with patch.object(hotkeys, "gnome_shortcut", return_value=True) as bind:

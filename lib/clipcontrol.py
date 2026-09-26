@@ -48,7 +48,8 @@ class ClipboardControl:
         self._stamp: float | None = None
         self._features = hotkeys.Features()
         self._settings = hotkeys.ClipboardSettings()
-        self._reported: tuple[hotkeys.Features, hotkeys.ClipboardSettings] | None = None
+        self._history: hotkeys.Shortcut | None = hotkeys.DEFAULT_HISTORY
+        self._reported: tuple[Any, ...] | None = None
 
     # -- preferences -------------------------------------------------------
     def _refresh(self) -> None:
@@ -57,6 +58,7 @@ class ClipboardControl:
             self._stamp = stamp
             self._features = self._prefs.features()
             self._settings = self._prefs.clipboard()
+            self._history = self._prefs.history_shortcut()
 
     def features(self) -> hotkeys.Features:
         self._refresh()
@@ -66,9 +68,14 @@ class ClipboardControl:
         self._refresh()
         return self._settings
 
+    def history_shortcut(self) -> hotkeys.Shortcut | None:
+        """The shortcut that opens the history, while Clipboard is on; otherwise None."""
+        self._refresh()
+        return self._history if self._features.clipboard else None
+
     def changed(self) -> bool:
-        """Whether features or clipboard settings differ from the last time this was asked."""
-        current = (self.features(), self.settings())
+        """Whether features, clipboard settings or the history shortcut changed since last asked."""
+        current = (self.features(), self.settings(), self.history_shortcut())
         if current == self._reported:
             return False
         self._reported = current

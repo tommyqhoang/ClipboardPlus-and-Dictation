@@ -146,6 +146,27 @@ class HotkeyTests(unittest.TestCase):
         with patch.object(hotkeys.shutil, "which", return_value=None):
             self.assertFalse(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/t")))
 
+    def test_the_history_shortcut_has_its_own_gnome_entry_and_command(self):
+        calls = []
+
+        def run(args, **_):
+            calls.append(args[1:])
+            output = f"[{hotkeys.GNOME_PATH!r}]" if args[1] == "get" else ""
+            return Mock(returncode=0, stdout=output, stderr="")
+
+        command = hotkeys.history_command(PurePosixPath("/lib"), "/venv/python")
+        self.assertEqual(command, ["/venv/python", "/lib/app.py", "--clipboard"])
+        with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
+            self.assertTrue(
+                hotkeys.gnome_shortcut(
+                    hotkeys.DEFAULT_HISTORY, command, run, path=hotkeys.GNOME_HISTORY_PATH
+                )
+            )
+        listed = f"[{hotkeys.GNOME_PATH!r}, {hotkeys.GNOME_HISTORY_PATH!r}]"
+        self.assertIn(["set", *hotkeys.GNOME_LIST, listed], calls)
+        self.assertIn("/venv/python /lib/app.py --clipboard", calls[-2][-1])
+        self.assertEqual(calls[-1][-1], "<Shift><Super>f")
+
     def test_gnome_shortcut_pauses_and_removes_only_its_own_binding(self):
         calls = []
         state = {"command": "'/bin/toggle'", "list": f"['/other/', {hotkeys.GNOME_PATH!r}]"}
@@ -170,6 +191,21 @@ class HotkeyTests(unittest.TestCase):
         """Put arbitrary text in the preferences file, as a hand edit or crash would."""
         self.preferences.path.parent.mkdir(parents=True, exist_ok=True)
         self.preferences.path.write_text(text)
+
+    def test_the_history_shortcut_defaults_to_f_and_can_be_changed_or_switched_off(self):
+        self.assertEqual(self.preferences.history_shortcut(), hotkeys.DEFAULT_HISTORY)
+        self.assertEqual(hotkeys.default_history_shortcut("linux").label("linux"), "Super+Shift+F")
+        self.assertEqual(hotkeys.default_history_shortcut("macos").label("macos"), "⌃⌥⇧F")
+        for preset in hotkeys.HISTORY_PRESETS:
+            self.assertEqual(preset.problem(), "")
+            self.assertNotEqual(preset, hotkeys.DEFAULT)
+        choice = hotkeys.HISTORY_PRESETS[1]
+        self.preferences.save(history_shortcut=choice)
+        self.assertEqual(self.preferences.history_shortcut(), choice)
+        self.preferences.save(history_shortcut=False)
+        self.assertIsNone(self.preferences.history_shortcut())
+        self.preferences.save(open_at_login=False)  # Other changes keep it off.
+        self.assertIsNone(self.preferences.history_shortcut())
 
     def test_default_shortcut_avoids_chromes_and_differs_only_on_macos(self):
         mac, linux, windows = (

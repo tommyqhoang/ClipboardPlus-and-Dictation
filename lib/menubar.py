@@ -55,11 +55,15 @@ class EventHotKeyID(ctypes.Structure):
     _fields_ = [("signature", ctypes.c_uint32), ("id", ctypes.c_uint32)]
 
 
+DICTATION_ID, HISTORY_ID = 1, 2
 HANDLER = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
 
 
 class GlobalHotKey:
-    """Carbon RegisterEventHotKey: works system-wide without Accessibility access."""
+    """Carbon RegisterEventHotKey: works system-wide without Accessibility access.
+
+    One event handler serves every shortcut; each is told apart by its id.
+    """
 
     def __init__(self, callback: Any) -> None:
         carbon = ctypes.CDLL("/System/Library/Frameworks/Carbon.framework/Carbon")
@@ -81,12 +85,34 @@ class GlobalHotKey:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         carbon.UnregisterEventHotKey.argtypes = [ctypes.c_void_p]
+        carbon.GetEventParameter.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
         self.carbon = carbon
         self.target = carbon.GetApplicationEventTarget()
-        self.ref: ctypes.c_void_p | None = None
+        self.callbacks: dict[int, Any] = {DICTATION_ID: callback}
+        self.refs: dict[int, ctypes.c_void_p] = {}
 
-        def pressed(_call: Any, _event: Any, _data: Any) -> int:
-            callback()
+        def pressed(_call: Any, event: Any, _data: Any) -> int:
+            which = EventHotKeyID()
+            status = carbon.GetEventParameter(
+                event,
+                fourcc("----"),  # kEventParamDirectObject
+                fourcc("hkid"),  # typeEventHotKeyID
+                None,
+                ctypes.sizeof(which),
+                None,
+                ctypes.byref(which),
+            )
+            action = self.callbacks.get(which.id if status == 0 else DICTATION_ID)
+            if action is not None:
+                action()
             return 0
 
         # Keep a reference: the C side holds only a raw pointer to this thunk.
@@ -94,26 +120,29 @@ class GlobalHotKey:
         spec = EventTypeSpec(fourcc("keyb"), 5)  # kEventHotKeyPressed
         carbon.InstallEventHandler(self.target, self.handler, 1, ctypes.byref(spec), None, None)
 
-    def register(self, shortcut: hotkeys.Shortcut) -> bool:
-        self.unregister()
+    def on(self, hotkey_id: int, callback: Any) -> None:
+        self.callbacks[hotkey_id] = callback
+
+    def register(self, shortcut: hotkeys.Shortcut, hotkey_id: int = DICTATION_ID) -> bool:
+        self.unregister(hotkey_id)
         ref = ctypes.c_void_p()
         status = self.carbon.RegisterEventHotKey(
             shortcut.mac_key_code(),
             shortcut.carbon_modifiers(),
-            EventHotKeyID(fourcc("WDct"), 1),
+            EventHotKeyID(fourcc("WDct"), hotkey_id),
             self.target,
             0,
             ctypes.byref(ref),
         )
         if status != 0:
             return False
-        self.ref = ref
+        self.refs[hotkey_id] = ref
         return True
 
-    def unregister(self) -> None:
-        if self.ref is not None:
-            self.carbon.UnregisterEventHotKey(self.ref)
-            self.ref = None
+    def unregister(self, hotkey_id: int = DICTATION_ID) -> None:
+        ref = self.refs.pop(hotkey_id, None)
+        if ref is not None:
+            self.carbon.UnregisterEventHotKey(ref)
 
 
 def template(name: str, template_image: bool = True) -> Any:
@@ -136,6 +165,8 @@ class Controller(NSObject):  # type: ignore[misc]
             self.paths, self.preferences, python=sys.executable
         )
         self.dictation_registered = False
+        self.history: hotkeys.Shortcut | None = None  # The history shortcut registered now.
+        self.capturing = False  # The window is recording a new dictation shortcut.
         self.view: tuple[Any, ...] | None = None
         self.shortcut = self.preferences.shortcut()
         self.phase = ""
@@ -150,6 +181,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.item.button().setToolTip_(hotkeys.APP_NAME)
         self.build_menu()
         self.hotkey = GlobalHotKey(self.pressed)
+        self.hotkey.on(HISTORY_ID, lambda: self.open_window("--clipboard"))
         self.hotkey_ok = True
         if self.clip.features().dictation:
             self.hotkey_ok = self.hotkey.register(self.shortcut)
@@ -384,7 +416,42 @@ class Controller(NSObject):  # type: ignore[misc]
         elif not features.dictation and self.dictation_registered:
             self.hotkey.unregister()
             self.dictation_registered = False
+        history = self.clip.history_shortcut()
+        if history != self.history:
+            self.history = history
+            self.hotkey.unregister(HISTORY_ID)
+            ok = history is None or self.hotkey.register(history, HISTORY_ID)
+            hotkeys.record_status(self.paths, ok, hotkeys.HISTORY_STATUS)
+        self.history_item.setTitle_(
+            f"Clipboard History…    {history.label()}" if history else "Clipboard History…"
+        )
         self.view = None  # Redraw the status lines.
+
+    @objc.python_method
+    def follow_window_shortcut(self) -> None:
+        """Pause the dictation shortcut while the window records a new one, then use it."""
+        flag = self.paths.runtime / "shortcut-capture"
+        capturing = flag.exists()
+        if capturing and not self.capturing:
+            window = desktop.lock(self.paths.runtime / "app.lock")
+            if window is not None:  # A crashed window left the flag behind.
+                os.close(window)
+                flag.unlink(missing_ok=True)
+                capturing = False
+        if capturing == self.capturing:
+            return
+        self.capturing = capturing
+        if capturing:
+            self.hotkey.unregister()
+            return
+        if not self.clip.features().dictation:
+            return
+        chosen = self.preferences.shortcut()
+        if chosen != self.shortcut:
+            self.apply_shortcut(chosen)
+        else:
+            self.hotkey_ok = self.hotkey.register(self.shortcut)
+            hotkeys.record_status(self.paths, self.hotkey_ok)
 
     @objc.python_method
     def ready(self) -> bool:
@@ -403,6 +470,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.clip.supervise()
         if self.clip.changed():
             self.apply_features()
+        self.follow_window_shortcut()
         try:
             current = workflow.snapshot(self.paths)
         except (d.DictationError, OSError, ValueError):
