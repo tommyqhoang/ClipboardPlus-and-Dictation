@@ -19,6 +19,8 @@ import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib import import_module
+from types import SimpleNamespace
 from typing import Any, Protocol
 
 import clipstore
@@ -58,6 +60,20 @@ def decode_text(target: str, data: bytes) -> str:
     return data.decode("utf-8", "replace")
 
 
+def _load_xlib() -> Any:
+    """python-xlib's modules (it ships no type information), or Unavailable."""
+    try:
+        return SimpleNamespace(
+            X=import_module("Xlib.X"),
+            Xatom=import_module("Xlib.Xatom"),
+            display=import_module("Xlib.display"),
+            error=import_module("Xlib.error"),
+            xfixes=import_module("Xlib.ext.xfixes"),
+        )
+    except ImportError as exc:
+        raise Unavailable("Clipboard history needs the python-xlib package.") from exc
+
+
 class Source(Protocol):
     """Reports clipboard changes and reads the current content."""
 
@@ -94,16 +110,14 @@ class X11Source:
         max_text: int = clipstore.MAX_TEXT_BYTES,
         max_image: int = clipstore.MAX_IMAGE_BYTES,
     ) -> None:
-        try:
-            from Xlib import (  # type: ignore[import-not-found, unused-ignore]
-                X,
-                Xatom,
-                display,
-                error,
-            )
-            from Xlib.ext import xfixes  # type: ignore[import-not-found, unused-ignore]
-        except ImportError as exc:
-            raise Unavailable("Clipboard history needs the python-xlib package.") from exc
+        xlib = _load_xlib()
+        X, Xatom, display, error, xfixes = (
+            xlib.X,
+            xlib.Xatom,
+            xlib.display,
+            xlib.error,
+            xlib.xfixes,
+        )
         name = display_name or os.environ.get("DISPLAY")
         if not name:
             raise Unavailable("Clipboard history needs an X11 or XWayland display.")

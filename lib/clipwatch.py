@@ -59,14 +59,6 @@ def _platform_watcher(platform: str) -> Watcher:
         import clipwatch_linux
 
         return clipwatch_linux.create()
-    if platform == "macos":
-        import clipwatch_macos
-
-        return clipwatch_macos.create()
-    if platform == "windows":
-        import clipwatch_windows
-
-        return clipwatch_windows.create()
     raise Unavailable(f"Clipboard history is not supported on {platform}.")
 
 
