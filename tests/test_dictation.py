@@ -142,6 +142,12 @@ class DictationTests(unittest.TestCase):
         (self.root / "copy-fail").touch()
         with self.assertRaisesRegex(d.DictationError, "Couldn’t put that on the clipboard"):
             d.copy_text(self.config, self.paths, "history item")
+        self.config.values["model"] = str(self.root / "no-model.bin")  # Setup unfinished.
+        with patch.object(d, "open_app") as window:
+            with self.assertRaisesRegex(d.DictationError, "finish setup"):
+                d.dispatch(self.config, self.paths, "toggle")
+        window.assert_called_once_with(self.config)
+        self.config.values["model"] = self.env["DICTATION_MODEL"]
         self.paths.audio.write_bytes(b"\0" * 3200)
         with patch.object(d, "open_app") as window:
             with self.assertRaisesRegex(d.DictationError, "wasn’t transcribed yet"):
