@@ -1,7 +1,7 @@
 """Optional link to a Clipboard+ account.
 
 When the user pastes a Clipboard+ API key in Settings, each transcript is also
-saved to their Clipboard+ history (source "Whisper Dictation"), so it shows in
+saved to their Clipboard+ history (source "Whisper Dictation & Clipboard+"), so it shows in
 the web dashboard and the browser extension. Nothing is sent unless a key is
 saved, and the key is never used for anything else. Standard library only.
 """
@@ -22,7 +22,7 @@ API = "https://backend-production-74d4.up.railway.app"
 SITE = "https://clipboardplus.apercallc.com"
 ACCOUNT_URL = SITE + "/account.html"
 DASHBOARD_URL = SITE + "/dashboard.html"
-SOURCE = "Whisper Dictation"
+SOURCE = "Whisper Dictation & Clipboard+"
 KEY_PREFIX = "cp_live_"
 # The service rejects larger items, so do not upload them.
 MAX_BYTES = 50_000

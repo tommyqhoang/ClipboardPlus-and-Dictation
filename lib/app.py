@@ -1,4 +1,4 @@
-"""Whisper Dictation desktop window and first-run walkthrough."""
+"""Whisper Dictation & Clipboard+ desktop window and first-run walkthrough."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class App:
         self.last_text = ""
         self.download = (0, 0)
         self.buttons: list[ttk.Button] = []
-        self.root.title("Whisper Dictation")
+        self.root.title(hotkeys.APP_NAME)
         width = min(720, max(360, self.root.winfo_screenwidth() - 80))
         height = min(700, max(360, self.root.winfo_screenheight() - 100))
         self.wraplength = max(260, width - 110)
@@ -240,7 +240,7 @@ class App:
             ttk.Label(brand, image=self.header_icon, style="Brand.TLabel").pack(
                 side="left", padx=(0, 10)
             )
-        ttk.Label(brand, text="Whisper Dictation", style="Brand.TLabel").pack(side="left")
+        ttk.Label(brand, text=hotkeys.APP_NAME, style="Brand.TLabel").pack(side="left")
         self.step = tk.StringVar(value="")
         ttk.Label(bar, textvariable=self.step, style="Step.TLabel").pack(side="right")
         tk.Frame(self.root, height=1, background=BORDER).pack(fill="x")

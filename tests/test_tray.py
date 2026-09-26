@@ -33,6 +33,7 @@ class Icon:
         self.icon, self.title, self.menu = icon, title, menu
         self.updates = 0
         self.notifications = []
+        self.notification_titles = []
         self.stopped = False
 
     def update_menu(self):
@@ -40,6 +41,7 @@ class Icon:
 
     def notify(self, message, title):
         self.notifications.append(message)
+        self.notification_titles.append(title)
 
     def stop(self):
         self.stopped = True
@@ -105,7 +107,7 @@ class TrayTests(unittest.TestCase):
             "Open at Login",
             "Clipboard History (Clipboard+)…",
             "Settings…",
-            "Quit Whisper Dictation",
+            f"Quit {hotkeys.APP_NAME}",
         ):
             self.assertIn(expected, labels)
         self.assertEqual(self.tray.icon.icon, "whisper-dictation.png")
@@ -219,6 +221,21 @@ class TrayTests(unittest.TestCase):
     def test_main_refuses_macos(self):
         with patch.object(tray.desktop, "platform_name", return_value="macos"):
             self.assertEqual(tray.main(), 1)
+
+    def test_the_tray_is_named_after_the_app(self):
+        self.assertEqual(self.tray.icon.title, hotkeys.APP_NAME)
+        self.tray.notify("Hello")
+        self.assertEqual(self.tray.icon.notification_titles[-1], hotkeys.APP_NAME)
+        with (
+            patch.object(self.tray.service, "ready", return_value=True),
+            patch.object(
+                tray.workflow,
+                "snapshot",
+                return_value={"phase": "recording", "active": True, "elapsed_seconds": 1},
+            ),
+        ):
+            self.tray.tick()
+        self.assertTrue(self.tray.icon.title.startswith(hotkeys.APP_NAME))
 
     def test_recording_does_not_redraw_the_icon_or_menu_every_second(self):
         # AppIndicator rewrites the icon file and builds a new GTK menu on each update,

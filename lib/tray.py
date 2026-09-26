@@ -113,7 +113,7 @@ class Tray:
         self.icon = pystray.Icon(
             "whisper-dictation",
             self.images["idle"],
-            "Whisper Dictation",
+            hotkeys.APP_NAME,
             menu(
                 item(lambda _: self.status_text(), None, enabled=False),
                 menu.SEPARATOR,
@@ -139,7 +139,7 @@ class Tray:
                 ),
                 item("Settings…", lambda: self.open_window("--settings")),
                 menu.SEPARATOR,
-                item("Quit Whisper Dictation", self.quit),
+                item(f"Quit {hotkeys.APP_NAME}", self.quit),
             ),
         )
 
@@ -211,7 +211,7 @@ class Tray:
 
     def notify(self, message: str) -> None:
         try:
-            self.icon.notify(message, "Whisper Dictation")
+            self.icon.notify(message, hotkeys.APP_NAME)
         except (NotImplementedError, OSError):
             pass
 
@@ -296,11 +296,11 @@ class Tray:
         if changed:
             self.icon.icon = self.images["recording" if phase == "recording" else "idle"]
         self.icon.title = (
-            f"Whisper Dictation — recording {elapsed // 60}:{elapsed % 60:02d}"
+            f"{hotkeys.APP_NAME} — recording {elapsed // 60}:{elapsed % 60:02d}"
             if clock
-            else "Whisper Dictation — recording"
+            else f"{hotkeys.APP_NAME} — recording"
             if phase == "recording"
-            else "Whisper Dictation"
+            else hotkeys.APP_NAME
         )
         if changed:
             self.icon.update_menu()

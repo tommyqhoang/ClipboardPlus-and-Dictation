@@ -141,7 +141,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.idle_image = template("menubar-icon.png")
         self.recording_image = template("menubar-recording.png", template_image=False)
         self.item.button().setImage_(self.idle_image)
-        self.item.button().setToolTip_("Whisper Dictation")
+        self.item.button().setToolTip_(hotkeys.APP_NAME)
         self.build_menu()
         self.hotkey = GlobalHotKey(self.pressed)
         self.hotkey_ok = self.hotkey.register(self.shortcut)
@@ -183,7 +183,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.add(menu, "Clipboard History (Clipboard+)…", "clipboardPlus:")
         self.add(menu, "Settings…", "openSettings:")
         menu.addItem_(NSMenuItem.separatorItem())
-        self.add(menu, "Quit Whisper Dictation", "quit:")
+        self.add(menu, f"Quit {hotkeys.APP_NAME}", "quit:")
         self.item.setMenu_(menu)
         self.update_shortcut_menu()
 

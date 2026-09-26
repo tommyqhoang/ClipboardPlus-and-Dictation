@@ -83,7 +83,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(request.get_header("Content-type"), "application/json")
         self.assertEqual(
             json.loads(request.data),
-            {"type": "text", "content": "Hello world.", "source": "Whisper Dictation"},
+            {"type": "text", "content": "Hello world.", "source": "Whisper Dictation & Clipboard+"},
         )
 
     def test_the_key_is_never_forwarded_by_a_redirect(self):

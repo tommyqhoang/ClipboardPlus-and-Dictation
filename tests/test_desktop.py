@@ -189,6 +189,17 @@ class DesktopTests(unittest.TestCase):
             leftovers = [path for path in prefix.rglob("*") if path.is_file()]
             self.assertEqual(leftovers, [])
 
+    def test_windows_start_menu_shortcut_is_renamed_and_the_old_one_removed(self):
+        setup = setup_module()
+        with patch.object(setup.subprocess, "run") as run:
+            setup.windows_shortcut(Path("tray.py"), Path("C:/venv/pythonw.exe"))
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(payload["name"], setup.hotkeys.APP_NAME + ".lnk")
+        self.assertEqual(payload["old_names"], ["Whisper Dictation.lnk"])
+        script = run.call_args.args[0][-1]
+        self.assertIn("$p.name", script)
+        self.assertIn("$p.old_names", script)
+
     def test_windows_shortcut_uses_structured_paths(self):
         setup = setup_module()
         with patch.object(setup.subprocess, "run") as run:
@@ -246,7 +257,7 @@ class DesktopTests(unittest.TestCase):
                 setup.install_app_launcher(prefix)
                 login.assert_called_once_with(True, [str(venv), str(prefix / "lib/tray.py")])
                 entry = (prefix / "share/applications/whisper-dictation.desktop").read_text()
-                self.assertIn("Name=Whisper Dictation", entry)
+                self.assertIn(f"Name={setup.hotkeys.APP_NAME}\n", entry)
                 self.assertIn('Exec="/venv/bin/python"', entry)
                 self.assertIn("tray.py", entry)
                 self.assertIn("Terminal=false", entry)
@@ -275,6 +286,8 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(info["CFBundleIdentifier"], "org.whisperdictation.desktop")
                 self.assertIn("Record speech only", info["NSMicrophoneUsageDescription"])
                 self.assertEqual(info["CFBundleIconFile"], "AppIcon")
+                self.assertEqual(info["CFBundleDisplayName"], setup.hotkeys.APP_NAME)
+                self.assertEqual(info["CFBundleName"], setup.hotkeys.APP_NAME)
                 self.assertTrue((bundle / "Contents/Resources/AppIcon.icns").is_file())
                 self.assertTrue(info["LSUIElement"])
                 executable = bundle / "Contents/MacOS/WhisperDictation"

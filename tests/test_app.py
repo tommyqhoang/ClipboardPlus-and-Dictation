@@ -383,6 +383,19 @@ class WindowTests(ServiceCase):
                 found.append(str(widget.cget("text")))
         return found
 
+    def test_the_window_is_named_after_the_app(self):
+        self.assertEqual(self.root.title(), hotkeys.APP_NAME)
+        self.assertIn(hotkeys.APP_NAME, self.texts_in(self.window.root))
+
+    def texts_in(self, widget):
+        found, stack = [], [widget]
+        while stack:
+            current = stack.pop()
+            stack.extend(current.winfo_children())
+            if current.winfo_class() == "TLabel":
+                found.append(str(current.cget("text")))
+        return found
+
     def test_home_leads_with_the_shortcut_and_makes_recording_optional(self):
         self.window.home()
         texts = self.texts()

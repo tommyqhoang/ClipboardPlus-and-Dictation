@@ -18,6 +18,9 @@ from typing import Any
 import desktop
 import dictation as d
 
+# Shown wherever the app names itself. Identifiers, folders and the bundle id keep the
+# original "whisper-dictation" spelling so upgrades keep working.
+APP_NAME = "Whisper Dictation & Clipboard+"
 MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
 MAC_SYMBOLS = {"ctrl": "⌃", "alt": "⌥", "shift": "⇧", "cmd": "⌘"}
 # Carbon (macOS) modifier masks from Events.h.
@@ -139,16 +142,30 @@ class Shortcut:
         )
 
 
-# The same physical keys on every platform: Super (Win, ⌘) + Shift + D. Browsers
-# already use Ctrl+Alt+D-style combinations, so this avoids them.
-DEFAULT = Shortcut(("shift", "cmd"), "D")
-PRESETS = (
-    DEFAULT,
-    Shortcut(("alt",), "Space"),
-    Shortcut(("ctrl", "alt"), "Space"),
-    Shortcut(("ctrl", "shift"), "Space"),
-    Shortcut(("ctrl", "alt", "shift"), "D"),
-    Shortcut(("ctrl", "alt"), "D"),  # The earlier default, one click away after upgrading.
+def default_shortcut(platform: str) -> Shortcut:
+    """A shortcut no Chrome shortcut uses (checked against Chrome's published list).
+
+    Chrome takes Alt/Ctrl/Ctrl+Shift/⌘/⌘⇧ + D and has no Win/Super or ⌃⌥ combinations,
+    so Windows and Linux use Super+Shift+D and macOS, which has no Super key, uses ⌃⌥⇧D.
+    """
+    if platform == "macos":
+        return Shortcut(("ctrl", "alt", "shift"), "D")
+    return Shortcut(("shift", "cmd"), "D")
+
+
+DEFAULT = default_shortcut(desktop.platform_name())
+# Deduplicated: on macOS the default is also the Ctrl+Alt+Shift+D preset.
+PRESETS = tuple(
+    dict.fromkeys(
+        (
+            DEFAULT,
+            Shortcut(("alt",), "Space"),
+            Shortcut(("ctrl", "alt"), "Space"),
+            Shortcut(("ctrl", "shift"), "Space"),
+            Shortcut(("ctrl", "alt", "shift"), "D"),
+            Shortcut(("ctrl", "alt"), "D"),  # The earlier default, one click away.
+        )
+    )
 )
 
 
@@ -327,7 +344,7 @@ def set_login_item(
     else:
         d.atomic(
             path,
-            "[Desktop Entry]\nType=Application\nName=Whisper Dictation\n"
+            f"[Desktop Entry]\nType=Application\nName={APP_NAME}\n"
             f"Exec={shlex.join(command)}\nIcon=whisper-dictation\n"
             "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
         )
@@ -366,7 +383,7 @@ def gnome_shortcut(shortcut: Shortcut | None, command: Path, run: Any = subproce
         if GNOME_PATH not in current:
             entries = [] if current in ("@as []", "[]") else [current.strip("[]")]
             gsettings("set", *GNOME_LIST, "[" + ", ".join(entries + [repr(GNOME_PATH)]) + "]")
-        gsettings("set", schema, "name", "Whisper Dictation")
+        gsettings("set", schema, "name", APP_NAME)
         gsettings("set", schema, "command", shlex.quote(str(command)))
         gsettings("set", schema, "binding", shortcut.gnome() if shortcut else "")
     except (OSError, subprocess.SubprocessError):

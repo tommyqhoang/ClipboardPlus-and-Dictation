@@ -24,8 +24,19 @@ $ErrorActionPreference='Stop'
 [Console]::InputEncoding=[Text.UTF8Encoding]::new()
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new()
 $p=[Console]::In.ReadToEnd() | ConvertFrom-Json
-$path=Join-Path ([Environment]::GetFolderPath('Programs')) 'Whisper Dictation.lnk'
+$programs=[Environment]::GetFolderPath('Programs')
+$path=Join-Path $programs $p.name
 $shell=New-Object -ComObject WScript.Shell
+# Earlier names of this shortcut are removed, but only if they are ours.
+foreach ($old in $p.old_names) {
+    $oldPath=Join-Path $programs $old
+    if (Test-Path -LiteralPath $oldPath) {
+        $oldLink=$shell.CreateShortcut($oldPath)
+        if (($oldLink.Arguments -eq $p.arguments) -or ($p.legacy_arguments -contains $oldLink.Arguments)) {
+            Remove-Item -LiteralPath $oldPath
+        }
+    }
+}
 $link=$shell.CreateShortcut($path)
 if ((Test-Path -LiteralPath $path) -and ($link.Arguments -ne $p.arguments) -and ($p.legacy_arguments -notcontains $link.Arguments)) {
     throw 'An unrelated shortcut already uses this name.'
@@ -37,7 +48,7 @@ if ($p.remove) {
     $link.Arguments=$p.arguments
     $link.WorkingDirectory=$p.directory
     $link.Hotkey=''
-    $link.Description='Open Whisper Dictation'
+    $link.Description=$p.description
     if ($p.icon -and (Test-Path -LiteralPath $p.icon)) {$link.IconLocation=$p.icon}
     $link.Save()
 }
@@ -51,6 +62,9 @@ def windows_shortcut(module: Path, python: Path | None = None, remove: bool = Fa
         if not python.exists():
             python = Path(sys.executable)
     payload = {
+        "name": hotkeys.APP_NAME + ".lnk",
+        "description": "Open " + hotkeys.APP_NAME,
+        "old_names": ["Whisper Dictation.lnk"],
         "python": str(python),
         "arguments": subprocess.list2cmdline([str(module)]),
         # Earlier versions pointed the shortcut at these modules.
@@ -281,8 +295,8 @@ def install_app_launcher(prefix: Path) -> None:
             plistlib.dumps(
                 {
                     "CFBundleIdentifier": "org.whisperdictation.desktop",
-                    "CFBundleName": "Whisper Dictation",
-                    "CFBundleDisplayName": "Whisper Dictation",
+                    "CFBundleName": hotkeys.APP_NAME,
+                    "CFBundleDisplayName": hotkeys.APP_NAME,
                     "CFBundleExecutable": "WhisperDictation",
                     "CFBundlePackageType": "APPL",
                     "CFBundleIconFile": "AppIcon",
@@ -326,7 +340,7 @@ def install_app_launcher(prefix: Path) -> None:
 
         dictation.atomic(
             entry,
-            f"[Desktop Entry]\nType=Application\nName=Whisper Dictation\nComment=Speak, stop, and paste\nExec={quote(str(python))} {quote(str(prefix / 'lib/tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\n",
+            f"[Desktop Entry]\nType=Application\nName={hotkeys.APP_NAME}\nComment=Dictate anywhere and keep your clipboard history\nExec={quote(str(python))} {quote(str(prefix / 'lib/tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\n",
         )
 
 

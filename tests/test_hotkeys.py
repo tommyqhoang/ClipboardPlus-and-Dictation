@@ -31,7 +31,7 @@ class HotkeyTests(unittest.TestCase):
         self.preferences = hotkeys.Preferences(d.Paths())
 
     def test_same_shortcut_on_every_platform(self):
-        shortcut = hotkeys.DEFAULT
+        shortcut = hotkeys.default_shortcut("linux")
         self.assertEqual(shortcut.label("macos"), "⇧⌘D")
         self.assertEqual(shortcut.label("windows"), "Win+Shift+D")
         self.assertEqual(shortcut.label("linux"), "Super+Shift+D")
@@ -62,14 +62,14 @@ class HotkeyTests(unittest.TestCase):
 
     def test_captured_keys(self):
         flags = hotkeys.EVENT_FLAGS["shift"] | hotkeys.EVENT_FLAGS["cmd"]
-        self.assertEqual(hotkeys.from_mac_event(2, flags, "d"), hotkeys.DEFAULT)
+        self.assertEqual(hotkeys.from_mac_event(2, flags, "d"), hotkeys.default_shortcut("linux"))
         self.assertEqual(hotkeys.from_mac_event(49, flags, " ").key, "Space")
         # Every modifier survives, whatever order the event flags are read in.
         every = sum(hotkeys.EVENT_FLAGS.values())
         self.assertEqual(hotkeys.from_mac_event(2, every, "d").modifiers, hotkeys.MODIFIER_ORDER)
         self.assertEqual(hotkeys.from_mac_event(200, 0, "é").key, "É")
         self.assertIsNone(hotkeys.from_tk("Control_L", set()))
-        self.assertEqual(hotkeys.from_tk("d", {"cmd", "shift"}), hotkeys.DEFAULT)
+        self.assertEqual(hotkeys.from_tk("d", {"cmd", "shift"}), hotkeys.default_shortcut("linux"))
         self.assertEqual(hotkeys.from_tk("space", {"alt"}), hotkeys.PRESETS[1])
         self.assertEqual(hotkeys.from_tk("F9", set()).key, "F9")
 
@@ -168,6 +168,44 @@ class HotkeyTests(unittest.TestCase):
         """Put arbitrary text in the preferences file, as a hand edit or crash would."""
         self.preferences.path.parent.mkdir(parents=True, exist_ok=True)
         self.preferences.path.write_text(text)
+
+    def test_default_shortcut_avoids_chromes_and_differs_only_on_macos(self):
+        mac, linux, windows = (
+            hotkeys.default_shortcut(name) for name in ("macos", "linux", "windows")
+        )
+        self.assertEqual(mac.label("macos"), "⌃⌥⇧D")
+        self.assertEqual(linux.label("linux"), "Super+Shift+D")
+        self.assertEqual(windows.label("windows"), "Win+Shift+D")
+        self.assertEqual(linux, windows)
+        for shortcut in (mac, linux, windows):
+            self.assertEqual(shortcut.problem(), "")
+        # Chrome's published shortcuts using D, per platform ("cmd" is Command on a Mac
+        # and the Super/Windows key elsewhere).
+        chrome_mac = {(("cmd",), "D"), (("shift", "cmd"), "D")}
+        chrome_other = {(("alt",), "D"), (("ctrl",), "D"), (("ctrl", "shift"), "D")}
+        self.assertNotIn((mac.modifiers, mac.key), chrome_mac)
+        for shortcut in (linux, windows):
+            self.assertNotIn((shortcut.modifiers, shortcut.key), chrome_other)
+
+    def test_presets_start_with_the_default_and_keep_the_previous_default(self):
+        self.assertEqual(hotkeys.PRESETS[0], hotkeys.DEFAULT)
+        self.assertIn(hotkeys.Shortcut(("ctrl", "alt"), "D"), hotkeys.PRESETS)
+        self.assertEqual(len(set(hotkeys.PRESETS)), len(hotkeys.PRESETS))
+
+    def test_the_app_name_is_used_for_the_login_entry_and_gnome_binding(self):
+        self.assertEqual(hotkeys.APP_NAME, "Whisper Dictation & Clipboard+")
+        calls = []
+
+        def run(args, **_):
+            calls.append(args[1:])
+            return Mock(returncode=0, stdout="[]", stderr="")
+
+        with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
+            hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/bin/toggle"), run)
+        self.assertTrue(any(call[-2:] == ["name", hotkeys.APP_NAME] for call in calls))
+        hotkeys.set_login_item(True, ["/x/python", "/x/tray.py"], self.folder, "linux")
+        entry = (self.folder / ".config/autostart/whisper-dictation.desktop").read_text()
+        self.assertIn(f"Name={hotkeys.APP_NAME}\n", entry)
 
     def test_features_default_to_dictation_only_and_round_trip(self):
         self.assertEqual(self.preferences.features(), hotkeys.Features(True, False))
