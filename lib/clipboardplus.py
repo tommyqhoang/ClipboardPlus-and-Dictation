@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 
 API = "https://backend-production-74d4.up.railway.app"
 SITE = "https://clipboardplus.apercallc.com"
-ACCOUNT_URL = SITE + "/account.html"
+# Opens the account page on its "Create a key for Clipboard+ Desktop" card.
+ACCOUNT_URL = SITE + "/account.html#desktop"
 DASHBOARD_URL = SITE + "/dashboard.html"
 SOURCE = "Whisper Dictation & Clipboard+"
 KEY_PREFIX = "cp_live_"

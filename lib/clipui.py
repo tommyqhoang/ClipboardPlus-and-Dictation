@@ -587,8 +587,8 @@ class AccountCard:
             self._label("Not connected", "CardHeading.TLabel")
         if self.mode == "key":
             self._label(
-                "In your Clipboard+ account, open Developer API, generate a key with "
-                "clipboard read and write access, and paste it here.",
+                "Click Get a key: on your Clipboard+ Account page, choose "
+                "Create a key for Clipboard+ Desktop, then paste the key here.",
                 "CardHint.TLabel",
                 pady=(4, 4),
             )

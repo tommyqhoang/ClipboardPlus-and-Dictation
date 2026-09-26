@@ -9,7 +9,7 @@
 ## Two ways to use it
 
 - Local (default): free, no account, no sign-up. The history is saved only on this computer and works offline. Nothing is sent anywhere.
-- Synced (optional): connect a Clipboard+ account in Settings with email and password, or with an API key (for accounts created with Google: in the Clipboard+ account open Developer API and create a key with clipboard read and write access). Text and links then appear on every macOS, Windows and Linux computer signed in to the same account, in the Clipboard+ browser extension, and on the website. Images stay on the device they came from. Clearing history can clear everywhere at once. Disconnect any time.
+- Synced (optional): connect a Clipboard+ account in Settings with email and password, or with an API key (for accounts created with Google: on the Clipboard+ Account page, https://clipboardplus.apercallc.com/account.html#desktop, click Create a key for Clipboard+ Desktop). Text and links then appear on every macOS, Windows and Linux computer signed in to the same account, in the Clipboard+ browser extension, and on the website. Images stay on the device they came from. Clearing history can clear everywhere at once. Disconnect any time.
 
 ## Key facts
 
