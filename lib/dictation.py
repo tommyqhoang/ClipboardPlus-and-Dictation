@@ -64,6 +64,7 @@ class Paths:
     def __init__(self) -> None:
         config_root, cache_root, runtime_root = desktop.roots()
         self.config = config_root / "config.json"
+        self.clipboard = config_root / "clipboard"
         self.cache = private_dir(cache_root)
         self.runtime = private_dir(runtime_root)
         self.state = self.runtime / "state.json"
