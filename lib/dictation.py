@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -115,6 +116,7 @@ DEFAULTS: dict[str, Any] = {
     "voice_commands": True,
     "vad_model": "",
     "preview_notifications": False,
+    "overlay": True,
     "rewrite_endpoint": "",
     "rewrite_model": "",
     "rewrite_api_key_env": "DICTATION_REWRITE_API_KEY",
@@ -401,7 +403,11 @@ def record_transcript(paths: Paths, text: str) -> None:
     clipservice.record_transcript(paths, text)
 
 
-def finish(config: Config, paths: Paths) -> None:
+def finish(config: Config, paths: Paths, quiet: bool = False) -> str:
+    """Transcribe the retained audio: "copied", or "empty" when nothing was said.
+
+    `quiet`: the recording overlay shows the outcome, so no notification is sent.
+    """
     if not paths.audio.exists():
         raise DictationError("No retained audio. Start a new recording.")
     text = transcribe(config, paths.audio.read_bytes(), paths.cache)
@@ -412,15 +418,63 @@ def finish(config: Config, paths: Paths) -> None:
         (paths.cache / "concise.json").unlink(missing_ok=True)
         record_transcript(paths, text)
         copy_text(config, paths)
-        notify(
-            config,
-            "Transcript copied. Paste with "
-            + ("Command+V." if desktop.platform_name() == "macos" else "Ctrl+V."),
-        )
-    else:
+        if not quiet:
+            notify(
+                config,
+                "Transcript copied. Paste with "
+                + ("Command+V." if desktop.platform_name() == "macos" else "Ctrl+V."),
+            )
+    elif not quiet:
         notify(config, "No speech detected. Previous transcript and clipboard kept.")
     if not config.b("keep_audio"):
         paths.audio.unlink(missing_ok=True)
+    return "copied" if text else "empty"
+
+
+def overlay_python() -> str:
+    """A Python that can draw windows: the app's private environment when installed
+    (the shortcut may run a system Python without Tk), otherwise this one."""
+    prefix = Path(__file__).resolve().parents[1]
+    venv = prefix / "share/whisper-dictation/venv"
+    private = (
+        venv / "Scripts/pythonw.exe"
+        if desktop.platform_name() == "windows"
+        else venv / "bin/python"
+    )
+    return str(private) if private.is_file() else sys.executable
+
+
+def start_overlay(config: Config, token: str) -> subprocess.Popen[bytes] | None:
+    """Launch the floating recording pill for this session, when wanted and present."""
+    script = Path(__file__).resolve().with_name("overlay.py")
+    if not config.b("overlay") or not script.is_file():
+        return None
+    try:
+        return subprocess.Popen(
+            [overlay_python(), str(script), token],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            **desktop.process_options(),
+        )
+    except OSError:
+        return None
+
+
+def overlay_ready(overlay: subprocess.Popen[bytes] | None, timeout: float = 1.5) -> bool:
+    """Whether the pill came up (it says "ready"); without it, notifications are used."""
+    if overlay is None or overlay.stdout is None:
+        return False
+    stream = overlay.stdout
+    answer: list[bytes] = []
+    reader = threading.Thread(target=lambda: answer.append(stream.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout)
+    if not answer or answer[0].strip() != b"ready":
+        return False
+    stream.close()
+    return True
 
 
 def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
@@ -431,6 +485,8 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
     next_preview = started + config.n("live_interval")
     cancelled = False
     interrupted = False
+    overlay: subprocess.Popen[bytes] | None = None
+    shown = False  # The overlay is showing this session instead of notifications.
 
     def interrupt(signum: int, frame: Any) -> None:
         nonlocal interrupted
@@ -439,7 +495,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
 
-    def state(phase: str, message: str = "") -> None:
+    def state(phase: str, message: str = "", result: str = "") -> None:
         atomic(
             paths.state,
             json.dumps(
@@ -447,6 +503,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                     "phase": phase,
                     "token": token,
                     "message": message,
+                    "result": result,
                     "started_at": time.time() - (time.monotonic() - started),
                     "elapsed_seconds": round(time.monotonic() - started, 1),
                 }
@@ -485,13 +542,16 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                 close_fds=True,
                 **desktop.process_options(),
             )
+        overlay = start_overlay(config, token)  # Starts up while the microphone does.
         time.sleep(0.08)
         if recorder.poll() is not None:
             raise DictationError(
                 "Microphone could not start. Check --devices and your OS microphone permission."
             )
         state("recording")
-        notify(config, "Recording. Press your shortcut again to stop.")
+        shown = overlay_ready(overlay)
+        if not shown:
+            notify(config, "Recording. Press your shortcut again to stop.")
         while True:
             control = read_json(paths.control)
             if control.get("token") == token and control.get("action") in ("stop", "cancel"):
@@ -530,14 +590,16 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
         state("cancelling" if cancelled else "transcribing")
         # Do not overlap inference requests or release the session while a preview runs.
         executor.shutdown(wait=True)
+        shown = shown and overlay is not None and overlay.poll() is None
         if cancelled:
             paths.audio.unlink(missing_ok=True)
-            state("idle", "Recording cancelled.")
-            notify(config, "Recording cancelled.")
+            state("idle", "Recording cancelled.", result="cancelled")
+            if not shown:
+                notify(config, "Recording cancelled.")
         else:
-            notify(config, "Transcribing…")
-            finish(config, paths)
-            state("idle")
+            if not shown:
+                notify(config, "Transcribing…")
+            state("idle", result=finish(config, paths, quiet=shown))
     except (DictationError, OSError) as exc:
         message = (
             str(exc)

@@ -33,6 +33,7 @@ class DictationTests(unittest.TestCase):
                 "DICTATION_TEST_ROOT": str(self.root),
                 "DICTATION_AUDIO_BACKEND": "alsa",
                 "DICTATION_CLIPBOARD_BACKEND": "wayland",
+                "DICTATION_OVERLAY": "0",  # Notifications are what these tests read.
             }
         )
         for name, variable in (

@@ -112,6 +112,7 @@ MODULES = (
     "clipsync.py",
     "clipcontrol.py",
     "clipui.py",
+    "overlay.py",
 )
 # The menu bar (macOS, PyObjC) and tray (Windows/Linux, pystray) apps run from a
 # private environment so the system or Homebrew Python is never modified.
@@ -437,6 +438,7 @@ def uninstall(prefix: Path) -> None:
         "lib/clipsync.py",
         "lib/clipcontrol.py",
         "lib/clipui.py",
+        "lib/overlay.py",
         "lib/tray-recording.png",
         "lib/menubar-icon.png",
         "lib/menubar-recording.png",
