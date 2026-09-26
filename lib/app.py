@@ -22,7 +22,7 @@ import desktop
 import dictation as d
 import hotkeys
 import workflow
-from app_service import PROVIDERS, Remote, Service
+from app_service import PROVIDERS, MicrophoneTest, Remote, Service
 
 ICON = Path(__file__).with_name("whisper-dictation.png")
 MODES = (
@@ -124,6 +124,8 @@ class App:
             )
         self.language = tk.StringVar(value="English")
         self.device = tk.StringVar(value="default")
+        self.device_ids: dict[str, str] = {}  # Shown microphone name -> device id.
+        self.mic_test: MicrophoneTest | None = None  # A running Test.
         self.model = tk.StringVar(value="")
         self.model_source = tk.StringVar(value="download")
         self.provider = tk.StringVar(value=next(iter(PROVIDERS)))
@@ -1001,6 +1003,9 @@ class App:
         self.device_picker = ttk.Combobox(row, textvariable=self.device, values=("default",))
         self.device_picker.pack(side="left", fill="x", expand=True)
         self.button("Refresh", self.find_microphones, parent=row, side="right")
+        self.mic_button = self.button("Test", self.test_microphone, parent=row, side="right")
+        # A live level meter while testing (hidden otherwise).
+        self.meter = tk.Canvas(voice, height=10, background=SURFACE, highlightthickness=0)
         ai = self.card("Transcription AI", "What turns your voice into text.")
         self.choices: dict[str, tuple[ttk.Frame, ttk.Widget]] = {}
         for value, title, hint in (
@@ -1109,6 +1114,45 @@ class App:
         self.status.set("Looking for microphones…")
         self.background(self.service.microphones, self.show_microphones)
 
+    def test_microphone(self) -> None:
+        """Listen for three seconds with a live meter, then say how it sounded."""
+        if self.mic_test is not None:
+            return
+        device = self.device_ids.get(self.device.get(), self.device.get())
+        try:
+            self.mic_test = MicrophoneTest(self.service.paths, device)
+        except d.DictationError as exc:
+            self.status.set(str(exc))
+            return
+        self.mic_button.state(["disabled"])
+        self.meter.pack(fill="x", pady=(8, 0))
+        self.status.set("Say something…")
+        self.meter_tick()
+
+    def meter_tick(self) -> None:
+        test = self.mic_test
+        if test is None:
+            return
+        if not self.meter.winfo_exists():
+            test.stop()  # The page changed mid-test.
+            self.mic_test = None
+            return
+        width = max(1, self.meter.winfo_width())
+        self.meter.delete("all")
+        self.meter.create_rectangle(0, 2, width, 8, fill=BORDER, outline="")
+        filled = int(width * test.level)
+        color = ACCENT if test.level > 0.35 else WARNING if test.level > 0.1 else IDLE
+        self.meter.create_rectangle(0, 2, filled, 8, fill=color, outline="")
+        peak = int(width * test.peak)
+        self.meter.create_line(peak, 0, peak, 10, fill=TEXT)
+        if not test.done():
+            self.root.after(50, self.meter_tick)
+            return
+        test.stop()
+        self.mic_test = None
+        self.mic_button.state(["!disabled"])
+        self.status.set(test.verdict())
+
     def background(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
         """Run `work` off the UI thread; `poll` passes its result to `done`. Nothing locks."""
         self.lookups.append((self.helper.submit(work), done))
@@ -1116,15 +1160,21 @@ class App:
     def show_microphones(self, devices: list[str]) -> None:
         if self.page != "settings" or not self.device_picker.winfo_exists():
             return  # The user moved on while we were looking.
-        self.device_picker.configure(values=devices)
-        if self.device.get() not in devices:
-            self.device.set(devices[0])
+        names = getattr(self.service, "microphone_names", {})
+        # Friendly names in the list; `prepare` saves the device they stand for.
+        self.device_ids = {names.get(device, device): device for device in devices}
+        self.device_picker.configure(values=list(self.device_ids))
+        current = self.device_ids.get(self.device.get(), self.device.get())
+        if current not in devices:
+            # Never silently pick an arbitrary device: the system default is safest.
+            current = "default" if "default" in devices else devices[0]
+        self.device.set(names.get(current, current))
         found = f"{len(devices)} microphone{'s' if len(devices) != 1 else ''} found."
         self.status.set(f"{found} Pick the one you’ll speak into.")
 
     def prepare(self) -> None:
         language = "en" if self.language.get() == "English" else "auto"
-        device = self.device.get()
+        device = self.device_ids.get(self.device.get(), self.device.get())
         source = self.model_source.get()
         model = self.model.get() if source == "file" else ""
         if source == "file" and not model:

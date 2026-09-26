@@ -29,17 +29,17 @@ def pcm(amplitude: int, count: int = 800) -> bytes:
 
 class HelperTests(unittest.TestCase):
     def test_levels_follow_the_voice(self):
-        self.assertEqual(overlay.level(b""), 0.0)
-        self.assertEqual(overlay.level(pcm(0)), 0.0)
+        self.assertEqual(d.audio_level(b""), 0.0)
+        self.assertEqual(d.audio_level(pcm(0)), 0.0)
         quiet, speech, shout = (
-            overlay.level(pcm(30)),
-            overlay.level(pcm(3000)),
-            overlay.level(pcm(30000)),
+            d.audio_level(pcm(30)),
+            d.audio_level(pcm(3000)),
+            d.audio_level(pcm(30000)),
         )
         self.assertLess(quiet, 0.1)
         self.assertTrue(0.3 < speech < 1.0)
         self.assertEqual(shout, 1.0)
-        self.assertEqual(overlay.level(pcm(3000) + b"\x01"), speech)  # A torn last byte.
+        self.assertEqual(d.audio_level(pcm(3000) + b"\x01"), speech)  # A torn last byte.
 
     def test_the_primary_monitor_is_chosen(self):
         self.assertEqual(overlay.primary_monitor(XRANDR), (1080, 249, 2560, 1440))

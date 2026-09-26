@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import array
 import concurrent.futures
 import contextlib
 import http.client
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -264,6 +266,24 @@ def clean_text(text: str, commands: bool = True) -> str:
         text = re.sub(r"\s*\bnew paragraph\b[.,]?\s*", "\n\n", text, flags=re.I)
         text = re.sub(r"\s*\bnew line\b[.,]?\s*", "\n", text, flags=re.I)
     return text.strip()
+
+
+_QUIET_DB, _LOUD_DB = -55.0, -14.0
+
+
+def audio_level(pcm: bytes) -> float:
+    """Loudness of 16-bit little-endian PCM from 0 (silence) to 1 (speaking up)."""
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) // 2 * 2])
+    if not samples:
+        return 0.0
+    if sys.byteorder == "big":
+        samples.byteswap()
+    rms = math.sqrt(sum(s * s for s in samples) / len(samples))
+    if rms < 1:
+        return 0.0
+    decibels = 20 * math.log10(rms / 32768)
+    return min(1.0, max(0.0, (decibels - _QUIET_DB) / (_LOUD_DB - _QUIET_DB)))
 
 
 def wav_bytes(pcm: bytes) -> bytes:

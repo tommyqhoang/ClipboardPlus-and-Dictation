@@ -10,7 +10,6 @@ takes the keyboard focus, so the paste target stays where the user left it. It p
 
 from __future__ import annotations
 
-import array
 import math
 import re
 import shutil
@@ -34,7 +33,6 @@ BARS = 19
 FRAME_MS = 33  # About 30 frames a second.
 SAMPLE_RATE = 16_000  # The recorder writes raw 16-bit mono PCM at this rate.
 WINDOW_SAMPLES = 800  # 50 ms of audio per level reading.
-QUIET_DB, LOUD_DB = -55.0, -14.0
 HOLD = {"copied": 1.6, "empty": 2.2, "cancelled": 1.0, "error": 8.0}  # A click dismisses.
 LIFETIME_SECONDS = 1200.0  # A stuck session never leaves the pill up for good.
 
@@ -49,21 +47,6 @@ SUCCESS = "#34d399"
 DANGER = "#f87171"
 BUTTON = "#1f3240"
 BUTTON_HOVER = "#2c4556"
-
-
-def level(pcm: bytes) -> float:
-    """Loudness of 16-bit little-endian PCM from 0 (silence) to 1 (speaking up)."""
-    samples = array.array("h")
-    samples.frombytes(pcm[: len(pcm) // 2 * 2])
-    if not samples:
-        return 0.0
-    if sys.byteorder == "big":
-        samples.byteswap()
-    rms = math.sqrt(sum(s * s for s in samples) / len(samples))
-    if rms < 1:
-        return 0.0
-    decibels = 20 * math.log10(rms / 32768)
-    return min(1.0, max(0.0, (decibels - QUIET_DB) / (LOUD_DB - QUIET_DB)))
 
 
 def primary_monitor(listing: str) -> tuple[int, int, int, int] | None:
@@ -287,7 +270,7 @@ class Overlay:
             with self.paths.audio.open("rb") as audio:
                 size = audio.seek(0, 2)
                 audio.seek(max(0, size - WINDOW_SAMPLES * 2) // 2 * 2)
-                return level(audio.read(WINDOW_SAMPLES * 2))
+                return d.audio_level(audio.read(WINDOW_SAMPLES * 2))
         except OSError:
             return 0.0
 

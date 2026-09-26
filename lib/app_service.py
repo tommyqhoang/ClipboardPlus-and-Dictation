@@ -7,6 +7,7 @@ import re
 import socket
 import sqlite3
 import subprocess
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -28,6 +29,68 @@ PROVIDERS = {
     "Groq": ("https://api.groq.com/openai/v1/audio/transcriptions", "whisper-large-v3-turbo"),
     "Other (OpenAI-compatible)": ("", ""),
 }
+
+
+class MicrophoneTest:
+    """Listen to one microphone for a few seconds to show a level meter. Nothing is kept."""
+
+    CHUNK = 1600  # 50 ms of 16 kHz 16-bit mono audio.
+
+    def __init__(self, paths: d.Paths, device: str, seconds: float = 3.0) -> None:
+        if d.busy(paths):
+            raise d.DictationError("Finish the current dictation first.")
+        values = dict(d.Config(paths).values, device=device, max_seconds=int(seconds) + 2)
+        stdin = subprocess.DEVNULL if desktop.audio_backend(values) == "alsa" else subprocess.PIPE
+        try:
+            self.process = subprocess.Popen(
+                desktop.recorder_command(values),
+                stdin=stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                **desktop.process_options(),
+            )
+        except OSError as exc:
+            raise d.DictationError("That microphone could not be opened.") from exc
+        self.deadline = time.monotonic() + seconds
+        self.level = 0.0  # The latest reading, 0 to 1.
+        self.peak = 0.0
+        self.heard = 0  # Readings with a voice in them.
+        self.readings = 0
+        threading.Thread(target=self._listen, daemon=True).start()
+
+    def _listen(self) -> None:
+        stream = self.process.stdout
+        while stream is not None:
+            chunk = stream.read(self.CHUNK)
+            if not chunk:
+                return
+            self.level = d.audio_level(chunk)
+            self.peak = max(self.peak, self.level)
+            self.readings += 1
+            self.heard += self.level > 0.35
+
+    def done(self) -> bool:
+        return time.monotonic() >= self.deadline or self.process.poll() is not None
+
+    def stop(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+
+    def verdict(self) -> str:
+        if not self.readings:
+            return "No sound came from that microphone. Pick another one, or check it is on."
+        if self.peak < 0.15:
+            return "That microphone is silent or very quiet. Try another one, or raise its level."
+        if not self.heard:
+            return "Heard you, but faintly. Move closer or raise the microphone level."
+        return "Sounds good. This microphone is ready."
 
 
 @dataclass(frozen=True)
@@ -211,6 +274,8 @@ class Service:
         )
 
     def microphones(self) -> list[str]:
+        """The microphones to offer (device ids; `microphone_names` has friendly names)."""
+        self.microphone_names: dict[str, str] = {}
         config = d.Config(self.paths)
         result = subprocess.run(
             desktop.recorder_command(config.values, listing=True),
@@ -226,9 +291,7 @@ class Service:
                 "Microphone discovery failed. Check audio permissions and your PipeWire/ALSA setup, then try again."
             )
         if backend == "alsa":
-            devices = [
-                line.strip() for line in output.splitlines() if line and not line[0].isspace()
-            ]
+            devices = self._alsa_microphones(output)
         elif backend == "dshow":
             devices = re.findall(r'"([^"\n]+)"\s+\(audio\)', output)
         else:
@@ -239,6 +302,32 @@ class Service:
                 "No microphones found. Connect a microphone and allow microphone access in system privacy settings, then try again."
             )
         return list(dict.fromkeys(devices))
+
+    def _alsa_microphones(self, listing: str) -> list[str]:
+        """The inputs worth offering from `arecord -L`, the system default first.
+
+        Outputs, mixers and raw variants (null, dmix, surround, hw…) are left out; each
+        sound card is offered once, by the name its description gives it.
+        """
+        entries: list[tuple[str, str]] = []
+        for line in listing.splitlines():
+            if line and not line[0].isspace():
+                entries.append((line.strip(), ""))
+            elif entries and not entries[-1][1] and line.strip():
+                entries[-1] = (entries[-1][0], line.strip())
+        names = {"default": "System default (recommended)"}
+        devices = ["default"] if any(device == "default" for device, _ in entries) else []
+        for device, description in entries:
+            if device in ("pipewire", "pulse"):
+                names[device] = "PipeWire" if device == "pipewire" else "PulseAudio"
+                devices.append(device)
+            elif device.startswith("plughw:"):
+                names[device] = description or device
+                devices.append(device)
+        if not devices:  # An unusual listing: offer it as it is rather than nothing.
+            devices = [device for device, _ in entries if device != "null"]
+        self.microphone_names = names
+        return devices
 
     def prepare(
         self,

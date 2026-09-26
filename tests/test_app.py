@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import array
 import gc
+import io
 import os
 import sys
 import tempfile
@@ -106,8 +108,11 @@ class ServiceTests(ServiceCase):
     def test_microphone_parsing_without_capturing(self):
         samples = {
             "alsa": (
-                "default\n    Default device\nhw:CARD=USB\n  USB Mic\n",
-                ["default", "hw:CARD=USB"],
+                "null\n    Discard all samples\ndefault\n    Default device\n"
+                "hw:CARD=USB,DEV=0\n    USB Mic, USB Audio\n    Direct hardware device\n"
+                "plughw:CARD=USB,DEV=0\n    USB Mic, USB Audio\n    With conversions\n"
+                "dsnoop:CARD=USB,DEV=0\n    USB Mic, USB Audio\n",
+                ["default", "plughw:CARD=USB,DEV=0"],
             ),
             "dshow": (
                 '[dshow] "Webcam" (video)\n[dshow] "USB Mic" (audio)\n[dshow] "USB Mic" (audio)',
@@ -142,6 +147,49 @@ class ServiceTests(ServiceCase):
         ):
             with self.assertRaisesRegex(d.DictationError, "Microphone"):
                 self.service.microphones()
+
+    def test_microphones_have_friendly_names(self):
+        listing = (
+            b"default\n    Default\nplughw:CARD=C920,DEV=0\n    HD Pro Webcam C920, USB Audio\n"
+        )
+        with (
+            patch.object(desktop, "audio_backend", return_value="alsa"),
+            patch.object(
+                app_service.subprocess,
+                "run",
+                return_value=Mock(stdout=listing, stderr=b"", returncode=0),
+            ),
+        ):
+            self.service.microphones()
+        self.assertEqual(
+            self.service.microphone_names["plughw:CARD=C920,DEV=0"], "HD Pro Webcam C920, USB Audio"
+        )
+        self.assertIn("recommended", self.service.microphone_names["default"])
+
+    def test_a_microphone_test_reports_what_it_heard(self):
+        def fake(pcm):
+            process = Mock(stdout=io.BytesIO(pcm))
+            process.poll.return_value = None
+            return process
+
+        speech = array.array("h", [6000, -6000] * 8000).tobytes()
+        for pcm, expected in (
+            (speech, "Sounds good"),
+            (b"\0\0" * 16000, "silent or very quiet"),
+            (b"", "No sound came"),
+        ):
+            with self.subTest(expected=expected):
+                with patch.object(app_service.subprocess, "Popen", return_value=fake(pcm)):
+                    test = app_service.MicrophoneTest(self.paths, "default", seconds=0.2)
+                    while not test.done():
+                        time.sleep(0.02)
+                    test.stop()
+                self.assertIn(expected, test.verdict())
+        with (
+            patch.object(d, "busy", return_value=True),
+            self.assertRaisesRegex(d.DictationError, "Finish"),
+        ):
+            app_service.MicrophoneTest(self.paths, "default")
 
     def test_actions_route_to_existing_engine(self):
         with patch.object(d, "copy_text") as copy, patch.object(d, "dispatch") as dispatch:
@@ -411,6 +459,45 @@ class WindowTests(ServiceCase):
             self.assertEqual(self.window.page, "home")
             self.assertTrue(d.read_json(self.service.marker)["complete"])
             record.assert_not_called()
+
+    def test_settings_shows_friendly_microphones_and_saves_the_device(self):
+        def found():
+            self.service.microphone_names = {"default": "System default", "plughw:X": "USB Mic"}
+            return ["default", "plughw:X"]
+
+        with patch.object(self.service, "microphones", side_effect=found):
+            self.window.settings()
+            self.root.update_idletasks()
+            self.settle()
+        self.assertEqual(self.window.device.get(), "System default")  # Not the first found.
+        self.assertEqual(
+            list(self.window.device_picker.cget("values")), ["System default", "USB Mic"]
+        )
+        self.window.device.set("USB Mic")
+        with patch.object(self.service, "prepare") as prepare:
+            self.window.prepare()
+            self.finish()
+        self.assertEqual(prepare.call_args.args[1], "plughw:X")
+
+    def test_testing_the_microphone_shows_a_meter_then_a_verdict(self):
+        with patch.object(self.service, "microphones", return_value=["default"]):
+            self.window.settings()
+            self.settle()
+        test = Mock(level=0.6, peak=0.7)
+        test.done.return_value = False
+        test.verdict.return_value = "Sounds good. This microphone is ready."
+        with patch.object(self.gui, "MicrophoneTest", return_value=test) as start:
+            self.window.test_microphone()
+        start.assert_called_once_with(self.paths, "default")
+        self.assertTrue(self.window.meter.winfo_manager())
+        self.assertEqual(self.window.status.get(), "Say something…")
+        test.done.return_value = True
+        self.window.meter_tick()
+        test.stop.assert_called_once()
+        self.assertEqual(self.window.status.get(), "Sounds good. This microphone is ready.")
+        with patch.object(self.gui, "MicrophoneTest", side_effect=d.DictationError("Busy")):
+            self.window.test_microphone()
+        self.assertEqual(self.window.status.get(), "Busy")
 
     def test_settings_discovers_microphones_and_reports_download(self):
         with patch.object(self.service, "microphones", return_value=["Built-in", "USB Mic"]):
