@@ -223,11 +223,11 @@ class PageTests(PageCase):
         self.store.add_text("drop", now=2.0)
         self.store.set_favorite(keep.id, True)
         self.page.reload()
-        with patch.object(self.gui.messagebox, "askyesno", return_value=False) as ask:
+        with patch.object(self.page, "ask_clear", return_value=None) as ask:
             self.page.clear()
-        ask.assert_called_once()
+        ask.assert_called_once_with(False)
         self.assertEqual(self.store.count(), 2)
-        with patch.object(self.gui.messagebox, "askyesno", return_value=True):
+        with patch.object(self.page, "ask_clear", return_value=(False, True)):
             self.page.clear()
         self.assertEqual([i.text for i in self.store.list()], ["keep"])
 

@@ -91,15 +91,13 @@ def linked(config_dir: Path) -> bool:
     return bool(read_key(config_dir))
 
 
-def save_key(config_dir: Path, value: str) -> None:
-    key = clean_key(value)
-    config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = key_path(config_dir)
+def _write_private(directory: Path, path: Path, text: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     # A fresh, owner-only file (mkstemp uses O_EXCL), then an atomic rename.
-    descriptor, temporary = tempfile.mkstemp(dir=config_dir, prefix=".clipboard-plus-")
+    descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".clipboard-plus-")
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(key)
+            stream.write(text)
         os.replace(temporary, path)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
@@ -108,8 +106,46 @@ def save_key(config_dir: Path, value: str) -> None:
         path.chmod(0o600)
 
 
+def save_key(config_dir: Path, value: str) -> None:
+    _write_private(config_dir, key_path(config_dir), clean_key(value))
+
+
 def remove_key(config_dir: Path) -> None:
     key_path(config_dir).unlink(missing_ok=True)
+    email_path(config_dir).unlink(missing_ok=True)
+
+
+# The address of the account the key belongs to: shown as "Connected as …". It is
+# not a secret, but it is kept as privately as the key.
+_EMAIL = re.compile(r"[^\s@\x00-\x1f]+@[^\s@\x00-\x1f]+\.[^\s@\x00-\x1f]+")
+
+
+def email_path(config_dir: Path) -> Path:
+    return config_dir / "clipboard-plus-account"
+
+
+def _clean_email(value: str) -> str:
+    email = value.strip()
+    if len(email) > 254 or not _EMAIL.fullmatch(email):
+        raise ValueError("Not an email address.")
+    return email
+
+
+def read_email(config_dir: Path) -> str:
+    try:
+        return _clean_email(email_path(config_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+
+
+def save_email(config_dir: Path, value: str) -> None:
+    """Remember the account's address; an unusable one is not kept."""
+    try:
+        email = _clean_email(value)
+    except ValueError:
+        email_path(config_dir).unlink(missing_ok=True)
+        return
+    _write_private(config_dir, email_path(config_dir), email)
 
 
 def _send(
@@ -188,20 +224,6 @@ def verify(key: str, api: str = API) -> str:
     if can_read:
         return "read-only"
     return "write-only" if can_write else "no-access"
-
-
-def send(config_dir: Path, text: str, api: str = API) -> str:
-    """sent, off (not linked or nothing to send), rejected (key refused) or failed."""
-    key = read_key(config_dir)
-    if not key or not text.strip():
-        return "off"
-    if len(text.encode("utf-8")) > MAX_BYTES:
-        return "failed"
-    body = {"type": "text", "content": text, "source": SOURCE}
-    status = request(key, "POST", "/api/clipboard", body, api)
-    if status is not None and 200 <= status < 300:
-        return "sent"
-    return "rejected" if status in (401, 403) else "failed"
 
 
 # -- account ---------------------------------------------------------------

@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import app_service
+import clipstore
 import desktop
 import dictation as d
 import hotkeys
@@ -158,11 +159,19 @@ class ModeServiceTests(ServiceCase):
 
 class ClipboardPlusServiceTests(ServiceCase):
     KEY = "cp_live_" + "a1b2c3d4" * 6
+    PASSWORD = "correct horse battery staple"
+    TOKEN = "eyJ.session.token"
+
+    @property
+    def config_dir(self):
+        return self.paths.config.parent
 
     def test_connect_saves_the_key_only_after_the_service_accepts_it(self):
         self.assertFalse(self.service.clipboard_plus_linked())
         for result, message in (
-            ("read-only", "write access"),
+            ("read-only", "read and write access"),
+            ("write-only", "can’t read"),
+            ("no-access", "no clipboard access"),
             ("invalid", "didn’t accept"),
             ("offline", "internet"),
             ("error", "trouble"),
@@ -178,6 +187,141 @@ class ClipboardPlusServiceTests(ServiceCase):
         self.assertTrue(self.service.clipboard_plus_linked())
         self.service.disconnect_clipboard_plus()
         self.assertFalse(self.service.clipboard_plus_linked())
+
+    def sign_in(self, create, **outcome):
+        cp = app_service.clipboardplus
+        with (
+            patch.object(cp, "register", return_value=self.TOKEN) as register,
+            patch.object(cp, "login", return_value=self.TOKEN) as login,
+            patch.object(cp, "create_key", return_value=self.KEY, **outcome) as make_key,
+        ):
+            self.service.sign_in_clipboard_plus(" Me@Example.com ", self.PASSWORD, create=create)
+        return register, login, make_key
+
+    def test_signing_in_makes_a_scoped_key_and_keeps_neither_password_nor_token(self):
+        register, login, make_key = self.sign_in(create=False)
+        login.assert_called_once_with("Me@Example.com", self.PASSWORD)
+        register.assert_not_called()
+        self.assertEqual(make_key.call_args.args[0], self.TOKEN)
+        self.assertIn(hotkeys.APP_NAME, make_key.call_args.args[1])
+        self.assertTrue(self.service.clipboard_plus_linked())
+        self.assertEqual(self.service.clipboard_plus_email(), "Me@Example.com")
+        for path in self.config_dir.rglob("*"):
+            if path.is_file():
+                text = path.read_text(errors="ignore")
+                self.assertNotIn(self.PASSWORD, text)
+                self.assertNotIn(self.TOKEN, text)
+
+    def test_creating_an_account_registers_first(self):
+        register, login, _ = self.sign_in(create=True)
+        register.assert_called_once_with("Me@Example.com", self.PASSWORD)
+        login.assert_not_called()
+        self.assertTrue(self.service.clipboard_plus_linked())
+
+    def test_a_refused_sign_in_shows_the_message_and_links_nothing(self):
+        cp = app_service.clipboardplus
+        with patch.object(cp, "login", side_effect=cp.AuthError("Wrong email or password.")):
+            with self.assertRaisesRegex(d.DictationError, "Wrong email or password"):
+                self.service.sign_in_clipboard_plus("a@b.co", self.PASSWORD, create=False)
+        self.assertFalse(self.service.clipboard_plus_linked())
+        # A key that cannot be made after signing in leaves nothing behind either.
+        with (
+            patch.object(cp, "login", return_value=self.TOKEN),
+            patch.object(cp, "create_key", side_effect=cp.AuthError("You already have 10 keys.")),
+        ):
+            with self.assertRaisesRegex(d.DictationError, "10 keys"):
+                self.service.sign_in_clipboard_plus("a@b.co", self.PASSWORD, create=False)
+        self.assertFalse(self.service.clipboard_plus_linked())
+        self.assertEqual(self.service.clipboard_plus_email(), "")
+
+    def test_email_and_password_are_required(self):
+        for email, password in (("", "x"), ("a@b.co", ""), ("   ", "   ")):
+            with self.subTest(email=email):
+                with self.assertRaisesRegex(d.DictationError, "email and password"):
+                    self.service.sign_in_clipboard_plus(email, password, create=False)
+
+    def test_a_pasted_key_has_no_email(self):
+        with patch.object(app_service.clipboardplus, "verify", return_value="ok"):
+            self.service.connect_clipboard_plus(self.KEY)
+        self.assertEqual(self.service.clipboard_plus_email(), "")
+
+    def state(self, status=None):
+        import clipservice
+
+        if status is not None:
+            clipservice.write_status(self.paths, "capturing", 3, "", sync=status, synced=1234.0)
+        return self.service.clipboard_plus_state()
+
+    def test_the_account_state_follows_the_key_and_the_services_report(self):
+        self.assertEqual(self.state().kind, "disconnected")
+        with patch.object(app_service.clipboardplus, "verify", return_value="ok"):
+            self.service.connect_clipboard_plus(self.KEY)
+        self.assertEqual(self.state().kind, "connected")  # The service has not reported yet.
+        self.assertEqual(self.state("ok").kind, "connected")
+        self.assertEqual(self.state("ok").synced, 1234.0)
+        self.assertEqual(self.state("syncing").sync, "syncing")
+        self.assertEqual(self.state("offline").kind, "connected")
+        self.assertEqual(self.state("auth").kind, "reconnect")
+        self.service.disconnect_clipboard_plus()
+        self.assertEqual(self.state().kind, "disconnected")
+
+    def test_sync_now_leaves_a_request_for_the_service(self):
+        self.service.sync_clipboard_now()
+        self.assertTrue((self.paths.runtime / "clip-sync-now").exists())
+
+    def linked_history(self):
+        with patch.object(app_service.clipboardplus, "verify", return_value="ok"):
+            self.service.connect_clipboard_plus(self.KEY)
+        store = clipstore.Store(self.paths.clipboard)
+        self.addCleanup(store.close)
+        item = store.add_text("kept", now=1.0)
+        store.mark_pushed(item.id, "text|k|kept")
+        store.link(item.id, "cloud-1", False)
+        store.meta_set("sync_cursor", "5.0")
+        return store, item
+
+    def test_disconnecting_can_keep_the_history_and_forgets_the_account(self):
+        store, item = self.linked_history()
+        self.service.disconnect_clipboard_plus(keep_history=True)
+        kept = store.get(item.id)
+        self.assertEqual(
+            (kept.text, kept.cloud_id, kept.cloud_key, kept.dirty), ("kept", "", "", True)
+        )
+        self.assertEqual(store.meta_get("sync_cursor"), "")
+        self.assertFalse(self.service.clipboard_plus_linked())
+
+    def test_disconnecting_can_also_delete_the_history_here_but_never_the_account_copy(self):
+        store, _ = self.linked_history()
+        self.service.disconnect_clipboard_plus(keep_history=False)
+        self.assertEqual((store.count(), store.tombstones()), (0, []))
+
+    def test_disconnecting_never_creates_the_history_folder(self):
+        self.service.disconnect_clipboard_plus()
+        self.assertFalse(self.paths.clipboard.exists())
+
+    def test_clearing_this_device_never_reaches_the_account(self):
+        store, item = self.linked_history()
+        count = self.service.clear_clipboard(store, everywhere=False, keep_favorites=True)
+        self.assertEqual((count, store.count(), store.tombstones()), (1, 0, []))
+        self.assertEqual(store.meta_get("clear_pending"), "")
+
+    def test_clearing_everywhere_asks_the_account_to_clear_too(self):
+        for keep, expected in ((True, "keep"), (False, "all")):
+            with self.subTest(keep=keep):
+                store, _ = self.linked_history()
+                self.service.clear_clipboard(store, everywhere=True, keep_favorites=keep)
+                self.assertEqual(store.meta_get("clear_pending"), expected)
+                self.assertTrue((self.paths.runtime / "clip-sync-now").exists())
+                (self.paths.runtime / "clip-sync-now").unlink()
+                store.meta_set("clear_pending", "")
+                store.wipe()
+
+    def test_clearing_everywhere_without_an_account_is_just_a_local_clear(self):
+        store = clipstore.Store(self.paths.clipboard)
+        self.addCleanup(store.close)
+        store.add_text("x", now=1.0)
+        self.service.clear_clipboard(store, everywhere=True, keep_favorites=True)
+        self.assertEqual(store.meta_get("clear_pending"), "")
 
 
 class WindowTests(ServiceCase):
@@ -356,7 +500,7 @@ class WindowTests(ServiceCase):
         self.assertEqual(self.window.provider.get(), "Other (OpenAI-compatible)")
         self.assertEqual(self.window.endpoint.get(), "https://custom.example/v1")
 
-    def test_tutorial_recommends_clipboard_plus(self):
+    def test_the_dictation_tutorial_shows_the_shortcut_for_each_platform(self):
         with patch.object(desktop, "platform_name", return_value="windows"):
             self.window.tutorial()
             texts = self.texts()
@@ -364,12 +508,6 @@ class WindowTests(ServiceCase):
             any(f"Press {hotkeys.DEFAULT.label('windows')} in any app" in text for text in texts)
         )
         self.assertTrue(any("system tray" in text for text in texts))
-        button = next(
-            widget for widget in self.window.buttons if widget.cget("text") == "Get Clipboard+"
-        )
-        with patch("webbrowser.open") as browser:
-            button.invoke()
-        browser.assert_called_once_with("https://clipboardplus.apercallc.com")
         with patch.object(desktop, "platform_name", return_value="linux"):
             self.window.tutorial()
             self.assertTrue(any("dictate-toggle" in text for text in self.texts()))
@@ -404,33 +542,6 @@ class WindowTests(ServiceCase):
         self.assertTrue(any("don’t need this window" in text for text in texts))
         self.assertTrue(any("Optional" in text for text in texts))
         self.assertNotIn("What’s on your mind?", texts)
-
-    def test_clipboard_plus_card_connects_and_disconnects(self):
-        key = ClipboardPlusServiceTests.KEY
-        self.window.tutorial()
-        self.assertTrue(any("Clipboard+" in text for text in self.texts()))
-        self.assertFalse(any(text.startswith("Connected") for text in self.texts()))
-        self.window.clip_key.set(key)
-        with patch.object(self.gui.clipboardplus, "verify", return_value="ok"):
-            self.window.connect_clipboard_plus()
-            self.finish()
-        self.assertTrue(self.service.clipboard_plus_linked())
-        self.assertEqual(self.window.clip_key.get(), "")  # The key is not left on screen.
-        self.assertTrue(any(text.startswith("Connected") for text in self.texts()))
-        self.window.disconnect_clipboard_plus()
-        self.finish()
-        self.assertFalse(self.service.clipboard_plus_linked())
-        self.assertFalse(any(text.startswith("Connected") for text in self.texts()))
-
-    def test_clipboard_plus_rejected_key_reports_and_stays_unlinked(self):
-        self.window.tutorial()
-        self.window.clip_key.set(ClipboardPlusServiceTests.KEY)
-        with patch.object(self.gui.clipboardplus, "verify", return_value="invalid"):
-            self.window.connect_clipboard_plus()
-            self.window.pending.exception(timeout=5)
-            self.tick()
-        self.assertIn("didn’t accept", self.window.status.get())
-        self.assertFalse(self.service.clipboard_plus_linked())
 
     def test_shortcut_window_captures_keys(self):
         self.window.shortcut_page()

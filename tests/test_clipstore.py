@@ -171,6 +171,41 @@ class QueryTests(StoreCase):
         self.store.set_favorite(item.id, False)
         self.assertFalse(self.store.get(item.id).favorite)
 
+    def test_clearing_only_this_device_leaves_no_tombstones(self):
+        keep = self.store.add_text("star", now=1.0)
+        gone = self.store.add_text("gone", now=2.0)
+        self.store.set_favorite(keep.id, True)
+        for item in (keep, gone):
+            self.store.link(item.id, f"cloud-{item.id}", False)
+        self.assertEqual(self.store.clear(keep_favorites=True, tombstones=False), 1)
+        self.assertEqual(self.store.tombstones(), [])
+        self.assertEqual([i.text for i in self.store.list()], ["star"])
+        self.store.clear(keep_favorites=False, tombstones=False)
+        self.assertEqual((self.store.count(), self.store.tombstones()), (0, []))
+
+    def test_forgetting_the_account_makes_every_item_new_again(self):
+        first = self.store.add_text("one", now=1.0)
+        second = self.store.add_text("two", now=2.0)
+        self.store.add_image(make_png(), now=3.0)
+        self.store.set_favorite(first.id, True)
+        self.store.mark_pushed(first.id, "text|a|one", cloud_favorite=True)
+        self.store.link(first.id, "cloud-1", True)
+        self.store.mark_pushed(second.id, "text|b|two")
+        self.store.set_skip(second.id)
+        self.store.delete(self.store.add_text("three", now=4.0).id)
+        self.store.meta_set("sync_cursor", "123.0")
+        self.store.meta_set("clear_pending", "keep")
+        self.store.reset_sync()
+        for item in self.store.list():
+            self.assertEqual((item.cloud_id, item.cloud_key, item.cloud_favorite), ("", "", False))
+            self.assertFalse(item.sync_skip)
+        self.assertEqual(sorted(i.text for i in self.store.dirty()), ["one", "two"])
+        self.assertTrue(self.store.get(first.id).favorite)  # Local choices stay.
+        self.assertEqual(self.store.tombstones(), [])
+        self.assertEqual(
+            (self.store.meta_get("sync_cursor"), self.store.meta_get("clear_pending")), ("", "")
+        )
+
     def test_missing_item_operations_are_harmless(self):
         self.assertIsNone(self.store.get(999))
         self.store.set_favorite(999, True)

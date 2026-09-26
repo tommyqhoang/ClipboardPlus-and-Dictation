@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import subprocess
 import urllib.parse
 from collections.abc import Callable
@@ -11,7 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import clipboardplus
+import clipservice
 import clipstore
+import clipsync
 import desktop
 import dictation as d
 import hotkeys
@@ -30,6 +33,29 @@ class Remote:
     endpoint: str
     model: str
     key: str
+
+
+@dataclass(frozen=True)
+class Account:
+    """What the account card shows."""
+
+    kind: str  # disconnected, connected or reconnect (the account refused the key)
+    email: str = ""
+    sync: str = "off"  # off, syncing, ok, offline, error or auth: the service's report
+    synced: float = 0.0  # When the account last synced fine (epoch seconds; 0: never)
+
+
+_KEY_PROBLEMS = {
+    "read-only": "That key can’t save to Clipboard+. Generate one with clipboard read and "
+    "write access.",
+    "write-only": "That key can’t read your Clipboard+ history. Generate one with clipboard "
+    "read and write access.",
+    "no-access": "That key has no clipboard access. Generate one with clipboard read and "
+    "write access.",
+    "invalid": "Clipboard+ didn’t accept that key. Copy a fresh key from your account and "
+    "try again.",
+    "offline": "Couldn’t reach Clipboard+. Check your internet connection and try again.",
+}
 
 
 class Service:
@@ -57,34 +83,90 @@ class Service:
     def clipboard_plus_linked(self) -> bool:
         return clipboardplus.linked(self.paths.config.parent)
 
+    def clipboard_plus_email(self) -> str:
+        return clipboardplus.read_email(self.paths.config.parent)
+
+    def clipboard_plus_state(self) -> Account:
+        if not self.clipboard_plus_linked():
+            return Account("disconnected")
+        report = clipservice.read_status(self.paths)
+        sync = str(report.get("sync", "off"))
+        return Account(
+            "reconnect" if sync == "auth" else "connected",
+            self.clipboard_plus_email(),
+            sync,
+            float(report.get("synced") or 0.0),
+        )
+
+    def _link_clipboard_plus(self, key: str, email: str) -> None:
+        try:
+            d.private_dir(self.paths.config.parent)
+            clipboardplus.save_key(self.paths.config.parent, key)
+            clipboardplus.save_email(self.paths.config.parent, email)
+        except OSError as exc:
+            raise d.DictationError(
+                "Couldn’t save the Clipboard+ key. Check that your settings folder is writable."
+            ) from exc
+        self.sync_clipboard_now()
+
+    def sign_in_clipboard_plus(self, email: str, password: str, *, create: bool) -> None:
+        """Create an account or sign in, then keep only a clipboard read/write key.
+
+        The password and the session token are used for these requests and dropped.
+        """
+        email = email.strip()
+        if not email or not password.strip():
+            raise d.DictationError("Enter your email and password.")
+        name = f"{hotkeys.APP_NAME} on {socket.gethostname()}"[:80]
+        try:
+            token = (clipboardplus.register if create else clipboardplus.login)(email, password)
+            key = clipboardplus.create_key(token, name)
+        except clipboardplus.AuthError as exc:
+            raise d.DictationError(str(exc)) from None
+        self._link_clipboard_plus(key, email)
+
     def connect_clipboard_plus(self, key: str) -> None:
-        """Link a Clipboard+ account. The key is saved only once the service accepts it."""
+        """Link a Clipboard+ account by key. It is saved only once the service accepts it."""
         try:
             cleaned = clipboardplus.clean_key(key)
         except ValueError as exc:
             raise d.DictationError(str(exc)) from exc
         result = clipboardplus.verify(cleaned)
-        if result == "offline":
-            raise d.DictationError(
-                "Couldn’t reach Clipboard+. Check your internet connection and try again."
-            )
-        if result == "read-only":
-            raise d.DictationError(
-                "That key can’t save to Clipboard+. Generate one with clipboard write access."
-            )
-        if result == "invalid":
-            raise d.DictationError(
-                "Clipboard+ didn’t accept that key. Copy a fresh key from your account and try again."
-            )
+        if result in _KEY_PROBLEMS:
+            raise d.DictationError(_KEY_PROBLEMS[result])
         if result != "ok":
             raise d.DictationError("Clipboard+ is having trouble right now. Try again shortly.")
+        self._link_clipboard_plus(cleaned, "")
+
+    def sync_clipboard_now(self) -> None:
+        """Ask the clipboard service to sync at once."""
+        d.private_dir(self.paths.runtime)
+        d.atomic(self.paths.runtime / clipservice.SYNC_NOW, "1")
+
+    def disconnect_clipboard_plus(self, keep_history: bool = True) -> None:
+        """Forget the account. The history here is kept or deleted; the account is untouched."""
+        clipboardplus.remove_key(self.paths.config.parent)
+        (self.paths.runtime / clipservice.SYNC_NOW).unlink(missing_ok=True)
+        if not self.paths.clipboard.exists():
+            return
+        store = clipstore.Store(self.paths.clipboard)
         try:
-            d.private_dir(self.paths.config.parent)
-            clipboardplus.save_key(self.paths.config.parent, cleaned)
-        except OSError as exc:
-            raise d.DictationError(
-                "Couldn’t save the Clipboard+ key. Check that your settings folder is writable."
-            ) from exc
+            store.reset_sync()  # Whatever account comes next starts from scratch.
+            if not keep_history:
+                store.wipe()
+        finally:
+            store.close()
+
+    def clear_clipboard(
+        self, store: clipstore.Store, *, everywhere: bool, keep_favorites: bool
+    ) -> int:
+        """Clear the history on this device, and in the account too when asked."""
+        everywhere = everywhere and self.clipboard_plus_linked()
+        count = store.clear(keep_favorites=keep_favorites, tombstones=everywhere)
+        if everywhere:
+            clipsync.request_clear(store, favorites=not keep_favorites)
+            self.sync_clipboard_now()
+        return count
 
     def delete_clipboard_data(self) -> None:
         """Erase the clipboard history, images and sync state on this device."""
@@ -112,9 +194,6 @@ class Service:
         webbrowser.open(
             clipboardplus.DASHBOARD_URL if self.clipboard_plus_linked() else clipboardplus.SITE
         )
-
-    def disconnect_clipboard_plus(self) -> None:
-        clipboardplus.remove_key(self.paths.config.parent)
 
     def microphones(self) -> list[str]:
         config = d.Config(self.paths)

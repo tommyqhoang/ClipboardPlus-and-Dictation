@@ -211,7 +211,6 @@ class TranscriptTests(ServiceCase):
             patch.object(d, "transcribe", return_value="spoken words"),
             patch.object(d, "copy_text", side_effect=lambda *a, **k: order.append("copy")),
             patch.object(d, "notify"),
-            patch.object(d, "share_transcript"),
             patch.object(
                 clipservice, "record_transcript", side_effect=lambda p, t: order.append("record")
             ),
@@ -226,7 +225,6 @@ class TranscriptTests(ServiceCase):
             patch.object(d, "transcribe", return_value="spoken words"),
             patch.object(d, "copy_text") as copy,
             patch.object(d, "notify"),
-            patch.object(d, "share_transcript"),
             patch.dict(sys.modules, {"clipservice": None}),
         ):
             d.finish(d.Config(paths), paths)

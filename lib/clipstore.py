@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from clipboardplus import CloudItem
 
 SCHEMA_VERSION = 1
+META_CURSOR = "sync_cursor"  # When the account last synced fine.
+META_CLEAR = "clear_pending"  # A clear-everywhere the account has not been told about.
 MAX_TEXT_BYTES = 1_000_000
 MAX_IMAGE_BYTES = 10_000_000
 MAX_IMAGE_PIXELS = 50_000_000  # Refuses decompression bombs before any decoding.
@@ -407,10 +409,14 @@ class Store:
     def delete(self, item_id: int) -> None:
         self._remove(self._ids("WHERE id = ?", (item_id,)), tombstones=True)
 
-    def clear(self, *, keep_favorites: bool = True) -> int:
-        """Delete the whole history (the user's request, so the account is told too)."""
+    def clear(self, *, keep_favorites: bool = True, tombstones: bool = True) -> int:
+        """Delete the whole history.
+
+        By default the account is told too (each deletion leaves a tombstone); with
+        `tombstones=False` only this device is cleared.
+        """
         ids = self._ids("WHERE favorite = 0" if keep_favorites else "", ())
-        self._remove(ids, tombstones=True)
+        self._remove(ids, tombstones=tombstones)
         return len(ids)
 
     def wipe(self) -> None:
@@ -652,6 +658,16 @@ class Store:
                 "DELETE FROM tombstones WHERE cloud_id = ? AND cloud_key = ? AND deleted_at = ?",
                 (tombstone.cloud_id, tombstone.cloud_key, tombstone.deleted_at),
             )
+
+    def reset_sync(self) -> None:
+        """Forget the account: every text and link is new to the next one you connect."""
+        with self._transaction() as db:
+            db.execute(
+                "UPDATE items SET cloud_id = '', cloud_key = '', cloud_favorite = 0, "
+                "sync_skip = 0, dirty = CASE WHEN kind IN ('text', 'url') THEN 1 ELSE 0 END"
+            )
+            db.execute("DELETE FROM tombstones")
+            db.execute("DELETE FROM meta WHERE key IN (?, ?)", (META_CURSOR, META_CLEAR))
 
     def drop_tombstones(self) -> None:
         with self._transaction() as db:

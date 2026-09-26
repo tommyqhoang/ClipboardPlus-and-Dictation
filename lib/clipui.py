@@ -10,6 +10,7 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 from typing import Any
 
+import clipboardplus
 import clipstore
 import dictation as d
 import hotkeys
@@ -261,16 +262,288 @@ class ClipboardPage:
         self.store.delete(item_id)
         self.reload()
 
+    def ask_clear(self, linked: bool) -> tuple[bool, bool] | None:
+        """(everywhere, keep favorites), or None when the user cancels."""
+        return ClearDialog(self.app.root, linked=linked).show()
+
     def clear(self) -> None:
-        if messagebox.askyesno(
-            "Clear clipboard history?",
-            "Everything is removed except your favorites. This can’t be undone.",
-            parent=self.app.root,
-        ):
-            self.store.clear(keep_favorites=True)
-            self.reload()
+        choice = self.ask_clear(self.app.service.clipboard_plus_linked())
+        if choice is None:
+            return
+        everywhere, keep_favorites = choice
+        self.app.service.clear_clipboard(
+            self.store, everywhere=everywhere, keep_favorites=keep_favorites
+        )
+        self.reload()
 
     def resume(self) -> None:
         prefs = hotkeys.Preferences(self.app.service.paths)
         prefs.save(clipboard=dataclasses.replace(prefs.clipboard(), paused_until=0.0))
         self.reload()
+
+
+class ClearDialog:
+    """Asks what "Clear history" should clear: where, and whether favorites stay."""
+
+    def __init__(self, parent: tk.Misc, *, linked: bool) -> None:
+        self.result: tuple[bool, bool] | None = None
+        window = self.window = tk.Toplevel(parent)
+        window.title("Clear clipboard history?")
+        window.resizable(False, False)
+        window.transient(parent)  # type: ignore[call-overload]
+        window.configure(background=ttk.Style(window).lookup("TFrame", "background"))
+        self.scope = tk.StringVar(master=window, value="device")
+        self.keep_favorites = tk.BooleanVar(master=window, value=True)
+        body = ttk.Frame(window, padding=22)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="This can’t be undone.").pack(anchor="w", pady=(0, 10))
+        if linked:
+            ttk.Radiobutton(
+                body, text="This device only", value="device", variable=self.scope
+            ).pack(anchor="w")
+            ttk.Radiobutton(
+                body,
+                text="Everywhere (this device and your Clipboard+ account)",
+                value="everywhere",
+                variable=self.scope,
+            ).pack(anchor="w", pady=(2, 8))
+        ttk.Checkbutton(body, text="Keep favorites", variable=self.keep_favorites).pack(
+            anchor="w", pady=(0, 14)
+        )
+        row = ttk.Frame(body)
+        row.pack(fill="x")
+        ttk.Button(row, text="Clear history", command=self.confirm).pack(side="right")
+        ttk.Button(row, text="Cancel", command=self.cancel).pack(side="right", padx=(0, 8))
+        window.protocol("WM_DELETE_WINDOW", self.cancel)
+
+    def confirm(self) -> None:
+        self.result = (self.scope.get() == "everywhere", bool(self.keep_favorites.get()))
+        self.window.destroy()
+
+    def cancel(self) -> None:
+        self.result = None
+        self.window.destroy()
+
+    def show(self) -> tuple[bool, bool] | None:
+        self.window.grab_set()
+        self.window.wait_window()
+        return self.result
+
+
+class AccountCard:
+    """The Clipboard+ account card: sign in, sign up, use a key, sync, disconnect."""
+
+    HINT = (
+        "Keep your clipboard history on your Clipboard+ account too, so it is also on the "
+        "website and in the browser extension. Optional: only text and links are sent, "
+        "never images or audio."
+    )
+
+    def __init__(self, app: Any, clock: Callable[[], float] = time.time) -> None:
+        self.app, self._clock = app, clock
+        self.email = tk.StringVar(master=app.root)
+        self.password = tk.StringVar(master=app.root)
+        self.key = tk.StringVar(master=app.root)
+        self.mode = "account"  # or "key": paste an API key instead
+        self.error = ""
+        self._buttons: list[ttk.Button] = []
+        self._signature: tuple[Any, ...] | None = None
+        self.body = app.card("Clipboard+ account", self.HINT)
+        self.area = ttk.Frame(self.body, style="Card.TFrame")
+        self.area.pack(fill="x")
+        self.render()
+
+    # -- drawing -----------------------------------------------------------
+    def _signature_now(self) -> tuple[Any, ...]:
+        account = self.app.service.clipboard_plus_state()
+        # The "synced 5 min ago" wording changes with time, not only with state.
+        bucket = int(self._clock() // 20) if account.sync == "ok" else 0
+        return (account, self.app.features().clipboard, bucket)
+
+    def refresh(self) -> None:
+        """Redraw only when what the card shows has changed."""
+        if self.area.winfo_exists() and self._signature_now() != self._signature:
+            self.render()
+
+    def render(self) -> None:
+        self._signature = self._signature_now()
+        account = self.app.service.clipboard_plus_state()
+        self.app.buttons = [b for b in self.app.buttons if b not in self._buttons]
+        self._buttons = []
+        for child in self.area.winfo_children():
+            child.destroy()
+        if account.kind != "disconnected" and not self.app.features().clipboard:
+            self._idle(account)
+        elif account.kind == "connected":
+            self._connected(account)
+        else:
+            self._disconnected(account.kind == "reconnect")
+        if self.error:
+            self._label(self.error, "CardError.TLabel", pady=(8, 0))
+
+    def _label(self, text: str, style: str = "Card.TLabel", pady: tuple[int, int] = (0, 0)) -> None:
+        ttk.Label(self.area, text=text, style=style, wraplength=self.app.wraplength - 50).pack(
+            anchor="w", pady=pady
+        )
+
+    def _row(self, *rows: tuple[tuple[str, Callable[[], None]], ...], pady: int = 10) -> None:
+        """One or more rows of buttons (a long row would run off the card)."""
+        for actions in rows:
+            row = ttk.Frame(self.area, style="Card.TFrame")
+            row.pack(fill="x", pady=(pady, 0))
+            pady = 6
+            for text, command in actions:
+                self._buttons.append(self.app.button(text, command, parent=row, side="left"))
+
+    def _entry(self, caption: str, variable: tk.StringVar, secret: bool = False) -> ttk.Entry:
+        self._label(caption, "CardHint.TLabel", pady=(6, 2))
+        entry = ttk.Entry(self.area, textvariable=variable, show="•" if secret else "")
+        entry.pack(fill="x")
+        return entry
+
+    def _disconnected(self, reconnect: bool) -> None:
+        if reconnect:
+            self._label("Reconnect needed", "CardHeading.TLabel")
+            self._label(
+                "Clipboard+ no longer accepts the saved key. Sign in again to keep syncing.",
+                pady=(2, 4),
+            )
+        else:
+            self._label("Not connected", "CardHeading.TLabel")
+        if self.mode == "key":
+            self._label(
+                "In your Clipboard+ account, open Developer API, generate a key with "
+                "clipboard read and write access, and paste it here.",
+                "CardHint.TLabel",
+                pady=(4, 4),
+            )
+            entry = ttk.Entry(self.area, textvariable=self.key, show="•")
+            entry.pack(fill="x")
+            entry.bind("<Return>", lambda _: self.connect_key())
+            rows = [
+                (("Connect", self.connect_key),),
+                (
+                    ("Use email and password instead", lambda: self.switch("account")),
+                    ("Get a key", lambda: hotkeys.open_link(clipboardplus.ACCOUNT_URL)),
+                ),
+            ]
+        else:
+            self._entry("Email", self.email)
+            password = self._entry("Password", self.password, secret=True)
+            password.bind("<Return>", lambda _: self.sign_in(create=False))
+            rows = [
+                (
+                    *(
+                        ()
+                        if reconnect
+                        else (("Create account", lambda: self.sign_in(create=True)),)
+                    ),
+                    ("Sign in", lambda: self.sign_in(create=False)),
+                ),
+                (
+                    ("Use an API key instead", lambda: self.switch("key")),
+                    ("Get Clipboard+", lambda: hotkeys.open_link()),
+                ),
+            ]
+        if reconnect:
+            rows.append((("Disconnect", self.disconnect),))
+        self._row(*rows)
+
+    def _connected(self, account: Any) -> None:
+        who = f"Connected as {account.email}" if account.email else "Connected"
+        self._label(who, "CardHeading.TLabel")
+        self._label(self._sync_text(account), pady=(2, 0))
+        self._row(
+            (
+                ("Sync now", self.sync_now),
+                ("Open history", lambda: hotkeys.open_link(clipboardplus.DASHBOARD_URL)),
+                ("Disconnect", self.disconnect),
+            )
+        )
+
+    def _idle(self, account: Any) -> None:
+        """Linked while Clipboard history is off: nothing syncs until it is turned on."""
+        who = f"Connected as {account.email}" if account.email else "Connected"
+        self._label(who, "CardHeading.TLabel")
+        self._label(
+            "Turn on Clipboard history above to keep syncing. Transcripts are no longer "
+            "uploaded on their own.",
+            pady=(2, 0),
+        )
+        self._row((("Disconnect", self.disconnect),))
+
+    def _sync_text(self, account: Any) -> str:
+        if account.sync == "ok" and account.synced:
+            return "Synced " + relative_time(account.synced, self._clock())
+        return {
+            "syncing": "Syncing…",
+            "offline": "Offline. Will retry automatically.",
+            "error": "Clipboard+ is having trouble. Will retry automatically.",
+        }.get(account.sync, "Waiting for the clipboard service to start.")
+
+    # -- actions -----------------------------------------------------------
+    def switch(self, mode: str) -> None:
+        self.mode, self.error = mode, ""
+        self.render()
+
+    def _attempt(self, work: Callable[[], None], message: str, success: str) -> None:
+        """Run `work` off the UI thread; a refusal is shown inside the card."""
+        self.error = ""
+
+        def run() -> str:
+            try:
+                work()
+            except d.DictationError as exc:
+                return str(exc)
+            return ""
+
+        def done(problem: str) -> None:
+            self.password.set("")  # Never left on screen, whatever happened.
+            if not self.area.winfo_exists():
+                return
+            self.error = problem
+            if not problem:
+                self.key.set("")  # The key is saved privately.
+                self.mode = "account"
+                self.app.status.set(success)
+            self.render()
+
+        self.app.submit(run, done, message)
+
+    def sign_in(self, *, create: bool) -> None:
+        email, password = self.email.get(), self.password.get()
+        service = self.app.service
+        self._attempt(
+            lambda: service.sign_in_clipboard_plus(email, password, create=create),
+            "Creating your account…" if create else "Signing in…",
+            "Connected to Clipboard+.",
+        )
+
+    def connect_key(self) -> None:
+        key, service = self.key.get(), self.app.service
+        self._attempt(
+            lambda: service.connect_clipboard_plus(key),
+            "Checking your Clipboard+ key…",
+            "Connected to Clipboard+.",
+        )
+
+    def sync_now(self) -> None:
+        self.app.service.sync_clipboard_now()
+        self.app.status.set("Syncing…")
+
+    def disconnect(self) -> None:
+        keep = messagebox.askyesnocancel(
+            "Disconnect Clipboard+?",
+            "Keep your clipboard history on this computer?\n\n"
+            "Yes: keep it here.  No: delete it from this computer.\n"
+            "Your Clipboard+ account keeps its own copy either way.",
+            parent=self.app.root,
+        )
+        if keep is None:
+            return
+        service = self.app.service
+        self._attempt(
+            lambda: service.disconnect_clipboard_plus(keep_history=bool(keep)),
+            "Disconnecting…",
+            "Disconnected from Clipboard+.",
+        )

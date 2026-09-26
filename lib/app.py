@@ -14,7 +14,6 @@ from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
 from typing import Any, Literal
 
-import clipboardplus
 import clipstore
 import clipui
 import desktop
@@ -90,7 +89,7 @@ class App:
         self.endpoint = tk.StringVar(value="")
         self.api_model = tk.StringVar(value="")
         self.api_key = tk.StringVar(value="")
-        self.clip_key = tk.StringVar(value="")
+        self.account: clipui.AccountCard | None = None
         self.setup_mode = ""
         self.clipboard_page: clipui.ClipboardPage | None = None
         self.clipboard_store: clipstore.Store | None = None
@@ -140,6 +139,9 @@ class App:
         style.configure("CardHeading.TLabel", background=SURFACE, font=self.fonts["heading"])
         style.configure(
             "CardHint.TLabel", background=SURFACE, foreground=MUTED, font=self.fonts["small"]
+        )
+        style.configure(
+            "CardError.TLabel", background=SURFACE, foreground=DANGER, font=self.fonts["body"]
         )
         style.configure("Brand.TLabel", background=SURFACE, font=self.fonts["brand"])
         style.configure(
@@ -298,6 +300,7 @@ class App:
             self.end_capture()
         self.page = page
         self.buttons = []
+        self.account = None
         for child in self.frame.winfo_children():
             child.destroy()
         for child in self.bar_actions.winfo_children():
@@ -799,9 +802,6 @@ class App:
         self.status.set(f"{found} Pick the one you’ll speak into.")
 
     def prepare(self) -> None:
-        if self.clip_key.get().strip():
-            self.status.set("Press Connect to link Clipboard+, or clear the key field to skip it.")
-            return
         language = "en" if self.language.get() == "English" else "auto"
         device = self.device.get()
         source = self.model_source.get()
@@ -877,7 +877,6 @@ class App:
             style="CardHint.TLabel",
             wraplength=self.wraplength - 50,
         ).pack(anchor="w", pady=(10, 0))
-        self.clipboard_plus_card()
         self.button(
             "Done" if self.tray else "Start dictating",
             self.finish_setup,
@@ -887,76 +886,10 @@ class App:
         )
 
     def clipboard_plus_card(self) -> None:
-        """Optional: also save each transcript to the user's Clipboard+ history."""
-        body = self.card(
-            "Keep every transcript in Clipboard+",
-            "Each dictation replaces what’s on your clipboard. Connect Clipboard+ and every "
-            "transcript is also saved to your history, to search on the website or in the "
-            "browser extension. Optional: only the text is sent, never audio.",
-        )
-        self.clip_body = ttk.Frame(body, style="Card.TFrame")
-        self.clip_body.pack(fill="x")
-        self.clip_buttons: list[ttk.Button] = []
-        self.render_clipboard_plus()
-
-    def render_clipboard_plus(self) -> None:
-        # Drop the old buttons from the busy/idle list before their widgets are destroyed.
-        self.buttons = [button for button in self.buttons if button not in self.clip_buttons]
-        self.clip_buttons = []
-        for child in self.clip_body.winfo_children():
-            child.destroy()
-        row = ttk.Frame(self.clip_body, style="Card.TFrame")
-        actions: tuple[tuple[str, Callable[[], None]], ...]
-        if self.service.clipboard_plus_linked():
-            ttk.Label(
-                self.clip_body,
-                text="Connected. New transcripts are saved to your Clipboard+ history.",
-                style="Card.TLabel",
-                wraplength=self.wraplength - 50,
-            ).pack(anchor="w", pady=(0, 10))
-            row.pack(fill="x")
-            actions = (
-                ("Open history", lambda: hotkeys.open_link(clipboardplus.DASHBOARD_URL)),
-                ("Disconnect", self.disconnect_clipboard_plus),
-            )
-        else:
-            ttk.Label(
-                self.clip_body,
-                text="In your Clipboard+ account, open Developer API, generate a key with "
-                "clipboard write access, and paste it here.",
-                style="CardHint.TLabel",
-                wraplength=self.wraplength - 50,
-            ).pack(anchor="w", pady=(0, 6))
-            ttk.Entry(self.clip_body, textvariable=self.clip_key, show="•").pack(fill="x")
-            row.pack(fill="x", pady=(10, 0))
-            actions = (
-                ("Connect", self.connect_clipboard_plus),
-                ("Get a key", lambda: hotkeys.open_link(clipboardplus.ACCOUNT_URL)),
-                ("Get Clipboard+", lambda: hotkeys.open_link()),
-            )
-        for text, command in actions:
-            self.clip_buttons.append(self.button(text, command, parent=row, side="left"))
-
-    def connect_clipboard_plus(self) -> None:
-        key = self.clip_key.get()
-
-        def connected(_: Any) -> None:
-            self.clip_key.set("")  # The key is saved privately; do not leave it on screen.
-            self.render_clipboard_plus()
-            self.status.set("Connected to Clipboard+.")
-
-        self.submit(
-            lambda: self.service.connect_clipboard_plus(key),
-            connected,
-            "Checking your Clipboard+ key…",
-        )
-
-    def disconnect_clipboard_plus(self) -> None:
-        def disconnected(_: Any) -> None:
-            self.render_clipboard_plus()
-            self.status.set("Disconnected from Clipboard+.")
-
-        self.submit(self.service.disconnect_clipboard_plus, disconnected, "Disconnecting…")
+        """The account card, where the clipboard history is (or an old key still lives)."""
+        self.account = None
+        if self.features().clipboard or self.service.clipboard_plus_linked():
+            self.account = clipui.AccountCard(self)
 
     def finish_setup(self) -> None:
         self.submit(self.service.complete, lambda _: self.leave(), "Saving your setup…")
@@ -1257,6 +1190,10 @@ class App:
                 done(future.result())
             if self.page == "home" and self.pending is None:
                 self.refresh()
+            if self.account is not None and self.pending is None:
+                self.account_polls = getattr(self, "account_polls", 0) + 1
+                if self.account_polls % 10 == 0:  # About every two seconds.
+                    self.account.refresh()
             if self.page == "clipboard" and self.clipboard_page is not None:
                 self.polls = getattr(self, "polls", 0) + 1
                 if self.polls % 5 == 0:  # About once a second.

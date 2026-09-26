@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 import stat
 import sys
 import tempfile
 import unittest
-import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -52,6 +50,26 @@ class KeyStorageTests(unittest.TestCase):
                     cp.save_key(self.folder, bad)
         self.assertFalse(cp.linked(self.folder))
 
+    def test_the_account_email_is_kept_privately_beside_the_key_and_leaves_with_it(self):
+        self.assertEqual(cp.read_email(self.folder), "")
+        cp.save_key(self.folder, KEY)
+        cp.save_email(self.folder, "  Me@Example.com \n")
+        self.assertEqual(cp.read_email(self.folder), "Me@Example.com")
+        if sys.platform != "win32":
+            mode = stat.S_IMODE(os.stat(cp.email_path(self.folder)).st_mode)
+            self.assertEqual(mode, 0o600)
+        cp.remove_key(self.folder)
+        self.assertEqual(cp.read_email(self.folder), "")
+        self.assertFalse(cp.email_path(self.folder).exists())
+
+    def test_an_unusable_email_is_not_kept(self):
+        for bad in ("", "no-at-sign", "a@b\nc.d", "x" * 300 + "@b.co", "a b@c.de"):
+            with self.subTest(bad=bad):
+                cp.save_email(self.folder, bad)
+                self.assertEqual(cp.read_email(self.folder), "")
+        cp.email_path(self.folder).write_text("tampered\x00@x.y")
+        self.assertEqual(cp.read_email(self.folder), "")
+
     def test_a_tampered_key_file_reads_as_not_linked(self):
         cp.key_path(self.folder).write_text("not a key")
         self.assertEqual(cp.read_key(self.folder), "")
@@ -72,19 +90,6 @@ class RequestTests(unittest.TestCase):
         self.build = patcher.start()
         self.addCleanup(patcher.stop)
         return opener
-
-    def test_send_posts_the_transcript_to_the_users_history(self):
-        opener = self.opener(response(201))
-        self.assertEqual(cp.send(self.folder, "Hello world."), "sent")
-        request = opener.open.call_args.args[0]
-        self.assertEqual(request.full_url, cp.API + "/api/clipboard")
-        self.assertEqual(request.get_method(), "POST")
-        self.assertEqual(request.get_header("Authorization"), "Bearer " + KEY)
-        self.assertEqual(request.get_header("Content-type"), "application/json")
-        self.assertEqual(
-            json.loads(request.data),
-            {"type": "text", "content": "Hello world.", "source": "Whisper Dictation & Clipboard+"},
-        )
 
     def test_the_key_is_never_forwarded_by_a_redirect(self):
         # A real HTTP exchange: the server answers 302 to another host.
@@ -118,45 +123,10 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 302)
         self.assertEqual(followed, [])
 
-    def test_nothing_is_sent_unless_linked_or_when_empty(self):
-        opener = self.opener()
-        cp.remove_key(self.folder)
-        self.assertEqual(cp.send(self.folder, "Hello"), "off")
-        cp.save_key(self.folder, KEY)
-        self.assertEqual(cp.send(self.folder, "   \n"), "off")
-        opener.open.assert_not_called()
 
-    def test_oversized_text_is_skipped_rather_than_rejected(self):
-        opener = self.opener()
-        self.assertEqual(cp.send(self.folder, "x" * 60_000), "failed")
-        opener.open.assert_not_called()
+class DictationUploadTests(unittest.TestCase):
+    """Uploading is the sync engine's job now: dictation only records the transcript."""
 
-    def test_failures_are_reported_never_raised(self):
-        def http_error(code):
-            return urllib.error.HTTPError(cp.API, code, "err", {}, None)
-
-        cases = (
-            (http_error(401), "rejected"),
-            (http_error(403), "rejected"),
-            (http_error(500), "failed"),
-            (http_error(429), "failed"),
-            (urllib.error.URLError("offline"), "failed"),
-            (TimeoutError(), "failed"),
-            (OSError("reset"), "failed"),
-            (cp.http.client.IncompleteRead(b""), "failed"),
-        )
-        for outcome, expected in cases:
-            with self.subTest(outcome=repr(outcome)):
-                self.opener(outcome)
-                self.assertEqual(cp.send(self.folder, "Hello"), expected)
-
-    def test_only_https_endpoints_receive_the_key(self):
-        opener = self.opener(response(201))
-        self.assertEqual(cp.send(self.folder, "Hello", api="http://evil.example"), "failed")
-        opener.open.assert_not_called()
-
-
-class EngineTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -175,32 +145,20 @@ class EngineTests(unittest.TestCase):
         d.private_dir(self.paths.config.parent)
         self.config = d.Config(self.paths)
 
-    def test_an_unlinked_account_uploads_nothing(self):
-        with patch.object(cp, "send") as send:
-            self.assertIsNone(d.share_transcript(self.config, "Hello"))
-        send.assert_not_called()
-
-    def test_a_linked_account_receives_the_transcript_in_the_background(self):
+    def test_the_dictation_engine_no_longer_uploads_on_its_own(self):
+        self.assertFalse(hasattr(d, "share_transcript"))
+        self.assertFalse(hasattr(cp, "send"))
         cp.save_key(self.paths.config.parent, KEY)
-        with patch.object(cp, "send", return_value="sent") as send:
-            thread = d.share_transcript(self.config, "Hello")
-            self.assertIsNotNone(thread)
-            thread.join(5)
-        send.assert_called_once_with(self.paths.config.parent, "Hello")
-
-    def test_a_refused_key_is_reported_and_other_failures_are_silent(self):
-        cp.save_key(self.paths.config.parent, KEY)
-        for outcome, notified in (("rejected", True), ("failed", False), ("sent", False)):
-            with self.subTest(outcome=outcome):
-                with (
-                    patch.object(cp, "send", return_value=outcome),
-                    patch.object(d, "notify") as notify,
-                ):
-                    thread = d.share_transcript(self.config, "Hello")
-                    thread.join(5)
-                self.assertEqual(notify.called, notified)
-                if notified:
-                    self.assertIn("Settings", notify.call_args.args[1])
+        d.private_dir(self.paths.audio.parent)
+        self.paths.audio.write_bytes(b"\x00\x01" * 100)
+        with (
+            patch.object(cp.urllib.request, "build_opener") as build,
+            patch.object(d, "transcribe", return_value="Hello"),
+            patch.object(d, "copy_text"),
+            patch.object(d, "notify"),
+        ):
+            d.finish(self.config, self.paths)
+        build.assert_not_called()
 
 
 if __name__ == "__main__":

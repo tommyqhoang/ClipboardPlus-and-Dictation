@@ -24,8 +24,8 @@ OVERLAP_SECONDS = 120.0  # A pull starts this long before the last success.
 BACKOFF_START_SECONDS = 30.0
 BACKOFF_MAX_SECONDS = 600.0
 MAX_PUSH_BATCHES = 10  # Per round: up to 1000 items, then the next round continues.
-CURSOR = "sync_cursor"
-CLEAR_PENDING = "clear_pending"
+CURSOR = clipstore.META_CURSOR
+CLEAR_PENDING = clipstore.META_CLEAR
 
 
 class CloudClient(Protocol):
