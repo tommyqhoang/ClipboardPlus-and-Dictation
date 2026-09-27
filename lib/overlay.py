@@ -29,7 +29,7 @@ import hotkeys
 import telemetry
 
 WIDTH, HEIGHT, DRAFT_HEIGHT = 480, 76, 104
-MARGIN = 110  # Above the bottom edge of the screen (clear of docks and panels).
+MARGIN = 48  # Below the top edge of the screen (clear of the top bar).
 BARS = 19
 FRAME_MS = 33  # About 30 frames a second.
 SAMPLE_RATE = 16_000  # The recorder writes raw 16-bit mono PCM at this rate.
@@ -160,9 +160,9 @@ class Overlay:
 
     def _place(self, height: int) -> None:
         self.height = height
-        x0, y0, width, tall = self._screen()
+        x0, y0, width, _ = self._screen()
         x = x0 + (width - WIDTH) // 2
-        y = y0 + tall - height - MARGIN
+        y = y0 + MARGIN
         self.canvas.configure(height=height)
         self.root.geometry(f"{WIDTH}x{height}+{x}+{y}")
 

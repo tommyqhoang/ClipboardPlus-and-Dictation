@@ -3,8 +3,8 @@
 Run from the repository root: python3 tools/make_icon.py  (needs Pillow; any OS)
 Writes lib/whisper-dictation.png (runtime window/launcher icon),
 lib/menubar-*.png (macOS menu bar images), lib/tray-recording.png,
-assets/icon-1024.png, assets/icon-recording-1024.png, assets/AppIcon.icns (macOS)
-and assets/icon.ico (Windows).
+assets/icon-1024.png, assets/icon-recording-1024.png, assets/AppIcon.icns (macOS),
+assets/icon.ico (Windows), and the matching website icons in site/assets/.
 
 The artwork matches the Clipboard+ logo (an orange clipboard with a cloud) so the
 desktop app, the extension and the website look like one product; the badge marks
@@ -126,6 +126,8 @@ def render_glyph(size: int, color: tuple[int, int, int, int]) -> Any:
 def main() -> int:
     assets = ROOT / "assets"
     assets.mkdir(exist_ok=True)
+    site_assets = ROOT / "site/assets"
+    site_assets.mkdir(parents=True, exist_ok=True)
     master = render()
     master.save(assets / "icon-1024.png", optimize=True)
     master.resize((256, 256), Image.Resampling.LANCZOS).save(
@@ -147,7 +149,18 @@ def main() -> int:
         assets / "icon.ico",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
-    print("Icons written to lib/ and assets/.")
+    # The desktop landing page, PWA manifest and native application must show the
+    # same Clipboard+ clipboard-and-microphone mark, never an older microphone-only icon.
+    for name, size in (
+        ("icon-192.png", 192),
+        ("icon-512.png", 512),
+        ("apple-touch-icon.png", 180),
+        ("favicon-32.png", 32),
+    ):
+        master.resize((size, size), Image.Resampling.LANCZOS).save(
+            site_assets / name, optimize=True
+        )
+    print("Icons written to lib/, assets/ and site/assets/.")
     return 0
 
 

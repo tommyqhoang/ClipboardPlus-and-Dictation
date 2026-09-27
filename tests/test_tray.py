@@ -47,6 +47,39 @@ class Icon:
         self.stopped = True
 
 
+class LinuxIcon(Icon):
+    """pystray's GTK/AppIndicator icon: every change writes a new temp file."""
+
+    def __init__(self, *args):
+        self.removed = 0
+        self._icon_path = None
+        super().__init__(*args)
+
+    def _update_fs_icon(self):
+        self._icon_path = "/tmp/temporary"
+
+    def _remove_fs_icon(self):
+        self.removed += 1
+
+    @property
+    def icon(self):
+        return self._icon
+
+    @icon.setter
+    def icon(self, value):
+        self._icon = value
+        self._remove_fs_icon()
+        self._update_fs_icon()
+
+
+class Picture:
+    def __init__(self, name):
+        self.name = name
+
+    def save(self, path, kind):
+        Path(path).write_text(f"{kind}:{self.name}")
+
+
 class FakeHotKey:
     def __init__(self, *_):
         self.registered = []
@@ -96,6 +129,23 @@ class TrayTests(unittest.TestCase):
             if label.startswith(text):
                 return entry
         raise AssertionError(text)
+
+    def test_linux_tray_icons_are_steady_files_that_are_never_deleted(self):
+        # GNOME's top bar sometimes read pystray's deleted temp file and showed nothing.
+        pystray = SimpleNamespace(MenuItem=Item, Menu=Menu, Icon=LinuxIcon)
+        linux = tray.Tray(pystray, SimpleNamespace(open=lambda path: Picture(Path(path).name)))
+        icon = linux.icon
+        idle = str(self.paths.runtime / "tray-idle.png")
+        recording = str(self.paths.runtime / "tray-recording.png")
+        self.assertEqual(icon._icon_path, idle)
+        self.assertEqual(Path(recording).read_text(), "PNG:tray-recording.png")
+        removed = icon.removed
+        icon.icon = linux.images["recording"]
+        self.assertEqual(icon._icon_path, recording)
+        icon.icon = linux.images["idle"]
+        self.assertEqual(icon._icon_path, idle)
+        self.assertEqual(icon.removed, removed)  # Nothing is deleted any more.
+        self.assertTrue(Path(idle).exists() and Path(recording).exists())
 
     def test_menu_matches_macos_and_uses_shared_icon(self):
         labels = [

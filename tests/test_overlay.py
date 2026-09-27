@@ -139,6 +139,11 @@ class OverlayWindowTests(unittest.TestCase):
             if self.pill.closed:
                 return
 
+    def test_the_pill_sits_at_the_top_center_of_the_screen(self):
+        self.root.update_idletasks()
+        geometry = self.root.geometry()
+        self.assertTrue(geometry.endswith(f"+{overlay.MARGIN}"), geometry)
+
     def test_the_bars_rise_with_the_voice_and_the_timer_runs(self):
         self.paths.audio.write_bytes(pcm(0, 16000))
         self.frames(0.5)

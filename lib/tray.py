@@ -203,6 +203,32 @@ class Tray:
                 item(f"Quit {hotkeys.APP_NAME}", self.quit),
             ),
         )
+        self.steady_icon_files()
+
+    def steady_icon_files(self) -> None:
+        """One fixed file per tray image, never deleted.
+
+        On Linux pystray writes every icon change to a fresh temp file and deletes
+        the previous one; GNOME's top bar sometimes reads the deleted path ("Failed
+        to recognize image format") and the recording icon never shows.
+        """
+        icon = self.icon
+        if not hasattr(icon, "_update_fs_icon"):
+            return  # Windows draws the image directly.
+        files = {}
+        for name, picture in self.images.items():
+            path = self.paths.runtime / f"tray-{name}.png"
+            picture.save(path, "PNG")
+            files[id(picture)] = str(path)
+
+        def update() -> None:
+            icon._icon_path = files.get(id(icon.icon), files[id(self.images["idle"])])
+            icon._icon_valid = True
+
+        icon._remove_fs_icon()  # The temp file pystray already wrote.
+        icon._update_fs_icon = update
+        icon._remove_fs_icon = lambda: None
+        icon.icon = self.images["idle"]  # Point the indicator at the steady file.
 
     # -- actions ----------------------------------------------------------
     def pressed(self) -> None:
@@ -269,7 +295,7 @@ class Tray:
             telemetry.event("shortcut_conflict", kind="custom" if conflict.path else "desktop")
             self.notify(
                 f"{self.shortcut.label()} is also used by {conflict.name}, which gets it first. "
-                "Open Clipboard+ Desktop to fix it."
+                "Open Clipboard+ and Dictation to fix it."
             )
 
     def toggle_login(self) -> None:

@@ -189,6 +189,20 @@ class DesktopTests(unittest.TestCase):
             leftovers = [path for path in prefix.rglob("*") if path.is_file()]
             self.assertEqual(leftovers, [])
 
+    def test_normal_installer_opens_the_app_when_it_finishes(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder) / ".local"
+            with (
+                patch.object(setup, "install", return_value=prefix / "bin/dictate-toggle"),
+                patch.object(setup, "launch") as launch,
+                patch.object(setup.telemetry, "set_component"),
+                patch.object(setup.telemetry, "event"),
+                patch.object(sys, "argv", ["setup-desktop.py", "--prefix", str(prefix)]),
+            ):
+                self.assertEqual(setup.main(), 0)
+            launch.assert_called_once_with(prefix.resolve())
+
     def test_windows_start_menu_shortcut_is_renamed_and_the_old_one_removed(self):
         setup = setup_module()
         with patch.object(setup.subprocess, "run") as run:
@@ -196,7 +210,12 @@ class DesktopTests(unittest.TestCase):
         payload = json.loads(run.call_args.kwargs["input"])
         self.assertEqual(payload["name"], setup.hotkeys.APP_NAME + ".lnk")
         self.assertEqual(
-            payload["old_names"], ["Whisper Dictation.lnk", "Whisper Dictation & Clipboard+.lnk"]
+            payload["old_names"],
+            [
+                "Whisper Dictation.lnk",
+                "Whisper Dictation & Clipboard+.lnk",
+                "Clipboard+ Desktop.lnk",
+            ],
         )
         script = run.call_args.args[0][-1]
         self.assertIn("$p.name", script)
@@ -299,7 +318,7 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup, "stop_menubar") as stop,
             ):
                 setup.install_app_launcher(prefix)
-                bundle = root / "Applications/Clipboard+ Desktop.app"
+                bundle = root / "Applications/Clipboard+ and Dictation.app"
                 login.assert_called_once_with(True, ["/usr/bin/open", str(bundle)])
                 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
                 self.assertEqual(info["CFBundleIdentifier"], "org.whisperdictation.desktop")
@@ -329,12 +348,12 @@ class DesktopTests(unittest.TestCase):
                 python, windowed = setup.gui_python(prefix)
                 self.assertEqual((python.name, windowed.name), ("python.exe", "pythonw.exe"))
 
-    def test_macos_upgrade_renames_only_our_legacy_bundle(self):
+    def test_macos_upgrade_renames_the_previous_bundle(self):
         setup = setup_module()
         with tempfile.TemporaryDirectory() as folder:
             prefix = Path(folder) / ".local"
             bundle = setup.app_bundle(prefix)
-            legacy = bundle.with_name("Whisper Dictation.app")
+            legacy = bundle.with_name("Clipboard+ Desktop.app")
             executable = legacy / "Contents/MacOS/WhisperDictation"
             executable.parent.mkdir(parents=True)
             executable.write_text(f"exec python {prefix / 'lib/menubar.py'}")

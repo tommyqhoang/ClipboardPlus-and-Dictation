@@ -1,6 +1,6 @@
 {
-  "name": "Whisper Dictation & Clipboard+",
-  "short_name": "Whisper Dictation",
+  "name": "Clipboard+ and Dictation",
+  "short_name": "Clipboard+ Dictation",
   "start_url": "./",
   "display": "browser",
   "background_color": "#f4efe4",

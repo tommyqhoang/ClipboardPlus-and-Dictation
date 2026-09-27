@@ -1,4 +1,4 @@
-# Clipboard+ Desktop
+# Clipboard+ and Dictation
 
 *Formerly Whisper Dictation & Clipboard+.* Download page: https://clipboardplus.apercallc.com/desktop.html
 
@@ -24,7 +24,7 @@ is new; there is no signed app bundle or MSI installer yet. See
 | Platform | Installed launcher | Microphone | Clipboard (dictation) | Clipboard history capture |
 | --- | --- | --- | --- | --- |
 | Linux/Wayland | Top bar icon + GNOME shortcut | ALSA/PipeWire via arecord | wl-copy | `wl-paste --watch` where the desktop allows it, otherwise X11 selection events (also under XWayland) |
-| macOS | Menu bar (`~/Applications/Clipboard+ Desktop.app`) | FFmpeg AVFoundation | pbcopy | Pasteboard change count, polled twice a second |
+| macOS | Menu bar (`~/Applications/Clipboard+ and Dictation.app`) | FFmpeg AVFoundation | pbcopy | Pasteboard change count, polled twice a second |
 | Windows x64 | System tray + Start Menu | FFmpeg DirectShow | Windows clipboard | Clipboard sequence number, polled four times a second |
 
 Local Whisper is the default. You can select your own compatible local model,
@@ -39,7 +39,7 @@ time. `DO_NOT_TRACK=1` or `DICTATION_TELEMETRY=0` disables reporting for a launc
 
 When enabled, usage reports contain a random per-installation identifier, a fixed
 event name, approved feature choices, and bounded counts or durations. Crash reports
-contain the exception type and frames from Clipboard+ Desktop only. Clipboard history,
+contain the exception type and frames from Clipboard+ and Dictation only. Clipboard history,
 transcripts, audio, file names and paths, email addresses, API keys, and arbitrary
 error text are never sent. The app does not wait for reporting and quietly drops it
 when offline. Test runs and CI always disable reporting.
@@ -75,7 +75,7 @@ Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching relea
 and commit. Git is only needed for that Linux fallback. Dependencies and model
 downloads need internet access.
 
-When installation finishes, **Clipboard+ Desktop opens automatically**. The
+When installation finishes, **Clipboard+ and Dictation opens automatically**. The
 first-run screens help the user:
 
 1. Choose what to use: **Dictation**, **Clipboard history**, or **Both**. Only the
@@ -101,7 +101,7 @@ seconds and keeps nothing).
 ### Everyday use (all platforms)
 
 - **Super+Shift+D** (Win+Shift+D on Windows, ⌃⌥⇧D on macOS) starts recording from any app. Press it again
-  to stop. A small bar at the bottom of the screen shows your voice level while
+  to stop. A small bar at the top of the screen shows your voice level while
   it listens, then *Transcribing…* and *Copied*; paste with Ctrl+V (⌘V). Click
   its ■ to stop or ✕ to cancel. The icon turns red while recording. (Set
   `"overlay": false` in `config.json` for plain notifications instead.)
@@ -259,7 +259,7 @@ Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 ```
 
 The installer detects your package manager (apt, dnf, pacman or zypper), installs only the dependencies that are missing (asking for administrator access only then), downloads the base English model,
-builds whisper.cpp if necessary, adds Clipboard+ Desktop to the application menu,
+builds whisper.cpp if necessary, adds Clipboard+ and Dictation to the application menu,
 and requests the optional GNOME shortcut Super+Shift+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations
 skip GNOME registration. Use `--no-packages` when dependencies are already installed.
@@ -468,7 +468,8 @@ python3 -m compileall -q lib setup-desktop.py
 ```
 
 The app icon is generated, not hand-edited: run `python3 tools/make_icon.py` on
-macOS to rebuild `lib/whisper-dictation.png` and the `assets/` icon files.
+macOS to rebuild the matching native and website icon files in `lib/`, `assets/`,
+and `site/assets/`.
 
 Tests use a subprocess recorder and transcription fixture plus an actual local
 HTTP server. They do not establish speech accuracy, hardware latency, or live

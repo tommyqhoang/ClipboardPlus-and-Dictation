@@ -109,7 +109,7 @@ DEFAULTS: dict[str, Any] = {
     "api_model": "",
     "api_key_env": "DICTATION_API_KEY",
     "allow_remote": False,
-    "live": False,
+    "live": True,
     "live_interval": 5,
     "live_window": 30,
     "timeout": 120,
@@ -119,7 +119,7 @@ DEFAULTS: dict[str, Any] = {
     "vad_model": "",
     "preview_notifications": False,
     "overlay": True,
-    "auto_paste": False,
+    "auto_paste": True,
     "rewrite_endpoint": "",
     "rewrite_model": "",
     "rewrite_api_key_env": "DICTATION_REWRITE_API_KEY",
@@ -198,14 +198,14 @@ class Config:
             commands.append(desktop.recorder_command(self.values)[0])
             if desktop.audio_backend(self.values) == "dshow" and self.s("device") == "default":
                 raise DictationError(
-                    "Choose your microphone in Clipboard+ Desktop: Settings, Microphone."
+                    "Choose your microphone in Clipboard+ and Dictation: Settings, Microphone."
                 )
         if self.s("backend") == "local":
             commands.append(self.s("whisper_bin"))
             if not Path(self.s("model")).expanduser().is_file():
                 raise DictationError(
                     "Dictation isn’t set up yet: the speech model is missing. "
-                    "Open Clipboard+ Desktop to finish setup."
+                    "Open Clipboard+ and Dictation to finish setup."
                 )
             if self.s("vad_model") and not Path(self.s("vad_model")).expanduser().is_file():
                 raise DictationError("VAD model not found.")
@@ -781,7 +781,7 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
                     open_app(config)
                 raise DictationError(
                     "Your last recording wasn’t transcribed yet. Retry or discard it in "
-                    "Clipboard+ Desktop, then record again. (Or run --transcribe / --discard.)"
+                    "Clipboard+ and Dictation, then record again. (Or run --transcribe / --discard.)"
                 )
             token = uuid.uuid4().hex
             atomic(paths.state, json.dumps({"phase": "starting", "token": token}))

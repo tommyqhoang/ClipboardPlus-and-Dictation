@@ -37,7 +37,7 @@ main() (
       return 1
       ;;
   esac
-  echo "Installing Clipboard+ Desktop for your user. Your package manager may ask for your password."
+  echo "Installing Clipboard+ and Dictation for your user. Your package manager may ask for your password."
   if [[ "$platform" == Darwin ]]; then
     # Homebrew may be installed without being on PATH (non-login shells).
     if ! command -v brew >/dev/null 2>&1; then
@@ -83,8 +83,7 @@ main() (
     "$python" "$work/app/setup-desktop.py"
   fi
   echo
-  echo "Done. Clipboard+ Desktop is opening: finish setup in its window."
-  "$python" "$work/app/setup-desktop.py" --launch-only
+  echo "Done. Clipboard+ and Dictation is open: finish setup in its window."
 )
 
 # Under `bash -c "$(curl ...)"` BASH_SOURCE is empty, so fall back to $0.

@@ -691,6 +691,20 @@ class WindowTests(ServiceCase):
         self.window.wheel(SimpleNamespace(widget="popdown", num=5, delta=0))
         self.assertEqual(len(seen), 2)  # A combobox list scrolls itself.
 
+    def test_the_mouse_wheel_never_changes_a_dropdown(self):
+        # Scrolling the page past a setting must not change it.
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.assertEqual(self.window.root.bind_class("TCombobox", sequence), "")
+        from tkinter import ttk
+
+        box = ttk.Combobox(self.window.frame, values=("One", "Two"), state="readonly")
+        box.pack()
+        box.set("One")
+        self.window.root.update()
+        box.event_generate("<Button-5>")
+        box.event_generate("<MouseWheel>", delta=-120)
+        self.assertEqual(box.get(), "One")
+
     def test_settings_after_setup_is_a_settings_page_that_saves_in_place(self):
         with (
             patch.object(self.service, "completed", return_value=True),
@@ -879,6 +893,8 @@ class WindowTests(ServiceCase):
         switches[0].invoke()  # On by default: this turns it off.
         self.assertFalse(d.read_json(self.paths.config)["overlay"])
         self.assertIn("next recording", self.window.status.get())
+        self.assertIn("Settings saved", self.window.toast.get())
+        self.assertTrue(self.window.toast_label.winfo_manager())
         self.service.set_option("live", True)
         self.assertTrue(d.Config(self.paths).b("live"))
         with self.assertRaises(ValueError):

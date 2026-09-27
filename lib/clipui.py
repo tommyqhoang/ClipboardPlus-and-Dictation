@@ -978,7 +978,7 @@ class AccountCard:
         if self.mode == "key":
             self._label(
                 "Click Get a key: on your Clipboard+ Account page, choose "
-                "Create a key for Clipboard+ Desktop, then paste the key here.",
+                "Create a key for Clipboard+ and Dictation, then paste the key here.",
                 "CardHint.TLabel",
                 pady=(4, 4),
             )

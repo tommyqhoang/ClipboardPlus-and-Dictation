@@ -1,4 +1,4 @@
-"""Clipboard+ Desktop window and first-run walkthrough."""
+"""Clipboard+ and Dictation window and first-run walkthrough."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ MODES = (
     ("both", "Both", "Dictation and clipboard history, together."),
 )
 
-# One palette for every surface; the icon uses the same teal.
+# One palette for every surface; the generated Clipboard+ icon is used everywhere.
 BACKGROUND = "#f3f6f8"
 SURFACE = "#ffffff"
 BORDER = "#dce3e9"
@@ -89,9 +89,12 @@ class App:
         if self.icon is not None:
             self.root.iconphoto(True, self.icon)
         self.status = tk.StringVar(value="")
+        self.toast = tk.StringVar(value="")
+        self.toast_after: str | None = None
         self.styles()
         self.header()
         self.bottom_bar()
+        self.toast_label = ttk.Label(self.root, textvariable=self.toast, style="Toast.TLabel")
         # Fixed controls above the scrolling page (the clipboard search stays in view).
         self.toolbar = ttk.Frame(root)
         container = self.container = ttk.Frame(root)
@@ -113,6 +116,12 @@ class App:
         # Windows and macOS send <MouseWheel>; X11 sends buttons 4 and 5.
         for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.root.bind_all(sequence, self.wheel, add="+")
+        # Tk's dropdowns, spinboxes and sliders change value under the wheel, so
+        # scrolling the page past one silently changed a setting. The wheel only scrolls.
+        for widget_class in ("TCombobox", "TSpinbox", "Spinbox", "TScale", "Scale"):
+            for sequence in ("MouseWheel", "Button-4", "Button-5"):
+                for modifier in ("", "Shift-"):
+                    self.root.unbind_class(widget_class, f"<{modifier}{sequence}>")
         command = "Command" if sys.platform == "darwin" else "Control"
         for key, action in (("f", self.find), ("comma", self.go_settings), ("w", self.close)):
             self.root.bind_all(
@@ -225,6 +234,13 @@ class App:
         style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
         style.configure("Title.TLabel", font=self.fonts["title"])
         style.configure("Hint.TLabel", foreground=MUTED, font=self.fonts["small"])
+        style.configure(
+            "Toast.TLabel",
+            background=TEXT,
+            foreground=SURFACE,
+            font=self.fonts["small"],
+            padding=(12, 8),
+        )
         style.configure("Error.TLabel", foreground=DANGER, font=self.fonts["small"])
         style.configure("Subtitle.TLabel", foreground=MUTED, font=self.fonts["body"])
         style.configure("Card.TLabel", background=SURFACE)
@@ -430,6 +446,23 @@ class App:
             style="Step.TLabel",
         )
         self.status_label.pack(anchor="w")
+
+    def show_toast(self, message: str) -> None:
+        """Confirm an immediate preference save without making the user hunt for a button."""
+        self.toast.set(message)
+        self.toast_label.place(relx=1.0, rely=1.0, x=-18, y=-18, anchor="se")
+        if self.toast_after is not None:
+            self.root.after_cancel(self.toast_after)
+        self.toast_after = self.root.after(2800, self.hide_toast)
+
+    def hide_toast(self) -> None:
+        self.toast_after = None
+        self.toast_label.place_forget()
+        self.toast.set("")
+
+    def saved(self, message: str = "Settings saved.") -> None:
+        self.status.set(message)
+        self.show_toast(message)
 
     def show_toolbar(self, padding: tuple[int, int, int, int]) -> ttk.Frame:
         """The fixed area above the scrolling page, for this page's controls."""
@@ -796,6 +829,7 @@ class App:
             features=hotkeys.Features(dictation, clipboard)
         )
         self.settings()
+        self.saved("Settings saved. Your tools are ready to use.")
 
     def features_card(self) -> None:
         card = self.card("What you use", "Changes apply at once.")
@@ -827,7 +861,7 @@ class App:
 
         def save() -> None:
             prefs.save(share_usage=self.share_usage.get())
-            self.status.set("Privacy preference saved.")
+            self.saved("Privacy preference saved.")
 
         ttk.Checkbutton(
             card,
@@ -879,6 +913,8 @@ class App:
                 items.set(str(current.keep_items))
                 days.set(str(current.keep_days))
                 images.set(current.images)
+                return
+            self.saved()
 
         for label, variable, values in (
             ("Keep up to this many items", items, ("100", "500", "1000", "5000", "10000")),
@@ -946,6 +982,7 @@ class App:
                 if picked
                 else "The clipboard history shortcut is off."
             )
+            self.show_toast("Settings saved.")
 
         box.bind("<<ComboboxSelected>>", choose)
         conflict = hotkeys.shortcut_conflict(self.service.paths, hotkeys.HISTORY_STATUS)
@@ -1210,7 +1247,7 @@ class App:
     def set_option(self, key: str, value: tk.BooleanVar) -> None:
         self.service.set_option(key, bool(value.get()))
         telemetry.event("setting_changed", setting=key, on=bool(value.get()))
-        self.status.set("Saved. It applies to your next recording.")
+        self.saved("Settings saved. It applies to your next recording.")
 
     def test_microphone(self) -> None:
         """Listen for three seconds with a live meter, then say how it sounded."""
@@ -1354,7 +1391,7 @@ class App:
             [
                 (
                     f"Press {shortcut} in any app and speak",
-                    "A small bar at the bottom of your screen shows it’s listening; "
+                    "A small bar at the top of your screen shows it’s listening; "
                     f"the icon in the {place} turns red.",
                 ),
                 (
@@ -1915,6 +1952,8 @@ class App:
         self.page = "closed"
         self.end_capture()
         self.root.after_cancel(self.timer)
+        if self.toast_after is not None:
+            self.root.after_cancel(self.toast_after)
         if self.rewrap_timer is not None:
             self.root.after_cancel(self.rewrap_timer)
         self.done = lambda _: None

@@ -68,6 +68,11 @@ class DictationTests(unittest.TestCase):
                 time.sleep(0.05)
         self.assertFalse(d.busy(self.paths), "Worker leaked after test")
 
+    def test_new_dictation_settings_enable_the_visible_switches(self):
+        self.assertTrue(d.DEFAULTS["auto_paste"])
+        self.assertTrue(d.DEFAULTS["overlay"])
+        self.assertTrue(d.DEFAULTS["live"])
+
     def cli(self, *args, ok=True):
         result = subprocess.run(
             [sys.executable, str(ROOT / "lib/dictation.py"), *args],
@@ -145,7 +150,7 @@ class DictationTests(unittest.TestCase):
             self.assertEqual(d.finish(self.config, self.paths), "empty")
         self.assertIn("No speech", told.call_args.args[1])
 
-    def test_auto_paste_is_opt_in_and_retry_never_pastes(self):
+    def test_auto_paste_respects_the_setting_and_retry_never_pastes(self):
         with (
             patch.object(d, "transcribe", return_value="hello"),
             patch.object(d, "copy_text"),

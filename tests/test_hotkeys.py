@@ -168,7 +168,7 @@ class HotkeyTests(unittest.TestCase):
     def test_another_shortcut_on_the_same_keys_is_found(self):
         old = hotkeys.GNOME_LIST_PREFIX + "custom0/"
         custom = {
-            hotkeys.GNOME_PATH: ("Clipboard+ Desktop", "<Shift><Super>d"),
+            hotkeys.GNOME_PATH: ("Clipboard+ and Dictation", "<Shift><Super>d"),
             old: ("Whisper Dictation", "<Super><Shift>D"),  # Other order and case: same keys.
         }
         built_in = (
@@ -299,7 +299,7 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(len(set(hotkeys.PRESETS)), len(hotkeys.PRESETS))
 
     def test_the_app_name_is_used_for_the_login_entry_and_gnome_binding(self):
-        self.assertEqual(hotkeys.APP_NAME, "Clipboard+ Desktop")
+        self.assertEqual(hotkeys.APP_NAME, "Clipboard+ and Dictation")
         calls = []
 
         def run(args, **_):
@@ -313,8 +313,11 @@ class HotkeyTests(unittest.TestCase):
         entry = (self.folder / ".config/autostart/whisper-dictation.desktop").read_text()
         self.assertIn(f"Name={hotkeys.APP_NAME}\n", entry)
 
-    def test_features_default_to_dictation_only_and_round_trip(self):
+    def test_features_keep_clipboard_off_until_setup_and_round_trip(self):
         self.assertEqual(self.preferences.features(), hotkeys.Features(True, False))
+        self.assertTrue(self.preferences.clipboard().images)
+        self.assertTrue(self.preferences.open_at_login())
+        self.assertTrue(self.preferences.share_usage())
         for features in (hotkeys.Features(False, True), hotkeys.Features(True, True)):
             self.preferences.save(features=features)
             self.assertEqual(self.preferences.features(), features)

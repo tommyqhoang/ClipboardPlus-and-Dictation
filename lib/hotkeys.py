@@ -21,8 +21,8 @@ import dictation as d
 
 # Shown wherever the app names itself. Identifiers, folders and the bundle id keep the
 # original "whisper-dictation" spelling so upgrades keep working.
-# Formerly "Whisper Dictation & Clipboard+"; now named like the rest of Clipboard+.
-APP_NAME = "Clipboard+ Desktop"
+# Formerly "Whisper Dictation & Clipboard+"; identifiers below stay stable for upgrades.
+APP_NAME = "Clipboard+ and Dictation"
 MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
 MAC_SYMBOLS = {"ctrl": "⌃", "alt": "⌥", "shift": "⇧", "cmd": "⌘"}
 # Carbon (macOS) modifier masks from Events.h.
@@ -219,6 +219,8 @@ class Features:
     """Which halves of the app the user chose in setup."""
 
     dictation: bool = True
+    # Clipboard capture remains off until setup explicitly confirms it. The setup UI
+    # preselects Both, but the background tray must never begin recording clipboard data.
     clipboard: bool = False
 
 
@@ -284,7 +286,7 @@ class Preferences:
         return None if raw is False else self._shortcut(raw, DEFAULT_HISTORY)
 
     def features(self) -> Features:
-        """Dictation only until the user chooses; at least one feature is always on."""
+        """Dictation is safe before setup; at least one feature is always on."""
         raw = self.read().get("features")
         if not isinstance(raw, dict):
             return Features()

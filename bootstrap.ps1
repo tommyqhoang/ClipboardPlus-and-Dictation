@@ -66,9 +66,7 @@ try {
     Expand-Archive -LiteralPath $archive -DestinationPath $source
     $app = Get-ChildItem -LiteralPath $source -Directory | Select-Object -First 1
     & $pythonPath (Join-Path $app.FullName 'setup-desktop.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Application setup failed.' }
-    & $pythonPath (Join-Path $app.FullName 'setup-desktop.py') --launch-only
-    if ($LASTEXITCODE -ne 0) { throw 'Could not open the app. Open Clipboard+ Desktop from the Start Menu.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Clipboard+ and Dictation could not install and open.' }
 } finally {
     # Only the unique temporary directory allocated above is removed.
     Remove-Item -LiteralPath $work -Recurse -Force

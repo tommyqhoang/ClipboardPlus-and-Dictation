@@ -65,7 +65,11 @@ def windows_shortcut(module: Path, python: Path | None = None, remove: bool = Fa
     payload = {
         "name": hotkeys.APP_NAME + ".lnk",
         "description": "Open " + hotkeys.APP_NAME,
-        "old_names": ["Whisper Dictation.lnk", "Whisper Dictation & Clipboard+.lnk"],
+        "old_names": [
+            "Whisper Dictation.lnk",
+            "Whisper Dictation & Clipboard+.lnk",
+            "Clipboard+ Desktop.lnk",
+        ],
         "python": str(python),
         "arguments": subprocess.list2cmdline([str(module)]),
         # Earlier versions pointed the shortcut at these modules.
@@ -247,7 +251,9 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
         content = f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(module))} "$@"\n'
         dictation.atomic(launcher, content)
         launcher.chmod(0o755)
-        double_click = bindir / "Whisper Dictation.command"
+        # A Finder-friendly launcher for installs opened from the user Applications folder.
+        double_click = bindir / f"{hotkeys.APP_NAME}.command"
+        (bindir / "Whisper Dictation.command").unlink(missing_ok=True)
         dictation.atomic(
             double_click,
             f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(module.with_name('app.py')))}\n",
@@ -278,7 +284,8 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
 
 
 def app_bundle(prefix: Path) -> Path:
-    return prefix.parent / "Applications/Clipboard+ Desktop.app"
+    # ~/Applications is writable without an administrator password and is indexed by macOS.
+    return prefix.parent / f"Applications/{hotkeys.APP_NAME}.app"
 
 
 def tray_command(prefix: Path, python: Path) -> list[str]:
@@ -295,18 +302,20 @@ def install_app_launcher(prefix: Path) -> None:
         windows_shortcut(prefix / "lib/tray.py", python)
     elif desktop.platform_name() == "macos":
         bundle = app_bundle(prefix)
-        legacy = bundle.with_name("Whisper Dictation.app")
-        legacy_info = legacy / "Contents/Info.plist"
-        legacy_launcher = legacy / "Contents/MacOS/WhisperDictation"
-        if (
-            not bundle.exists()
-            and legacy_info.is_file()
-            and plistlib.loads(legacy_info.read_bytes()).get("CFBundleIdentifier")
-            == "org.whisperdictation.desktop"
-            and legacy_launcher.is_file()
-            and str(prefix / "lib/menubar.py") in legacy_launcher.read_text()
-        ):
-            legacy.rename(bundle)
+        for old_name in ("Whisper Dictation.app", "Clipboard+ Desktop.app"):
+            legacy = bundle.with_name(old_name)
+            legacy_info = legacy / "Contents/Info.plist"
+            legacy_launcher = legacy / "Contents/MacOS/WhisperDictation"
+            if (
+                not bundle.exists()
+                and legacy_info.is_file()
+                and plistlib.loads(legacy_info.read_bytes()).get("CFBundleIdentifier")
+                == "org.whisperdictation.desktop"
+                and legacy_launcher.is_file()
+                and str(prefix / "lib/menubar.py") in legacy_launcher.read_text()
+            ):
+                legacy.rename(bundle)
+                break
         info = bundle / "Contents/Info.plist"
         if bundle.exists() and (
             not info.exists()
@@ -382,7 +391,13 @@ def launch(prefix: Path) -> None:
         raise dictation.DictationError("The desktop app is not installed at this location.")
     if desktop.platform_name() == "macos":
         stop_menubar(dictation.Paths())
-        subprocess.run(["/usr/bin/open", str(app_bundle(prefix))], check=True, timeout=15)
+        bundle = app_bundle(prefix)
+        if not (bundle / "Contents/MacOS/WhisperDictation").is_file():
+            raise dictation.DictationError(
+                f"{hotkeys.APP_NAME} was installed, but its macOS app bundle is missing. "
+                "Run the installer again."
+            )
+        subprocess.run(["/usr/bin/open", str(bundle)], check=True, timeout=15)
     else:
         stop_menubar(dictation.Paths())
         windowed = gui_python(prefix)[1]
@@ -476,6 +491,7 @@ def uninstall(prefix: Path) -> None:
         "bin/dictate-toggle",
         "bin/dictate-toggle.cmd",
         "bin/Whisper Dictation.command",
+        f"bin/{hotkeys.APP_NAME}.command",
     ):
         (prefix / relative).unlink(missing_ok=True)
     cache = prefix / "lib/__pycache__"
@@ -559,13 +575,14 @@ def main() -> int:
                 wait=True,
                 method="quick" if os.environ.get("DICTATION_QUICK_INSTALL") else "manual",
             )
+            # Normal installation should be immediately usable. On a first run the menu
+            # bar app opens the setup window; on later runs it opens Settings.
+            if not args.no_shortcut:
+                launch(prefix)
             if not os.environ.get("DICTATION_QUICK_INSTALL"):  # It says what happens next.
                 print(f"Installed: {launcher}")
                 print(f"Settings: {dictation.Paths().config}")
-                print(
-                    f"Open {hotkeys.APP_NAME} from Applications or your application menu "
-                    "to finish setup."
-                )
+                print(f"Opened {hotkeys.APP_NAME} to finish setup.")
         return 0
     except (OSError, dictation.DictationError, subprocess.SubprocessError) as exc:
         print(f"Setup did not complete: {exc}", file=sys.stderr)
