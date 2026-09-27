@@ -272,9 +272,26 @@ class PageTests(PageCase):
         for number in range(clipui.PAGE_SIZE + 10):
             self.store.add_text(f"item {number}", now=float(number))
         self.page.reload()
+        # The first rows appear at once; the rest follow a batch per frame.
+        self.assertEqual(len(self.page.rows), clipui.ROW_BATCH)
+        self.page._flush()
         self.assertEqual(len(self.page.rows), clipui.PAGE_SIZE)
+        texts = [row.item.text for row in self.page.rows]
+        self.assertEqual(texts, [f"item {n}" for n in range(59, 59 - clipui.PAGE_SIZE, -1)])
+        packed = [
+            str(w) for w in self.page.card.pack_slaves() if w in {r.frame for r in self.page.rows}
+        ]
+        self.assertEqual(packed, [str(row.frame) for row in self.page.rows])
+        # A new copy on top keeps every drawn row, drawn again in place.
+        frames = {row.item.id: row.frame for row in self.page.rows}
+        self.store.add_text("newest", now=100.0)
+        self.page.reload()
+        self.page._flush()
+        kept = [row for row in self.page.rows if row.item.id in frames]
+        self.assertTrue(all(frames[row.item.id] is row.frame for row in kept))
+        self.assertEqual(self.page.rows[0].item.text, "newest")
         self.buttons("Load more")[0].invoke()
-        self.assertEqual(len(self.page.rows), clipui.PAGE_SIZE + 10)
+        self.assertEqual(len(self.page.rows), clipui.PAGE_SIZE + 11)
         self.assertEqual(self.buttons("Load more"), [])
 
     def test_an_unchanged_history_is_not_redrawn(self):

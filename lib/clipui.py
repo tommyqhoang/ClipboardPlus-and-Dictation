@@ -18,6 +18,9 @@ import hotkeys
 import telemetry
 
 PAGE_SIZE = 50
+# Rows are drawn this many at a time: the first batch fills the window at once, the
+# rest follow between frames, so opening or searching never waits on the whole list.
+ROW_BATCH = 12
 PREVIEW_CHARS = 140
 SEARCH_DELAY_MS = 150
 THUMB_PIXELS = 96
@@ -142,6 +145,9 @@ class ClipboardPage:
         self.list_frame.pack(fill="x")
         self.card: tk.Frame | None = None
         self.rows = []  # Any earlier rows went with the page.
+        self._queue: list[clipstore.Item] = []  # Rows still to draw, in order.
+        self._spare: dict[int, Row] = {}  # Drawn rows kept for reuse by those.
+        self._drawing: str | None = None
         self.footer = ttk.Frame(frame)
         self.footer.pack(fill="x", pady=(8, 0))
         self.reload()
@@ -310,27 +316,76 @@ class ClipboardPage:
         items = self._items()
         shown = {item.image_file for item in items if item.kind == "image"}
         self._thumbs = {name: photo for name, photo in self._thumbs.items() if name in shown}
-        drawn = {row.item.id: row for row in self.rows}
+        self._stop_drawing()
+        drawn = {row.item.id: row for row in self.rows} | self._spare
         self.rows = []
-        for item in items:
-            row = drawn.pop(item.id, None)
-            if row is not None and _same_look(row.item, item):
-                row.item = item
-                row.when.configure(text=self._meta(item))
-                self.rows.append(row)
-            else:
-                if row is not None:
-                    row.frame.destroy()
-                self._add_row(item)
+        made = 0
+        for index, item in enumerate(items):
+            row = drawn.get(item.id)
+            if (row is None or not _same_look(row.item, item)) and made >= ROW_BATCH:
+                # The rest are drawn after this frame; their old rows wait to be reused.
+                for later in items[index:]:
+                    old = drawn.get(later.id)
+                    if old is not None:
+                        old.frame.pack_forget()
+                self._queue = list(items[index:])
+                break
+            drawn.pop(item.id, None)
+            made += self._place_row(row, item)
+        self._spare = {item.id: drawn.pop(item.id) for item in self._queue if item.id in drawn}
         for row in drawn.values():
             row.frame.destroy()
         self._order()
+        if self._queue:
+            self._drawing = self.app.root.after(1, self._draw_more)
         if not self.rows and self.card is not None:
             self.card.destroy()  # An empty outline would sit above the hint.
             self.card = None
         self.selected = max(0, min(self.selected, len(self.rows) - 1))
         self._paint_selection()
         self._finish(len(items))
+
+    def _place_row(self, row: Row | None, item: clipstore.Item) -> int:
+        """Keep a row that still looks right, or draw it anew (1 when drawn)."""
+        if row is not None and _same_look(row.item, item):
+            row.item = item
+            row.when.configure(text=self._meta(item))
+            self.rows.append(row)
+            return 0
+        if row is not None:
+            row.frame.destroy()
+        self._add_row(item)
+        return 1
+
+    def _draw_more(self) -> None:
+        """Draw the next batch of rows below those already shown."""
+        self._drawing = None
+        if not self.list_frame.winfo_exists():
+            return
+        batch, self._queue = self._queue[:ROW_BATCH], self._queue[ROW_BATCH:]
+        for item in batch:
+            row = self._spare.pop(item.id, None)
+            self._place_row(row, item)
+            if row is not None and row in self.rows:
+                row.frame.pack(fill="x", pady=(1, 0))  # Back in place, at the end.
+        if self._queue:
+            self._drawing = self.app.root.after(1, self._draw_more)
+        else:
+            for row in self._spare.values():
+                row.frame.destroy()
+            self._spare = {}
+
+    def _flush(self) -> None:
+        """Draw every waiting row now (before work that needs the whole list)."""
+        while self._queue:
+            self._draw_more()
+        self._stop_drawing()
+
+    def _stop_drawing(self) -> None:
+        if self._drawing is not None:
+            self.app.root.after_cancel(self._drawing)
+            self._drawing = None
+        self._queue = []
 
     def _pause_text(self) -> str:
         until = hotkeys.Preferences(self.app.service.paths).clipboard().paused_until
@@ -400,6 +455,7 @@ class ClipboardPage:
     def load_more(self) -> None:
         """Add the next page below the rows already drawn instead of redrawing them all."""
         self.limit += PAGE_SIZE
+        self._flush()
         have = {row.item.id for row in self.rows}
         items = self._items()
         for item in items:
