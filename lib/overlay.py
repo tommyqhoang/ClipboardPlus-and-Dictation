@@ -29,7 +29,7 @@ import hotkeys
 import telemetry
 
 WIDTH, HEIGHT, DRAFT_HEIGHT = 480, 76, 104
-MARGIN = 48  # Below the top edge of the screen (clear of the top bar).
+MARGIN = 200  # Below the top edge: clear of the top bar and notification banners.
 BARS = 19
 FRAME_MS = 33  # About 30 frames a second.
 SAMPLE_RATE = 16_000  # The recorder writes raw 16-bit mono PCM at this rate.

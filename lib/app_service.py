@@ -398,6 +398,19 @@ class Service:
         saved.update(language=language, device=device.strip(), **settings)
         d.atomic(self.paths.config, json.dumps(saved, indent=2))
 
+    def set_voice(self, language: str, device: str) -> None:
+        """Save the language and microphone at once; the next recording uses them."""
+        if d.busy(self.paths):
+            raise d.DictationError("Finish recording before changing the microphone or language.")
+        if language not in ("en", "auto") or not device.strip():
+            raise d.DictationError("Choose a language and microphone first.")
+        if desktop.platform_name() == "windows" and device == "default":
+            raise d.DictationError("Choose Refresh, then pick the microphone you’ll speak into.")
+        d.private_dir(self.paths.config.parent)
+        saved = d.DEFAULTS | d.read_json(self.paths.config)
+        saved.update(language=language, device=device.strip())
+        d.atomic(self.paths.config, json.dumps(saved, indent=2))
+
     def set_option(self, key: str, value: bool) -> None:
         """Save one on/off dictation option at once (the recording bar, live drafts)."""
         if key not in ("overlay", "live", "auto_paste"):

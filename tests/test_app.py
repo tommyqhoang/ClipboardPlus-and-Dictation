@@ -511,7 +511,7 @@ class WindowTests(ServiceCase):
             with patch.object(self.gui.messagebox, "askyesnocancel") as ask:
                 self.window.tab("settings")  # Nothing changed: no question.
                 ask.assert_not_called()
-            self.window.language.set("Multilingual / auto-detect")
+            self.window.model_source.set("service")
             with patch.object(self.gui.messagebox, "askyesnocancel", return_value=None):
                 self.window.tab("dictation")
             self.assertEqual(self.window.page, "settings")  # Cancel stays.
@@ -837,12 +837,23 @@ class WindowTests(ServiceCase):
         ):
             self.window.settings()
             self.assertEqual(self.window.step.get(), "")
-            labels = [b.cget("text") for b in self.window.bar_actions.winfo_children()]
-            self.assertEqual(labels, ["Save", "Close"])
-            self.window.prepare()
+            # Everything saves as it changes: no Save button to forget.
+            self.assertEqual(self.window.bar_actions.winfo_children(), [])
+            self.window.language.set("Multilingual / auto-detect")
+            self.window.save_voice()
+            self.assertEqual(d.read_json(self.paths.config)["language"], "auto")
+            # The AI choice shows Apply only once it differs from what's in use.
+            self.root.update()
+            self.assertFalse(self.window.apply_row.winfo_manager())
+            self.window.model_source.set("service")
+            self.root.update()
+            self.assertTrue(self.window.apply_row.winfo_manager())
+            self.window.apply_button.invoke()
             self.finish()
+            self.root.update()
+            self.assertFalse(self.window.apply_row.winfo_manager())
         self.assertEqual(self.window.page, "settings")
-        self.assertEqual(self.window.status.get(), "Settings saved.")
+        self.assertEqual(self.window.status.get(), "Transcription AI applied.")
 
     def test_scrollbar_hides_when_content_fits(self):
         self.window.scroll(0.0, 1.0)
@@ -857,9 +868,7 @@ class WindowTests(ServiceCase):
         self.window.tray = False
         with patch.object(self.service, "completed", return_value=True):
             self.window.settings()
-        cancel = self.window.bar_actions.winfo_children()[-1]
-        self.assertEqual(cancel.cget("text"), "Close")
-        cancel.invoke()
+            self.window.tab("dictation")
         self.assertEqual(self.window.page, "home")
         self.tick()
         self.assertIn("disabled", self.window.cancel.state())

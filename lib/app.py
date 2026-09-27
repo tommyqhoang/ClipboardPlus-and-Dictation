@@ -146,6 +146,8 @@ class App:
         self.default_button: ttk.Button | None = None
         # The dictation fields as last saved, to catch leaving Settings with edits.
         self.settings_snapshot: tuple[str, ...] | None = None
+        self.traces: list[tuple[tk.Variable, str]] = []
+        self.apply_timer: str | None = None
         self.root.bind_all("<Return>", self.on_return, add="+")
         self.root.bind_all("<KP_Enter>", self.on_return, add="+")
         self.language = tk.StringVar(value="English")
@@ -611,6 +613,9 @@ class App:
             self.end_capture()
         self.page = page
         self.settings_snapshot = None
+        for variable, trace in self.traces:  # Page listeners on long-lived variables.
+            variable.trace_remove("write", trace)
+        self.traces = []
         self.buttons = []
         self.default_button = None
         self.account = None
@@ -662,9 +667,8 @@ class App:
         )
 
     def settings_values(self) -> tuple[str, ...]:
+        """The Transcription AI choice, which is applied explicitly (it may download)."""
         return (
-            self.language.get(),
-            self.device_ids.get(self.device.get(), self.device.get()),
             self.model_source.get(),
             self.model.get(),
             self.endpoint.get().strip(),
@@ -683,7 +687,7 @@ class App:
             return True
         answer = messagebox.askyesnocancel(
             "Save your changes?",
-            "You changed your dictation settings but haven’t saved them.",
+            "You changed the transcription AI but haven’t applied it.",
             parent=self.root,
         )
         if answer:
@@ -1250,17 +1254,23 @@ class App:
         )
         voice = self.card("Dictation")
         ttk.Label(voice, text="Language", style="Card.TLabel").pack(anchor="w")
-        ttk.Combobox(
+        language = ttk.Combobox(
             voice,
             textvariable=self.language,
             state="readonly",
             values=("English", "Multilingual / auto-detect"),
-        ).pack(fill="x", pady=(6, 16))
+        )
+        language.pack(fill="x", pady=(6, 16))
         ttk.Label(voice, text="Microphone", style="Card.TLabel").pack(anchor="w")
         row = ttk.Frame(voice, style="Card.TFrame")
         row.pack(fill="x", pady=(6, 0))
-        self.device_picker = ttk.Combobox(row, textvariable=self.device, values=("default",))
+        self.device_picker = ttk.Combobox(
+            row, textvariable=self.device, values=("default",), state="readonly"
+        )
         self.device_picker.pack(side="left", fill="x", expand=True)
+        if not setup:  # Saved as chosen, like the switches below.
+            for picker in (language, self.device_picker):
+                picker.bind("<<ComboboxSelected>>", lambda _: self.save_voice())
         self.button("Refresh", self.find_microphones, parent=row, side="right")
         self.mic_button = self.button("Test", self.test_microphone, parent=row, side="right")
         # A live level meter while testing (hidden otherwise).
@@ -1340,6 +1350,24 @@ class App:
         if not remote:
             self.choose_provider()
         self.show_choice()
+        if not setup:
+            # The AI choice is applied on purpose: it can download a model or check a key.
+            self.apply_row = ttk.Frame(ai, style="Card.TFrame")
+            self.apply_button = self.button("Apply", self.prepare, True, self.apply_row, "right")
+            self.default_button = self.apply_button
+            ttk.Label(self.apply_row, text="Not applied yet.", style="CardHint.TLabel").pack(
+                side="right"
+            )
+            for variable in (
+                self.model_source,
+                self.model,
+                self.endpoint,
+                self.api_model,
+                self.api_key,
+            ):
+                self.traces.append(
+                    (variable, variable.trace_add("write", lambda *_: self.after_edit()))
+                )
         if not setup:  # During setup the choice was just made; changing it here strands it.
             self.features_card()
             self.shortcuts_card()
@@ -1348,19 +1376,41 @@ class App:
         self.clipboard_plus_card()
         if not setup:
             self.privacy_card()
-        self.button("Continue" if setup else "Save", self.prepare, True, self.actions(), "right")
         if setup:
+            self.button("Continue", self.prepare, True, self.actions(), "right")
             self.button("Back", self.choose_features, parent=self.actions(), side="left")
-        if not setup:
-            self.button(
-                "Close",
-                self.close_settings,
-                parent=self.actions(),
-                side="right",
-            )
+        else:
             self.settings_snapshot = self.settings_values()
         # Discovery only lists devices; it never opens the microphone.
         self.root.after_idle(self.find_microphones)
+
+    def save_voice(self) -> None:
+        language = "en" if self.language.get() == "English" else "auto"
+        device = self.device_ids.get(self.device.get(), self.device.get())
+        try:
+            self.service.set_voice(language, device)
+        except (d.DictationError, OSError) as exc:
+            self.status.set(str(exc))
+            return
+        telemetry.event("setting_changed", setting="voice", on=True)
+        self.saved("Saved. It applies to your next recording.")
+
+    def after_edit(self) -> None:
+        if self.apply_timer is None:
+            self.apply_timer = self.root.after_idle(self.show_apply)
+
+    def show_apply(self) -> None:
+        """Show Apply only while the AI choice differs from what's in use."""
+        self.apply_timer = None
+        if self.page != "settings" or not self.apply_row.winfo_exists():
+            return
+        changed = (
+            self.settings_snapshot is not None and self.settings_values() != self.settings_snapshot
+        )
+        if changed and not self.apply_row.winfo_manager():
+            self.apply_row.pack(fill="x", pady=(12, 0))
+        elif not changed and self.apply_row.winfo_manager():
+            self.apply_row.pack_forget()
 
     def reset_dictation_settings(self) -> None:
         """Set a damaged settings file aside (kept, not deleted) and start from defaults."""
@@ -1467,16 +1517,10 @@ class App:
         self.device_ids = {names.get(device, device): device for device in devices}
         self.device_picker.configure(values=list(self.device_ids))
         current = self.device_ids.get(self.device.get(), self.device.get())
-        unchanged = self.settings_snapshot is not None and current == self.settings_snapshot[1]
         if current not in devices:
             # Never silently pick an arbitrary device: the system default is safest.
             current = "default" if "default" in devices else devices[0]
         self.device.set(names.get(current, current))
-        if unchanged and self.settings_snapshot is not None:
-            # Replacing a missing saved microphone is not the user's edit.
-            snapshot = list(self.settings_snapshot)
-            snapshot[1] = current
-            self.settings_snapshot = tuple(snapshot)
         found = f"{len(devices)} microphone{'s' if len(devices) != 1 else ''} found."
         self.status.set(f"{found} Pick the one you’ll speak into.")
 
@@ -1516,9 +1560,10 @@ class App:
             if setup:
                 self.after_dictation_setup()
             else:
-                self.status.set("Settings saved.")  # Stay here: no walkthrough again.
+                self.saved("Transcription AI applied.")  # Stay here: no walkthrough again.
                 if self.page == "settings":
                     self.settings_snapshot = self.settings_values()
+                    self.show_apply()
 
         if source == "download":
             if self.pause_download is None or not self.pause_download.winfo_exists():
@@ -1563,7 +1608,7 @@ class App:
             [
                 (
                     f"Press {shortcut} in any app and speak",
-                    "A small bar at the top of your screen shows it’s listening; "
+                    "A small bar near the top of your screen shows it’s listening; "
                     f"the icon in the {place} turns red.",
                 ),
                 (
