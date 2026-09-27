@@ -913,6 +913,12 @@ class App:
         """Start only the setup steps the chosen features need."""
         self.setup_mode = mode
         dictation = mode != "clipboard"
+        if dictation:
+            # Saved first, so `ready()` checks dictation even after an earlier
+            # "Clipboard only" pass turned it off.
+            prefs = hotkeys.Preferences(self.service.paths)
+            clipboard = mode == "both" and prefs.features().clipboard
+            prefs.save(features=hotkeys.Features(True, clipboard))
         self.setup_steps = [
             "features",
             *(("dictation",) if dictation and not self.service.ready() else ()),
@@ -922,8 +928,6 @@ class App:
         if mode == "clipboard":
             self.clipboard_optin(self.after_optin)
             return
-        if mode == "dictation":
-            hotkeys.Preferences(self.service.paths).save(features=hotkeys.Features(True, False))
         if self.service.ready():
             self.after_dictation_setup()
         else:
@@ -1210,7 +1214,19 @@ class App:
             )
         else:
             self.reset("settings", "", "")
-        config = d.Config(self.service.paths)
+        try:
+            config = d.Config(self.service.paths)
+        except d.DictationError as exc:
+            telemetry.capture(exc, level="warning", page="settings")
+            self.card("Your dictation settings can’t be read", str(exc))
+            self.button(
+                "Reset dictation settings",
+                self.reset_dictation_settings,
+                True,
+                self.actions(),
+                "right",
+            )
+            return
         self.language.set(
             "English" if config.s("language") == "en" else "Multilingual / auto-detect"
         )
@@ -1345,6 +1361,17 @@ class App:
             self.settings_snapshot = self.settings_values()
         # Discovery only lists devices; it never opens the microphone.
         self.root.after_idle(self.find_microphones)
+
+    def reset_dictation_settings(self) -> None:
+        """Set a damaged settings file aside (kept, not deleted) and start from defaults."""
+        config = self.service.paths.config
+        try:
+            os.replace(config, config.with_name(config.name + ".bak"))
+        except OSError as exc:
+            self.status.set(f"Couldn’t reset the settings: {exc.strerror or exc}")
+            return
+        self.settings()
+        self.status.set("Settings reset. The old file was kept as config.json.bak.")
 
     def show_choice(self) -> None:
         # Only the selected option shows its details, keeping the card short.
@@ -1529,6 +1556,7 @@ class App:
             desktop.platform_name(), "top bar"
         )
         shortcut = hotkeys.Preferences(self.service.paths).shortcut().label()
+        auto_paste = (d.DEFAULTS | d.read_json(self.service.paths.config)).get("auto_paste") is True
         body = self.card()
         self.steps(
             body,
@@ -1540,9 +1568,15 @@ class App:
                 ),
                 (
                     f"Press {shortcut} again to stop",
-                    "The bar shows “Transcribing…”, then “Copied” when your text is ready.",
+                    "The bar shows “Transcribing…”, then “Pasted” or “Copied” when your "
+                    "text is ready.",
                 ),
-                ("Paste anywhere", f"Your words are already copied. Press {paste}."),
+                (
+                    "Your words appear where you were typing",
+                    f"They’re also copied, so {paste} pastes them anywhere else.",
+                )
+                if auto_paste
+                else ("Paste anywhere", f"Your words are already copied. Press {paste}."),
             ],
         )
         tips = self.card("Try saying")
@@ -2143,6 +2177,9 @@ class App:
         self.helper.shutdown(wait=False, cancel_futures=True)  # Lookups only; nothing to save.
         if self.clipboard_store is not None:
             self.clipboard_store.close()
+        # Idle callbacks still queued would run against destroyed widgets.
+        for pending in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            self.root.after_cancel(pending)
         self.root.destroy()
 
 

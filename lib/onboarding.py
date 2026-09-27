@@ -141,7 +141,7 @@ def _download_model(
             return destination
         # Damaged or replaced: keep it aside (never delete a user's file) and fetch anew.
         os.replace(destination, destination.with_name(destination.name + ".damaged"))
-    for stale in folder.glob("model-*.part"):
+    for stale in folder.glob("ggml-*.bin.part"):
         if time.time() - stale.stat().st_mtime > STALE_PARTIAL_SECONDS:
             stale.unlink(missing_ok=True)
     partial = destination.with_suffix(".bin.part")
@@ -220,7 +220,11 @@ def _download_model(
                     raise dictation.DictationError(
                         "Not enough free disk space for the speech model (about 150 MB)."
                     ) from exc
-                raise
+                # A dropped connection (reset, SSL): keep what arrived so a retry resumes.
+                keep_partial = True
+                raise dictation.DictationError(
+                    "The speech model download was interrupted. Try again to resume where it stopped."
+                ) from exc
         if digest.hexdigest() != expected:
             raise dictation.DictationError("Model checksum mismatch; download was not activated.")
         os.replace(partial, destination)

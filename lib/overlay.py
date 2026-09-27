@@ -302,7 +302,10 @@ class Overlay:
         if self._next is not None:
             self.root.after_cancel(self._next)  # Never two animation loops at once.
         now = self._clock()
-        self._read_state()
+        try:
+            self._read_state()
+        except (d.DictationError, OSError):
+            pass  # Mid-replace (Windows) or briefly unreadable: keep the last view.
         for i, target in enumerate(self._targets(now)):
             # Rise quickly with the voice, fall back gently.
             speed = 0.6 if target > self.heights[i] else 0.18
@@ -418,6 +421,8 @@ class Overlay:
             )
             return "Transcribing" + dots, self.message or said
         if self.mode == "copied":
+            if self.message == d.PASTED:
+                return "Pasted", "It’s on the clipboard too"
             key = "Command+V" if desktop.platform_name() == "macos" else "Ctrl+V"
             return "Copied to the clipboard", f"Press {key} to paste"
         if self.mode == "empty":

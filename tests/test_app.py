@@ -519,6 +519,22 @@ class WindowTests(ServiceCase):
                 self.window.tab("dictation")
             self.assertEqual(self.window.page, "home")  # Don't save leaves.
 
+    def test_unreadable_settings_offer_a_reset_instead_of_crashing(self):
+        d.private_dir(self.paths.config.parent)
+        self.paths.config.write_text('{"language": 5}', encoding="utf-8")
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.settings()
+            self.assertEqual(self.window.page, "settings")
+            [reset] = [
+                button
+                for button in self.window.bar_actions.winfo_children()
+                if button.cget("text") == "Reset dictation settings"
+            ]
+            with patch.object(self.gui.App, "find_microphones"):
+                reset.invoke()
+        self.assertTrue(self.paths.config.with_name("config.json.bak").exists())
+        self.assertIn("Settings reset", self.window.status.get())
+
     def test_maximized_size_is_not_remembered(self):
         with patch.object(self.window, "maximized", return_value=True):
             self.root.deiconify()
@@ -526,6 +542,16 @@ class WindowTests(ServiceCase):
             self.root.update()
             self.window.save_size()
         self.assertFalse(self.window.size_file().exists())
+
+    def test_both_after_clipboard_only_still_sets_up_dictation(self):
+        self.window.after_features("clipboard")
+        self.window.after_optin(True)  # Clipboard only: dictation saved as off.
+        self.window.choose_features()
+        with patch.object(self.gui.App, "find_microphones"):
+            self.window.after_features("both")
+        self.assertIn("dictation", self.window.setup_steps)
+        self.assertEqual(self.window.page, "settings")
+        self.assertTrue(hotkeys.Preferences(self.paths).features().dictation)
 
     def test_first_launch_walkthrough_no_recording(self):
         self.window.tray = False

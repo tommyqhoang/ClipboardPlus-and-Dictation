@@ -381,7 +381,10 @@ class Tray:
             self.open_window("--setup")
         self.running = True
         while self.running:
-            self.tick()
+            try:
+                self.tick()
+            except Exception as exc:  # noqa: BLE001 - one failed tick must not freeze the icon.
+                telemetry.capture(exc, stage="tray_tick")
             time.sleep(0.5)
 
     def sync_dictation_shortcut(self) -> None:

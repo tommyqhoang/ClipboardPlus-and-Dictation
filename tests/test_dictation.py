@@ -137,6 +137,15 @@ class DictationTests(unittest.TestCase):
         self.cli("--transcribe")
         self.assertFalse(self.paths.audio.exists())
 
+    def test_discarding_a_failed_recording_clears_its_error(self):
+        (self.root / "fail").touch()
+        self.start()
+        self.cli()
+        self.wait_phase("error")
+        d.dispatch(self.config, self.paths, "discard")
+        self.assertFalse(self.paths.audio.exists())
+        self.assertEqual(d.read_json(self.paths.state)["phase"], "idle")
+
     def test_finishing_always_says_it_is_ready_to_paste(self):
         self.paths.audio.write_bytes(b"\0" * 3200)
         with (
@@ -169,9 +178,11 @@ class DictationTests(unittest.TestCase):
                 d.finish(self.config, self.paths, auto_paste=foreground)
                 self.assertEqual(paste.called, expected)
             self.assertIn("Pasted.", told.call_args.args[1])
+            self.paths.audio.write_bytes(b"audio")
+            self.assertEqual(d.finish(self.config, self.paths, auto_paste=True), "pasted")
             paste.return_value = False
             self.paths.audio.write_bytes(b"audio")
-            d.finish(self.config, self.paths, auto_paste=True)
+            self.assertEqual(d.finish(self.config, self.paths, auto_paste=True), "copied")
             self.assertIn("Ready to paste", told.call_args.args[1])
 
     def test_paste_uses_platform_helper_and_never_falls_back_across_wayland(self):

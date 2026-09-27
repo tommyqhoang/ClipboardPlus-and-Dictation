@@ -175,6 +175,12 @@ class OverlayWindowTests(unittest.TestCase):
         self.frames(overlay.HOLD["copied"] + 1)
         self.assertTrue(self.pill.closed)
 
+    def test_an_auto_pasted_transcript_says_pasted(self):
+        self.frames(0.2)
+        self.state("idle", result="copied", message=d.PASTED)
+        self.frames(0.3)
+        self.assertEqual(self.pill._words(self.now)[0], "Pasted")
+
     def test_the_buttons_stop_or_cancel_the_recording(self):
         self.frames(0.2)
         (left, top, right, bottom) = self.pill._buttons()["stop"]

@@ -142,25 +142,26 @@ class OnboardingTests(unittest.TestCase):
                 onboarding.download_model(folder, "auto")
         self.assertEqual(list(folder.glob("*.part")), [])
 
-    def test_download_network_failure_cleans_partial(self):
+    def test_a_dropped_connection_keeps_the_partial_to_resume(self):
         folder = Path(self.temp.name) / "models"
-        with patch.object(onboarding, "open_url", side_effect=OSError("offline")):
-            with self.assertRaises(OSError):
+        with patch.object(onboarding, "open_url", side_effect=ConnectionResetError("reset")):
+            with self.assertRaisesRegex(dictation.DictationError, "resume"):
                 onboarding.download_model(folder, "auto")
-        self.assertEqual(list(folder.glob("*.part")), [])
+        self.assertEqual(len(list(folder.glob("*.part"))), 1)
 
     def test_download_removes_only_stale_partials(self):
         folder = Path(self.temp.name) / "models"
         folder.mkdir()
-        stale, active = folder / "model-old.part", folder / "model-new.part"
+        stale, active = folder / "ggml-old.bin.part", folder / "ggml-new.bin.part"
         stale.write_bytes(b"")
         active.write_bytes(b"")
         old = stale.stat().st_mtime - onboarding.STALE_PARTIAL_SECONDS - 1
         os.utime(stale, (old, old))
         with patch.object(onboarding, "open_url", side_effect=OSError("offline")):
-            with self.assertRaises(OSError):
+            with self.assertRaises(dictation.DictationError):
                 onboarding.download_model(folder, "en")
-        self.assertEqual([path.name for path in folder.glob("*.part")], ["model-new.part"])
+        self.assertFalse(stale.exists())
+        self.assertTrue(active.exists())
 
     def test_pause_preserves_bytes_and_resume_requests_validated_range(self):
         data = b"lmgg" + b"a" * (1024 * 1024 + 20)

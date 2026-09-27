@@ -470,11 +470,15 @@ def paste_text(config: Config) -> bool:
         return False
 
 
+PASTED = "Pasted into your app. It’s on the clipboard too."
+
+
 def finish(config: Config, paths: Paths, *, auto_paste: bool = False) -> str:
-    """Transcribe the retained audio: "copied", or "empty" when nothing was said."""
+    """Transcribe the retained audio: "pasted", "copied", or "empty" when nothing was said."""
     if not paths.audio.exists():
         raise DictationError("No retained audio. Start a new recording.")
     text = transcribe(config, paths.audio.read_bytes(), paths.cache)
+    pasted = False
     if text:
         atomic(paths.text, text)
         # A new original invalidates the previous review draft and avoids
@@ -494,7 +498,7 @@ def finish(config: Config, paths: Paths, *, auto_paste: bool = False) -> str:
         notify(config, "No speech detected. Previous transcript and clipboard kept.")
     if not config.b("keep_audio"):
         paths.audio.unlink(missing_ok=True)
-    return "copied" if text else "empty"
+    return ("pasted" if pasted else "copied") if text else "empty"
 
 
 def model_name(config: Config) -> str:
@@ -689,7 +693,11 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
             recorded = time.monotonic() - started
             began = time.monotonic()
             result = finish(config, paths, auto_paste=True)
-            state("idle", result=result)
+            # The pill shows a pasted transcript as copied too, saying it was pasted.
+            if result == "pasted":
+                state("idle", PASTED, result="copied")
+            else:
+                state("idle", result=result)
             telemetry.event(
                 "dictation_complete",
                 wait=True,
@@ -760,6 +768,8 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
             return
         if action == "discard":
             paths.audio.unlink(missing_ok=True)
+            # The saved recording's error no longer applies.
+            atomic(paths.state, json.dumps({"phase": "idle"}))
             print("Retained audio discarded. Saved transcript kept.")
             return
         try:
