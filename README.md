@@ -24,12 +24,29 @@ is new; there is no signed app bundle or MSI installer yet. See
 | Platform | Installed launcher | Microphone | Clipboard (dictation) | Clipboard history capture |
 | --- | --- | --- | --- | --- |
 | Linux/Wayland | Top bar icon + GNOME shortcut | ALSA/PipeWire via arecord | wl-copy | `wl-paste --watch` where the desktop allows it, otherwise X11 selection events (also under XWayland) |
-| macOS | Menu bar (`~/Applications/Whisper Dictation.app`) | FFmpeg AVFoundation | pbcopy | Pasteboard change count, polled twice a second |
+| macOS | Menu bar (`~/Applications/Clipboard+ Desktop.app`) | FFmpeg AVFoundation | pbcopy | Pasteboard change count, polled twice a second |
 | Windows x64 | System tray + Start Menu | FFmpeg DirectShow | Windows clipboard | Clipboard sequence number, polled four times a second |
 
 Local Whisper is the default. You can select your own compatible local model,
 use a local transcription server, or explicitly enable an external transcription
 API. External services may charge; no subscription is required for local use.
+
+## Privacy and anonymous diagnostics
+
+The setup flow and **Settings → Privacy** include a single switch, **Share anonymous
+crash reports and usage statistics**. It starts on, and you can turn it off at any
+time. `DO_NOT_TRACK=1` or `DICTATION_TELEMETRY=0` disables reporting for a launch.
+
+When enabled, usage reports contain a random per-installation identifier, a fixed
+event name, approved feature choices, and bounded counts or durations. Crash reports
+contain the exception type and frames from Clipboard+ Desktop only. Clipboard history,
+transcripts, audio, file names and paths, email addresses, API keys, and arbitrary
+error text are never sent. The app does not wait for reporting and quietly drops it
+when offline. Test runs and CI always disable reporting.
+
+Desktop usage reports reach the Clipboard+ API, which validates the fixed schema and
+forwards it to Google Analytics only when its server-side Measurement Protocol secret
+is configured. That secret is never included in the app or its installer.
 
 ## Quick install (no Git checkout)
 

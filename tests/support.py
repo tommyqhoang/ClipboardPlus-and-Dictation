@@ -8,6 +8,9 @@ import random
 import struct
 import zlib
 
+# Inherited by subprocesses, even when a fixture strips DICTATION_* variables.
+os.environ["DO_NOT_TRACK"] = "1"
+
 if os.environ.get("CI"):
     # A hung test (a dialog waiting for a click, a lock never released) would otherwise
     # sit silently until the job timeout. The suite takes about two minutes.

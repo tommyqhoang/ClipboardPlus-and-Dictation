@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
@@ -127,7 +128,7 @@ class OnboardingTests(unittest.TestCase):
         with patch.object(onboarding, "open_url", return_value=Response(b"bad", length=False)):
             with self.assertRaises(dictation.DictationError):
                 onboarding.download_model(folder, "en")
-        self.assertEqual(list(folder.iterdir()), [])
+        self.assertEqual(list(folder.glob("*.part")), [])
 
     def test_download_failures_say_what_to_do(self):
         folder = Path(self.temp.name) / "models"
@@ -139,14 +140,14 @@ class OnboardingTests(unittest.TestCase):
         with patch.object(onboarding, "open_url", side_effect=full):
             with self.assertRaisesRegex(dictation.DictationError, "disk space"):
                 onboarding.download_model(folder, "auto")
-        self.assertEqual(list(folder.iterdir()), [])
+        self.assertEqual(list(folder.glob("*.part")), [])
 
     def test_download_network_failure_cleans_partial(self):
         folder = Path(self.temp.name) / "models"
         with patch.object(onboarding, "open_url", side_effect=OSError("offline")):
             with self.assertRaises(OSError):
                 onboarding.download_model(folder, "auto")
-        self.assertEqual(list(folder.iterdir()), [])
+        self.assertEqual(list(folder.glob("*.part")), [])
 
     def test_download_removes_only_stale_partials(self):
         folder = Path(self.temp.name) / "models"
@@ -159,7 +160,53 @@ class OnboardingTests(unittest.TestCase):
         with patch.object(onboarding, "open_url", side_effect=OSError("offline")):
             with self.assertRaises(OSError):
                 onboarding.download_model(folder, "en")
-        self.assertEqual([path.name for path in folder.iterdir()], ["model-new.part"])
+        self.assertEqual([path.name for path in folder.glob("*.part")], ["model-new.part"])
+
+    def test_pause_preserves_bytes_and_resume_requests_validated_range(self):
+        data = b"lmgg" + b"a" * (1024 * 1024 + 20)
+        folder = Path(self.temp.name) / "models"
+        pause = threading.Event()
+        with (
+            patch.dict(onboarding.MODELS, {"en": ("base.en", hashlib.sha256(data).hexdigest())}),
+            patch.object(onboarding, "open_url", return_value=Response(data)),
+        ):
+            with self.assertRaises(onboarding.DownloadPaused):
+                onboarding.download_model(folder, "en", lambda *_: pause.set(), pause)
+        partial = folder / "ggml-base.en.bin.part"
+        prefix = partial.read_bytes()
+        self.assertEqual(prefix, data[: 1024 * 1024])
+        response = Response(data[len(prefix) :])
+        response.status = 206
+        response.headers["Content-Range"] = f"bytes {len(prefix)}-{len(data) - 1}/{len(data)}"
+        with (
+            patch.dict(onboarding.MODELS, {"en": ("base.en", hashlib.sha256(data).hexdigest())}),
+            patch.object(onboarding, "open_url", return_value=response) as request,
+        ):
+            self.assertEqual(onboarding.download_model(folder, "en").read_bytes(), data)
+        self.assertEqual(request.call_args.args[0].get_header("Range"), f"bytes={len(prefix)}-")
+        self.assertFalse(partial.exists())
+
+    def test_resume_restarts_when_range_is_ignored_and_rejects_wrong_range(self):
+        data = b"lmgg-complete"
+        folder = Path(self.temp.name) / "models"
+        folder.mkdir()
+        partial = folder / "ggml-base.en.bin.part"
+        partial.write_bytes(data[:4])
+        with (
+            patch.dict(onboarding.MODELS, {"en": ("base.en", hashlib.sha256(data).hexdigest())}),
+            patch.object(onboarding, "open_url", return_value=Response(data)),
+        ):
+            destination = onboarding.download_model(folder, "en")
+            self.assertEqual(destination.read_bytes(), data)
+        destination.unlink()
+        partial.write_bytes(data[:4])
+        response = Response(data[4:])
+        response.status = 206
+        response.headers["Content-Range"] = f"bytes 3-{len(data) - 1}/{len(data)}"
+        with patch.object(onboarding, "open_url", return_value=response):
+            with self.assertRaisesRegex(dictation.DictationError, "invalid resume"):
+                onboarding.download_model(folder, "en")
+        self.assertFalse(partial.exists())
 
     def test_connect_skips_unreachable_address_family_quickly(self):
         v6 = (onboarding.socket.AF_INET6, onboarding.socket.SOCK_STREAM, 6, "", ("::1", 443, 0, 0))

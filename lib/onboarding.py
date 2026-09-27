@@ -7,11 +7,12 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
 import subprocess
-import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -95,12 +96,39 @@ class _Handler(urllib.request.HTTPSHandler):
         return self.do_open(_Connection, req, context=ssl.create_default_context())
 
 
-def open_url(url: str) -> Any:
+def open_url(url: str | urllib.request.Request) -> Any:
     return urllib.request.build_opener(_Handler).open(url, timeout=60)
 
 
+class DownloadPaused(dictation.DictationError):
+    """A download stopped intentionally and can continue from its partial file."""
+
+
 def download_model(
-    folder: Path, language: str, progress: Callable[[int, int], None] | None = None
+    folder: Path,
+    language: str,
+    progress: Callable[[int, int], None] | None = None,
+    pause: threading.Event | None = None,
+) -> Path:
+    dictation.private_dir(folder)
+    fd = desktop.lock(folder / ".download.lock")
+    if fd is None:
+        raise dictation.DictationError(
+            "A model download is already running. Wait for it to finish."
+        )
+    try:
+        return _download_model(folder, language, progress, pause)
+    finally:
+        os.close(fd)
+        # Keep the lock inode: unlinking permits concurrent callers to lock
+        # different files with the same name.
+
+
+def _download_model(
+    folder: Path,
+    language: str,
+    progress: Callable[[int, int], None] | None,
+    pause: threading.Event | None,
 ) -> Path:
     name, expected = MODELS[language]
     destination = dictation.private_dir(folder) / f"ggml-{name}.bin"
@@ -116,17 +144,62 @@ def download_model(
     for stale in folder.glob("model-*.part"):
         if time.time() - stale.stat().st_mtime > STALE_PARTIAL_SECONDS:
             stale.unlink(missing_ok=True)
-    fd, partial = tempfile.mkstemp(prefix="model-", suffix=".part", dir=folder)
+    partial = destination.with_suffix(".bin.part")
+    if partial.is_symlink():
+        raise dictation.DictationError("The partial model file must not be a symlink.")
+    keep_partial = False
     try:
         digest = hashlib.sha256()
-        total = 0
+        total = partial.stat().st_size if partial.exists() else 0
+        if total > 160_000_000:
+            partial.unlink()
+            total = 0
+        if total:
+            with partial.open("rb") as previous:
+                for block in iter(lambda: previous.read(1024 * 1024), b""):
+                    digest.update(block)
         url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{destination.name}"
         print("Downloading the free base model (about 148 MB)...", flush=True)
-        with os.fdopen(fd, "wb") as output:
+        with partial.open("ab" if total else "wb") as output:
             try:
-                with open_url(url) as response:
-                    size = int(response.headers.get("Content-Length") or 0)
-                    while block := response.read(1024 * 1024):
+                if pause is not None and pause.is_set():
+                    keep_partial = True
+                    raise DownloadPaused("Download paused. Resume when you’re ready.")
+                request = (
+                    urllib.request.Request(url, headers={"Range": f"bytes={total}-"})
+                    if total
+                    else url
+                )
+                with open_url(request) as response:
+                    status = getattr(response, "status", 200)
+                    if total and status == 200:
+                        # Some mirrors ignore Range; restart instead of appending
+                        # another whole model to the retained prefix.
+                        output.seek(0)
+                        output.truncate()
+                        total = 0
+                        digest = hashlib.sha256()
+                    elif total:
+                        content_range = re.fullmatch(
+                            r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", "")
+                        )
+                        if (
+                            status != 206
+                            or not content_range
+                            or int(content_range[1]) != total
+                            or int(content_range[2]) + 1 != int(content_range[3])
+                        ):
+                            raise dictation.DictationError(
+                                "The model server returned an invalid resume response. Try downloading again."
+                            )
+                    size = total + int(response.headers.get("Content-Length") or 0)
+                    while True:
+                        if pause is not None and pause.is_set():
+                            keep_partial = True
+                            raise DownloadPaused("Download paused. Resume when you’re ready.")
+                        block = response.read(1024 * 1024)
+                        if not block:
+                            break
                         total += len(block)
                         if total > 160_000_000:
                             raise dictation.DictationError(
@@ -137,6 +210,7 @@ def download_model(
                         if progress:
                             progress(total, size)
             except (urllib.error.URLError, http.client.HTTPException, TimeoutError) as exc:
+                keep_partial = True
                 raise dictation.DictationError(
                     "Couldn’t download the speech model. Check your internet connection and "
                     "try again, or choose a model file or your own AI service instead."
@@ -151,7 +225,8 @@ def download_model(
             raise dictation.DictationError("Model checksum mismatch; download was not activated.")
         os.replace(partial, destination)
     finally:
-        Path(partial).unlink(missing_ok=True)
+        if not keep_partial:
+            partial.unlink(missing_ok=True)
     return destination
 
 

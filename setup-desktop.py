@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import desktop
 import dictation
 import hotkeys
+import telemetry
 
 REPOSITORY = Path(__file__).resolve().parent
 SHORTCUT_SCRIPT = """
@@ -92,6 +93,7 @@ ICONS = (
     (REPOSITORY / "assets/icon.ico", "whisper-dictation.ico"),
 )
 MODULES = (
+    "telemetry.py",
     "dictation.py",
     "desktop.py",
     "onboarding.py",
@@ -276,7 +278,7 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
 
 
 def app_bundle(prefix: Path) -> Path:
-    return prefix.parent / "Applications/Whisper Dictation.app"
+    return prefix.parent / "Applications/Clipboard+ Desktop.app"
 
 
 def tray_command(prefix: Path, python: Path) -> list[str]:
@@ -293,6 +295,18 @@ def install_app_launcher(prefix: Path) -> None:
         windows_shortcut(prefix / "lib/tray.py", python)
     elif desktop.platform_name() == "macos":
         bundle = app_bundle(prefix)
+        legacy = bundle.with_name("Whisper Dictation.app")
+        legacy_info = legacy / "Contents/Info.plist"
+        legacy_launcher = legacy / "Contents/MacOS/WhisperDictation"
+        if (
+            not bundle.exists()
+            and legacy_info.is_file()
+            and plistlib.loads(legacy_info.read_bytes()).get("CFBundleIdentifier")
+            == "org.whisperdictation.desktop"
+            and legacy_launcher.is_file()
+            and str(prefix / "lib/menubar.py") in legacy_launcher.read_text()
+        ):
+            legacy.rename(bundle)
         info = bundle / "Contents/Info.plist"
         if bundle.exists() and (
             not info.exists()
@@ -431,6 +445,7 @@ def uninstall(prefix: Path) -> None:
         if windowed.exists():
             hotkeys.set_login_item(False, tray_command(prefix, windowed))
     for relative in (
+        "lib/telemetry.py",
         "lib/dictation.py",
         "lib/desktop.py",
         "lib/onboarding.py",
@@ -531,11 +546,19 @@ def main() -> int:
             launch(prefix)
         elif args.uninstall:
             uninstall(prefix)
+            telemetry.event("app_uninstalled", wait=True)
             print(
                 "Removed desktop application files. Settings, models, transcripts and clipboard history were retained."
             )
         else:
             launcher = install(prefix, not args.no_shortcut)
+            # How many installs, where: anonymous, and off with DO_NOT_TRACK=1.
+            telemetry.set_component("installer")
+            telemetry.event(
+                "app_installed",
+                wait=True,
+                method="quick" if os.environ.get("DICTATION_QUICK_INSTALL") else "manual",
+            )
             if not os.environ.get("DICTATION_QUICK_INSTALL"):  # It says what happens next.
                 print(f"Installed: {launcher}")
                 print(f"Settings: {dictation.Paths().config}")

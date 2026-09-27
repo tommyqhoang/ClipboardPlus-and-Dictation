@@ -2,6 +2,9 @@ name: Quality
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
+env:
+  DO_NOT_TRACK: '1'
+  DICTATION_TELEMETRY: '0'
 jobs:
   checks:
     timeout-minutes: 20

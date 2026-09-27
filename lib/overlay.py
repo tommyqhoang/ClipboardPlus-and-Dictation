@@ -26,6 +26,7 @@ from typing import Any
 import desktop
 import dictation as d
 import hotkeys
+import telemetry
 
 WIDTH, HEIGHT, DRAFT_HEIGHT = 480, 76, 104
 MARGIN = 110  # Above the bottom edge of the screen (clear of docks and panels).
@@ -85,7 +86,7 @@ def view(state: dict[str, Any], token: str) -> View:
     if phase in ("starting", "recording"):
         return View(phase, message)
     if phase in ("transcribing", "cancelling"):
-        return View("transcribing" if phase == "transcribing" else "cancelled")
+        return View("transcribing" if phase == "transcribing" else "cancelled", message)
     if phase == "idle":
         result = str(state.get("result", ""))
         return View(result if result in HOLD else "cancelled", message)
@@ -112,6 +113,7 @@ class Overlay:
         self.ended_at: float | None = None
         self.started_at: float | None = None  # When recording began (for the timer).
         self.recorded = 0.0
+        self.max_seconds = 300
         self.history = [0.0] * (BARS // 2 + 1)  # Recent voice levels, newest first.
         self.heights = [0.0] * BARS
         self.draft = ""
@@ -232,7 +234,10 @@ class Overlay:
         if now - self._last_state < 0.1:
             return
         self._last_state = now
-        current = view(d.read_json(self.paths.state), self.token)
+        state = d.read_json(self.paths.state)
+        current = view(state, self.token)
+        if isinstance(state.get("max_seconds"), int):
+            self.max_seconds = state["max_seconds"]
         if current.mode == "gone":
             if self.ended_at is None:
                 self.ended_at = now - HOLD["cancelled"]
@@ -242,7 +247,8 @@ class Overlay:
         if current.mode == "transcribing" and self.mode == "recording":
             self.recorded = self._since_start(now)
         if current.mode == "recording" and self.started_at is None:
-            self.started_at = now
+            age = max(0.0, time.time() - float(state.get("started_at", time.time())))
+            self.started_at = now - age
         if current.mode in HOLD and self.ended_at is None:
             self.ended_at = now
         if current.mode == "error" and self.mode != "error":
@@ -398,6 +404,9 @@ class Overlay:
     def _words(self, now: float) -> tuple[str, str]:
         dots = "." * (1 + int(now * 2.5) % 3)
         if self.mode == "recording":
+            remaining = max(0, math.ceil(self.max_seconds - self._since_start(now)))
+            if remaining <= 30:
+                return "Listening", f"{remaining}s until automatic stop · {self.hint}"
             return "Listening", f"{elapsed(self._since_start(now))}  ·  {self.hint}"
         if self.mode == "starting":
             return "Starting" + dots, "Getting the microphone ready"
@@ -407,7 +416,7 @@ class Overlay:
                 if self.recorded
                 else "Turning speech into text"
             )
-            return "Transcribing" + dots, said
+            return "Transcribing" + dots, self.message or said
         if self.mode == "copied":
             key = "Command+V" if desktop.platform_name() == "macos" else "Ctrl+V"
             return "Copied to the clipboard", f"Press {key} to paste"
@@ -450,10 +459,12 @@ def main() -> int:
     if len(sys.argv) != 2:
         print("usage: overlay.py TOKEN", file=sys.stderr)
         return 2
+    telemetry.install("pill")
     try:
         root = tk.Tk(className="dictation-overlay")
     except tk.TclError:
         return 3  # No display: the notifications still tell the story.
+    telemetry.watch_tk(root)
     overlay = Overlay(root, d.Paths(), sys.argv[1])
     root.update_idletasks()
     overlay.tick()

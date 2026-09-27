@@ -56,7 +56,8 @@ main() (
         eval "$(/usr/local/bin/brew shellenv)"
       fi
     fi
-    brew install python@3.14 python-tk@3.14 ffmpeg whisper.cpp
+    brew install python@3.14 python-tk@3.14
+    brew install ffmpeg whisper.cpp || echo "Speech tools could not be installed. Clipboard+ will still install; retry speech setup later." >&2
     python_prefix="$(brew --prefix python@3.14)"
     # Use the Homebrew Python that has Tk, not whichever python3 is first on PATH.
     if [[ -x "${python_prefix}/bin/python3" ]]; then

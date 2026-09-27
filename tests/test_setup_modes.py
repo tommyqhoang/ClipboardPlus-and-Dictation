@@ -166,9 +166,38 @@ class SettingsTests(ModeCase):
 
     def test_clipboard_options_are_saved(self):
         self.prefs.save(features=hotkeys.Features(False, True))
-        self.window.save_clipboard_options(keep_items=500, keep_days=7, images=False)
+        with patch.object(self.gui.messagebox, "askyesno", return_value=True):
+            self.window.save_clipboard_options(keep_items=500, keep_days=7, images=False)
         saved = self.prefs.clipboard()
         self.assertEqual((saved.keep_items, saved.keep_days, saved.images), (500, 7, False))
+
+    def test_cancel_retention_reduction_preserves_preferences(self):
+        previous = self.prefs.clipboard()
+        with patch.object(self.gui.messagebox, "askyesno", return_value=False) as ask:
+            self.assertFalse(self.window.save_clipboard_options(100, 7, False))
+        ask.assert_called_once()
+        self.assertEqual(self.prefs.clipboard(), previous)
+
+    def test_setup_privacy_switch_persists_immediately(self):
+        self.window.choose_features()
+        self.assertIn("Privacy", self.texts())
+        self.window.share_usage.set(False)
+        widgets = [self.window.frame]
+        while widgets:
+            widget = widgets.pop()
+            if (
+                widget.winfo_class() == "TCheckbutton"
+                and widget.cget("text") == "Share anonymous crash reports and usage statistics"
+            ):
+                toggle = widget
+                break
+            widgets.extend(widget.winfo_children())
+        else:
+            self.fail("Privacy switch was not rendered")
+        toggle.invoke()
+        self.assertTrue(self.prefs.share_usage())  # invoke toggles it back on
+        toggle.invoke()
+        self.assertFalse(self.prefs.share_usage())
 
     def test_deleting_all_clipboard_data_asks_first_and_never_touches_the_cloud(self):
         store = clipstore.Store(self.paths.clipboard)

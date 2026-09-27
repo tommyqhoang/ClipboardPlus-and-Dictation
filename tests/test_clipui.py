@@ -230,6 +230,31 @@ class PageTests(PageCase):
         self.assertEqual([i.text for i in self.store.list()], ["stay"])
         self.assertEqual(len(self.page.rows), 1)
 
+    def test_undo_restores_favorite_and_label(self):
+        item = self.store.add_text("recover me")
+        self.store.set_favorite(item.id, True)
+        self.store.set_label(item.id, "Important")
+        self.page.reload()
+        with patch.object(clipui.messagebox, "askyesno", return_value=True):
+            self.page.delete(item.id)
+        self.page.undo_delete()
+        restored = self.store.list()[0]
+        self.assertEqual(
+            (restored.text, restored.favorite, restored.label), ("recover me", True, "Important")
+        )
+        self.assertIsNone(self.page.deleted)
+
+    def test_view_shows_full_text_without_copying(self):
+        text = "long text\n" * 200
+        item = self.store.add_text(text)
+        with (
+            patch.object(clipui, "TextPreview") as preview,
+            patch.object(self.service, "copy_item") as copy,
+        ):
+            self.page.view(item.id)
+        self.assertEqual(preview.call_args.args[2], text)
+        copy.assert_not_called()
+
     def test_clear_asks_first_and_keeps_favorites(self):
         keep = self.store.add_text("keep", now=1.0)
         self.store.add_text("drop", now=2.0)

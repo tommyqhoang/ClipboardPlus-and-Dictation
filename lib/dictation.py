@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import desktop
+import telemetry
 from desktop import lock
 
 
@@ -118,6 +119,7 @@ DEFAULTS: dict[str, Any] = {
     "vad_model": "",
     "preview_notifications": False,
     "overlay": True,
+    "auto_paste": False,
     "rewrite_endpoint": "",
     "rewrite_model": "",
     "rewrite_api_key_env": "DICTATION_REWRITE_API_KEY",
@@ -431,7 +433,44 @@ def record_transcript(paths: Paths, text: str) -> None:
     clipservice.record_transcript(paths, text)
 
 
-def finish(config: Config, paths: Paths) -> str:
+def paste_text(config: Config) -> bool:
+    """Best-effort paste into the focused app; clipboard remains the fallback."""
+    platform = desktop.platform_name()
+    if platform == "macos":
+        command = [
+            "osascript",
+            "-e",
+            'tell application "System Events" to keystroke "v" using command down',
+        ]
+    elif platform == "windows":
+        command = [
+            config.s("powershell"),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')",
+        ]
+    elif os.environ.get("WAYLAND_DISPLAY"):
+        # Never fall back to X11 input injection in a Wayland session: the
+        # focused native window might differ from XWayland's focused window.
+        command = ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"]
+    else:
+        command = ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            timeout=3,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **desktop.process_options(),
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def finish(config: Config, paths: Paths, *, auto_paste: bool = False) -> str:
     """Transcribe the retained audio: "copied", or "empty" when nothing was said."""
     if not paths.audio.exists():
         raise DictationError("No retained audio. Start a new recording.")
@@ -443,9 +482,12 @@ def finish(config: Config, paths: Paths) -> str:
         (paths.cache / "concise.json").unlink(missing_ok=True)
         record_transcript(paths, text)
         copy_text(config, paths)
+        pasted = auto_paste and config.b("auto_paste") and paste_text(config)
         notify(
             config,
-            "Ready to paste: press "
+            "Pasted. Your transcript is also on the clipboard."
+            if pasted
+            else "Ready to paste: press "
             + ("Command+V." if desktop.platform_name() == "macos" else "Ctrl+V."),
         )
     else:
@@ -453,6 +495,14 @@ def finish(config: Config, paths: Paths) -> str:
     if not config.b("keep_audio"):
         paths.audio.unlink(missing_ok=True)
     return "copied" if text else "empty"
+
+
+def model_name(config: Config) -> str:
+    """The model for statistics: a standard name, or "custom" (never a file name)."""
+    if config.s("backend") != "local":
+        return "service"
+    name = Path(config.s("model")).name
+    return name if re.fullmatch(r"ggml-[\w.-]+\.bin", name) else "custom"
 
 
 def open_app(config: Config) -> None:
@@ -512,6 +562,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
     next_preview = started + config.n("live_interval")
     cancelled = False
     interrupted = False
+    warned = False
 
     def interrupt(signum: int, frame: Any) -> None:
         nonlocal interrupted
@@ -531,6 +582,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                     "result": result,
                     "started_at": time.time() - (time.monotonic() - started),
                     "elapsed_seconds": round(time.monotonic() - started, 1),
+                    "max_seconds": config.n("max_seconds"),
                 }
             ),
         )
@@ -591,7 +643,14 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                         "The microphone stopped. Your audio is saved: open the app to retry."
                     )
                 break
-            if time.monotonic() - started >= config.n("max_seconds"):
+            remaining = config.n("max_seconds") - (time.monotonic() - started)
+            if remaining <= 30 and not warned:
+                warned = True
+                notify(
+                    config,
+                    f"Recording stops automatically in {max(1, math.ceil(remaining))} seconds.",
+                )
+            if remaining <= 0:
                 break
             if pending is not None and pending.done():
                 try:
@@ -613,7 +672,12 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                 pending = executor.submit(transcribe, config, pcm, paths.cache)
             time.sleep(0.05)
         stop()
-        state("cancelling" if cancelled else "transcribing")
+        loading = (
+            "Loading the speech model; the first transcription can take longer."
+            if config.s("backend") == "local"
+            else "Transcribing…"
+        )
+        state("cancelling" if cancelled else "transcribing", "" if cancelled else loading)
         # Do not overlap inference requests or release the session while a preview runs.
         executor.shutdown(wait=True)
         if cancelled:
@@ -621,8 +685,27 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
             state("idle", "Recording cancelled.", result="cancelled")
             notify(config, "Recording cancelled.")
         else:
-            notify(config, "Transcribing…")
-            state("idle", result=finish(config, paths))
+            notify(config, loading)
+            recorded = time.monotonic() - started
+            began = time.monotonic()
+            result = finish(config, paths, auto_paste=True)
+            state("idle", result=result)
+            telemetry.event(
+                "dictation_complete",
+                wait=True,
+                result=result,
+                seconds=round(recorded),
+                transcribe_seconds=round(time.monotonic() - began, 1),
+                backend=config.s("backend"),
+                model=model_name(config),
+                language=config.s("language"),
+                live=config.b("live"),
+                overlay=config.b("overlay"),
+            )
+        if cancelled:
+            telemetry.event(
+                "dictation_cancelled", wait=True, seconds=round(time.monotonic() - started)
+            )
     except (DictationError, OSError) as exc:
         message = (
             str(exc)
@@ -631,6 +714,15 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
         )
         state("error", message)
         notify(config, message)
+        # Expected problems (no microphone, no model) are warnings; the rest are errors.
+        telemetry.capture(
+            exc,
+            level="warning" if isinstance(exc, DictationError) else "error",
+            wait=True,
+            stage="recording",
+            backend=config.s("backend"),
+            model=model_name(config),
+        )
     finally:
         stop()
         executor.shutdown(wait=True)
@@ -732,6 +824,7 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
 
 def main() -> int:
     os.umask(0o077)
+    telemetry.install("engine")
     config: Config | None = None
     parser = argparse.ArgumentParser(
         prog="dictate-toggle",
@@ -846,6 +939,9 @@ def main() -> int:
             )
         return 0
     except (DictationError, OSError, EOFError, subprocess.SubprocessError) as exc:
+        telemetry.capture(
+            exc, level="warning" if isinstance(exc, DictationError) else "error", wait=True
+        )
         notify(
             config,
             str(exc)

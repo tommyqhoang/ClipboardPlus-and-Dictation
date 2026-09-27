@@ -5,6 +5,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -103,6 +104,58 @@ class InstallDependencyTests(unittest.TestCase):
             with self.subTest(manager=manager):
                 result = self.run_script(f'PM={manager}; select_packages; echo "$WHISPER_PACKAGE"')
                 self.assertEqual(result.stdout.strip(), expected)
+
+    def test_speech_failure_keeps_desktop_install_available(self):
+        result = self.run_script(
+            "runtime_missing() { return 1; }; install_optional_packages() { :; }; "
+            "install_whisper() { return 1; }; install_packages; "
+            'echo "skip download=$SKIP_DOWNLOAD"'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("still install", result.stderr)
+        self.assertIn("skip download=1", result.stdout)
+
+    def test_optional_helpers_fail_independently(self):
+        result = self.run_script(
+            "detect_package_manager() { PM=apt-get; }; need() { return 1; }; "
+            'pm_install() { echo "ATTEMPT $*"; return 1; }; '
+            "XDG_CURRENT_DESKTOP=GNOME; install_optional_packages"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for package in (
+            "wtype",
+            "xdotool",
+            "x11-xserver-utils",
+            "gnome-shell-extension-appindicator",
+        ):
+            self.assertIn("ATTEMPT " + package, result.stdout)
+
+    def test_main_continues_after_missing_engine_and_failed_model(self):
+        result = self.run_script(
+            'find_python() { PYTHON="' + sys.executable + '"; }; '
+            "need() { return 1; }; install_model() { return 1; }; "
+            "install_script() { echo DESKTOP_INSTALLED; }; install_gnome_shortcut() { :; }; "
+            "main --no-packages"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DESKTOP_INSTALLED", result.stdout)
+        self.assertIn("Speech model installation failed", result.stderr)
+
+    def test_model_validation_failure_never_selects_invalid_model(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            model = root / "ggml-base.en.bin"
+            model.write_bytes(b"not a model")
+            result = self.run_script(
+                f"MODEL_DIR={shlex.quote(folder)}; "
+                f"MODEL_DEST={shlex.quote(str(model))}; "
+                f"MODEL_LINK={shlex.quote(str(root / 'selected.bin'))}; "
+                f"PYTHON={shlex.quote(sys.executable)}; "
+                "if ! install_model; then echo REJECTED; fi"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("REJECTED", result.stdout)
+            self.assertFalse((root / "selected.bin").is_symlink())
 
 
 if __name__ == "__main__":

@@ -299,7 +299,7 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup, "stop_menubar") as stop,
             ):
                 setup.install_app_launcher(prefix)
-                bundle = root / "Applications/Whisper Dictation.app"
+                bundle = root / "Applications/Clipboard+ Desktop.app"
                 login.assert_called_once_with(True, ["/usr/bin/open", str(bundle)])
                 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
                 self.assertEqual(info["CFBundleIdentifier"], "org.whisperdictation.desktop")
@@ -328,6 +328,27 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(shortcut.call_args.args[1], Path("C:/v/pythonw.exe"))
                 python, windowed = setup.gui_python(prefix)
                 self.assertEqual((python.name, windowed.name), ("python.exe", "pythonw.exe"))
+
+    def test_macos_upgrade_renames_only_our_legacy_bundle(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder) / ".local"
+            bundle = setup.app_bundle(prefix)
+            legacy = bundle.with_name("Whisper Dictation.app")
+            executable = legacy / "Contents/MacOS/WhisperDictation"
+            executable.parent.mkdir(parents=True)
+            executable.write_text(f"exec python {prefix / 'lib/menubar.py'}")
+            (legacy / "Contents/Info.plist").write_bytes(
+                plistlib.dumps({"CFBundleIdentifier": "org.whisperdictation.desktop"})
+            )
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="macos"),
+                patch.object(setup, "gui_environment", return_value=Path("/venv/bin/python")),
+                patch.object(setup.hotkeys, "set_login_item"),
+            ):
+                setup.install_app_launcher(prefix)
+            self.assertFalse(legacy.exists())
+            self.assertTrue(bundle.is_dir())
 
     def test_gui_environment_installs_once(self):
         setup = setup_module()

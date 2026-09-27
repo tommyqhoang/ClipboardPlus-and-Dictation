@@ -15,6 +15,7 @@ import clipservice
 import clipstore
 import dictation as d
 import hotkeys
+import telemetry
 
 PAGE_SIZE = 50
 PREVIEW_CHARS = 140
@@ -79,6 +80,7 @@ class ClipboardPage:
         self.limit = PAGE_SIZE
         self.pending_search: str | None = None
         self.selected = 0  # The row Enter copies; the arrow keys move it.
+        self.deleted: tuple[clipstore.Item, bytes] | None = None
         # Decoded once per image and kept while shown (Tk drops unreferenced images).
         self._thumbs: dict[str, tk.PhotoImage | None] = {}
         self._signature: tuple[Any, ...] | None = None
@@ -127,8 +129,12 @@ class ClipboardPage:
         self.clear_button = ttk.Button(
             chips, text="Clear history", style="Small.TButton", command=self.clear
         )
+        self.undo_button = ttk.Button(
+            chips, text="Undo delete", style="Small.TButton", command=self.undo_delete
+        )
         self.count_label = ttk.Label(chips, style="Hint.TLabel")
         self.count_label.pack(side="right", padx=(0, 8))
+        telemetry.event("clipboard_open", picker=bool(getattr(self.app, "quick", False)))
         frame = self.app.frame
         self.banner = ttk.Frame(frame)
         self.banner.pack(fill="x")
@@ -474,6 +480,10 @@ class ClipboardPage:
         rename.bind("<Button-1>", lambda _: self.edit_label(item.id))
         copy = self._action(actions, "Copy", colors["accent"])
         copy.bind("<Button-1>", lambda _: self.copy(item.id))
+        if item.kind != "image":
+            view = self._action(actions, "View", colors["muted"])
+            view.bind("<Button-1>", lambda _: self.view(item.id))
+            painted.append(view)
         delete = self._action(actions, "Delete", colors["muted"], hover=colors["danger"])
         delete.bind("<Button-1>", lambda _: self.delete(item.id))
         painted += [star, rename, copy, delete]
@@ -569,6 +579,7 @@ class ClipboardPage:
                 self._remove_row(row)
             return
         self.store.set_favorite(item_id, not item.favorite)
+        telemetry.event("clipboard_favorite", on=not item.favorite)
         self._signature = self._current_signature()  # Our own change needs no redraw.
         if row is None:
             return
@@ -592,6 +603,8 @@ class ClipboardPage:
         if label is None:
             return
         self.store.set_label(item_id, label)
+        action = "remove" if not label else "edit" if item.label else "add"
+        telemetry.event("clipboard_label", action=action)
         self._signature = self._current_signature()
         row = self._row(item_id)
         if row is not None:
@@ -615,21 +628,68 @@ class ClipboardPage:
         except d.DictationError as exc:
             self.app.status.set(str(exc))
             return
+        telemetry.event("clipboard_copy", kind=item.kind, favorite=item.favorite)
         self.app.status.set("Copied. Paste it anywhere.")
 
     def delete(self, item_id: int) -> None:
         item = self.store.get(item_id)
+        if item is None:
+            return
         if item is not None and item.favorite:
             what = f"“{item.label}”" if item.label else "this favorite"
             if not messagebox.askyesno(
-                "Delete favorite?", f"Delete {what}? This can’t be undone.", parent=self.app.root
+                "Delete favorite?",
+                f"Delete {what}? You can undo the last deletion while this page is open.",
+                parent=self.app.root,
             ):
                 return
+        data = b""
+        if item.kind == "image":
+            path = self.store.image_path(item)
+            if path is not None:
+                try:
+                    data = path.read_bytes()
+                except OSError as exc:
+                    self.app.status.set(f"Couldn’t delete this image safely: {exc}")
+                    return
         self.store.delete(item_id)
+        self.deleted = (item, data)
+        self.undo_button.pack(side="left", padx=(4, 0))
+        self.app.status.set(
+            "Deleted. Undo is available until you leave this page or delete another item."
+        )
+        telemetry.event("clipboard_delete", favorite=bool(item and item.favorite))
         self._signature = self._current_signature()
         row = self._row(item_id)
         if row is not None:
             self._remove_row(row)
+
+    def undo_delete(self) -> None:
+        if self.deleted is None:
+            return
+        item, data = self.deleted
+        restored = (
+            self.store.add_image(data, source=item.source)
+            if item.kind == "image"
+            else self.store.add_text(item.text, source=item.source)
+        )
+        if restored is None:
+            self.app.status.set("Couldn’t restore this item.")
+            return
+        if item.favorite:
+            self.store.set_favorite(restored.id, True)
+            self.store.set_label(restored.id, item.label)
+        self.deleted = None
+        self.undo_button.pack_forget()
+        self.reload()
+        self.app.status.set("Item restored.")
+
+    def view(self, item_id: int) -> None:
+        item = self.store.get(item_id)
+        if item is not None and item.kind != "image":
+            TextPreview(
+                self.app.root, item.label or "Clipboard text", item.text, lambda: self.copy(item_id)
+            )
 
     def ask_clear(self, linked: bool) -> tuple[bool, bool] | None:
         """(everywhere, keep favorites), or None when the user cancels."""
@@ -640,8 +700,13 @@ class ClipboardPage:
         if choice is None:
             return
         everywhere, keep_favorites = choice
+        self.deleted = None
+        self.undo_button.pack_forget()
         count = self.app.service.clear_clipboard(
             self.store, everywhere=everywhere, keep_favorites=keep_favorites
+        )
+        telemetry.event(
+            "clipboard_clear", everywhere=everywhere, keep_favorites=keep_favorites, count=count
         )
         self.reload()
         where = " here and on your Clipboard+ account" if everywhere else ""
@@ -651,6 +716,69 @@ class ClipboardPage:
         prefs = hotkeys.Preferences(self.app.service.paths)
         prefs.save(clipboard=dataclasses.replace(prefs.clipboard(), paused_until=0.0))
         self.reload()
+
+
+class TextPreview:
+    """A selectable, scrollable full-text preview without changing the clipboard."""
+
+    def __init__(self, parent: tk.Misc, title: str, text: str, copy: Callable[[], None]) -> None:
+        window = self.window = tk.Toplevel(parent)
+        window.title(title)
+        window.transient(parent)  # type: ignore[call-overload]
+        window.geometry("640x460")
+        body = ttk.Frame(window, padding=16)
+        body.pack(fill="both", expand=True)
+        area = ttk.Frame(body)
+        area.pack(fill="both", expand=True)
+        content = self.text = tk.Text(area, wrap="word", padx=10, pady=10)
+        scroll = ttk.Scrollbar(area, orient="vertical", command=content.yview)
+        content.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        content.pack(side="left", fill="both", expand=True)
+        content.insert("1.0", text)
+        content.configure(state="disabled")
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(12, 0))
+        ttk.Button(row, text="Copy", command=copy).pack(side="left")
+        ttk.Button(row, text="Close", command=window.destroy).pack(side="right")
+        window.bind("<Escape>", lambda _: window.destroy())
+
+
+class DisconnectDialog:
+    """Explicit choices for local history; Cancel is the initial keyboard action."""
+
+    def __init__(self, parent: tk.Misc) -> None:
+        self.result: bool | None = None
+        window = self.window = tk.Toplevel(parent)
+        window.title("Disconnect Clipboard+?")
+        window.transient(parent)  # type: ignore[call-overload]
+        body = ttk.Frame(window, padding=22)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text="Your Clipboard+ account keeps its copy. Choose what happens "
+            "to history on this computer.",
+            wraplength=400,
+        ).pack(pady=(0, 16))
+        for label, result in (
+            ("Disconnect and keep local history", True),
+            ("Disconnect and delete local history", False),
+            ("Cancel", None),
+        ):
+            button = ttk.Button(body, text=label, command=functools.partial(self.choose, result))
+            button.pack(fill="x", pady=3)
+        button.focus_set()
+        window.protocol("WM_DELETE_WINDOW", lambda: self.choose(None))
+        window.bind("<Escape>", lambda _: self.choose(None))
+
+    def choose(self, result: bool | None) -> None:
+        self.result = result
+        self.window.destroy()
+
+    def show(self) -> bool | None:
+        self.window.grab_set()
+        self.window.wait_window()
+        return self.result
 
 
 class ClearDialog:
@@ -929,7 +1057,9 @@ class AccountCard:
         self.mode, self.error = mode, ""
         self.render()
 
-    def _attempt(self, work: Callable[[], None], message: str, success: str) -> None:
+    def _attempt(
+        self, work: Callable[[], None], message: str, success: str, what: str = ""
+    ) -> None:
         """Run `work` off the UI thread; a refusal is shown inside the card."""
         self.error = ""
 
@@ -947,6 +1077,7 @@ class AccountCard:
             self.error = problem
             if problem == clipboardplus.GOOGLE_ONLY:
                 self.mode = "key"  # Google accounts have no password here: show the key form.
+            telemetry.event(f"account_{what or 'change'}", ok=not problem)
             if not problem:
                 self.key.set("")  # The key is saved privately.
                 self.mode = "account"
@@ -962,6 +1093,7 @@ class AccountCard:
             lambda: service.sign_in_clipboard_plus(email, password, create=create),
             "Creating your account…" if create else "Signing in…",
             "Connected to Clipboard+.",
+            "created" if create else "signed_in",
         )
 
     def connect_key(self) -> None:
@@ -970,6 +1102,7 @@ class AccountCard:
             lambda: service.connect_clipboard_plus(key),
             "Checking your Clipboard+ key…",
             "Connected to Clipboard+.",
+            "key_connected",
         )
 
     def sync_now(self) -> None:
@@ -977,13 +1110,7 @@ class AccountCard:
         self.app.status.set("Syncing…")
 
     def disconnect(self) -> None:
-        keep = messagebox.askyesnocancel(
-            "Disconnect Clipboard+?",
-            "Keep your clipboard history on this computer?\n\n"
-            "Yes: keep it here.  No: delete it from this computer.\n"
-            "Your Clipboard+ account keeps its own copy either way.",
-            parent=self.app.root,
-        )
+        keep = DisconnectDialog(self.app.root).show()
         if keep is None:
             return
         service = self.app.service
@@ -991,4 +1118,5 @@ class AccountCard:
             lambda: service.disconnect_clipboard_plus(keep_history=bool(keep)),
             "Disconnecting…",
             "Disconnected from Clipboard+.",
+            "disconnected",
         )

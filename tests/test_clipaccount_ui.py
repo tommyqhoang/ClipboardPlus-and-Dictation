@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import app_service
 import clipservice
 import clipstore
+import clipui
 import hotkeys
 from support import make_png
 from test_app import ServiceCase
@@ -366,7 +367,7 @@ class ActionTests(AccountCase):
         item = store.add_text("mine", now=1.0)
         store.link(item.id, "cloud-1", False)
         self.window.account.render()
-        with patch.object(self.gui.messagebox, "askyesnocancel", return_value=True) as ask:
+        with patch.object(clipui.DisconnectDialog, "show", return_value=True) as ask:
             self.press("Disconnect")
             self.finish()
         ask.assert_called_once()
@@ -380,7 +381,7 @@ class ActionTests(AccountCase):
         store = self.store()
         store.add_text("mine", now=1.0)
         self.window.account.render()
-        with patch.object(self.gui.messagebox, "askyesnocancel", return_value=False):
+        with patch.object(clipui.DisconnectDialog, "show", return_value=False):
             self.press("Disconnect")
             self.finish()
         self.assertEqual(store.count(), 0)
@@ -389,7 +390,7 @@ class ActionTests(AccountCase):
     def test_cancelling_the_question_changes_nothing(self):
         self.link()
         self.window.account.render()
-        with patch.object(self.gui.messagebox, "askyesnocancel", return_value=None):
+        with patch.object(clipui.DisconnectDialog, "show", return_value=None):
             self.press("Disconnect")
         self.assertTrue(self.service.clipboard_plus_linked())
         self.assertIsNone(self.window.pending)

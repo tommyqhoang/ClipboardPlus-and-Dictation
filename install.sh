@@ -24,6 +24,9 @@ PM=""
 RUNTIME_PACKAGES=()
 BUILD_PACKAGES=()
 WHISPER_PACKAGE=""
+OPTIONAL_PACKAGES=()
+TRAY_PACKAGE=""
+APT_UPDATED=0
 
 need() {
   command -v "$1" >/dev/null 2>&1
@@ -72,6 +75,8 @@ select_packages() {
         util-linux wl-clipboard)
       BUILD_PACKAGES=(build-essential cmake git)
       WHISPER_PACKAGE=whisper.cpp
+      OPTIONAL_PACKAGES=(wtype xdotool x11-xserver-utils)
+      TRAY_PACKAGE=gnome-shell-extension-appindicator
       ;;
     dnf)
       RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libayatana-appindicator-gtk3 libnotify
@@ -79,18 +84,24 @@ select_packages() {
       BUILD_PACKAGES=(cmake gcc-c++ git make)
       # Fedora's whisper-cpp depends on PyTorch and ROCm (8 GiB); build the pinned CPU release.
       WHISPER_PACKAGE=""
+      OPTIONAL_PACKAGES=(wtype xdotool xrandr)
+      TRAY_PACKAGE=gnome-shell-extension-appindicator
       ;;
     pacman)
       RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libayatana-appindicator libnotify perl
         python python-gobject tk util-linux wl-clipboard)
       BUILD_PACKAGES=(base-devel cmake git)
       WHISPER_PACKAGE=""
+      OPTIONAL_PACKAGES=(wtype xdotool xorg-xrandr)
+      TRAY_PACKAGE=gnome-shell-extension-appindicator
       ;;
     zypper)
       RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libnotify-tools perl python3
         python3-gobject python3-tk typelib-1_0-AyatanaAppIndicator3-0_1 util-linux wl-clipboard)
       BUILD_PACKAGES=(cmake gcc-c++ git make)
       WHISPER_PACKAGE=""
+      OPTIONAL_PACKAGES=(wtype xdotool xrandr)
+      TRAY_PACKAGE=gnome-shell-extension-appindicator
       ;;
     *) return 1 ;;
   esac
@@ -111,7 +122,10 @@ as_root() {
 pm_install() {
   case "$PM" in
     apt-get)
-      as_root apt-get update
+      if [[ "$APT_UPDATED" == 0 ]]; then
+        as_root apt-get update || return 1
+        APT_UPDATED=1
+      fi
       as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
       ;;
     dnf) as_root dnf install -y --setopt=install_weak_deps=False "$@" ;;
@@ -182,8 +196,35 @@ install_packages() {
   else
     echo "System dependencies already installed."
   fi
+  install_optional_packages
   if [[ "$SKIP_MODEL" == 0 ]]; then
-    install_whisper
+    if ! install_whisper; then
+      echo "Speech engine installation failed. Clipboard+ will still install; retry speech setup later." >&2
+      SKIP_DOWNLOAD=1
+    fi
+  fi
+}
+
+install_optional_packages() {
+  detect_package_manager || return 0
+  select_packages
+  local index package
+  local tools=(wtype xdotool xrandr)
+  for index in "${!tools[@]}"; do
+    if ! need "${tools[$index]}"; then
+      package="${OPTIONAL_PACKAGES[$index]}"
+      pm_install "$package" || echo "Optional helper $package is unavailable; its feature may need manual setup." >&2
+    fi
+  done
+  if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]]; then
+    local extension=appindicatorsupport@rgcjonas.gmail.com
+    if ! need gnome-extensions || ! gnome-extensions info "$extension" >/dev/null 2>&1; then
+      pm_install "$TRAY_PACKAGE" || echo "Install the GNOME AppIndicator extension to show the tray icon." >&2
+    fi
+    if need gnome-extensions; then
+      gnome-extensions enable "$extension" 2>/dev/null ||
+        echo "Log out and back in, then enable AppIndicator support in GNOME Extensions."
+    fi
   fi
 }
 
@@ -225,10 +266,10 @@ install_whisper_from_source() {
       return 1
     fi
     echo "Installing build tools: ${BUILD_PACKAGES[*]}"
-    pm_install "${BUILD_PACKAGES[@]}"
+    pm_install "${BUILD_PACKAGES[@]}" || return 1
   fi
 
-  mkdir -p "${HOME}/.local/opt"
+  mkdir -p "${HOME}/.local/opt" || return 1
   if [[ -d "$src_dir/.git" ]]; then
     if [[ "$(git -C "$src_dir" rev-parse HEAD)" != "$WHISPER_COMMIT" ]]; then
       echo "$src_dir is not the expected $WHISPER_VERSION source; remove it or set DICTATION_WHISPER_BIN." >&2
@@ -244,7 +285,7 @@ install_whisper_from_source() {
   else
     echo "Cloning whisper.cpp $WHISPER_VERSION into $src_dir"
     git clone --depth 1 --branch "$WHISPER_VERSION" \
-      https://github.com/ggml-org/whisper.cpp.git "$src_dir"
+      https://github.com/ggml-org/whisper.cpp.git "$src_dir" || return 1
     if [[ "$(git -C "$src_dir" rev-parse HEAD)" != "$WHISPER_COMMIT" ]]; then
       echo "Downloaded whisper.cpp source did not match the pinned commit." >&2
       return 1
@@ -252,8 +293,8 @@ install_whisper_from_source() {
   fi
 
   echo "Building whisper-cli from source"
-  cmake -S "$src_dir" -B "$src_dir/build" -DCMAKE_BUILD_TYPE=Release -DWHISPER_SDL2=OFF
-  cmake --build "$src_dir/build" --config Release --target whisper-cli -j"$(nproc)"
+  cmake -S "$src_dir" -B "$src_dir/build" -DCMAKE_BUILD_TYPE=Release -DWHISPER_SDL2=OFF || return 1
+  cmake --build "$src_dir/build" --config Release --target whisper-cli -j"$(nproc)" || return 1
 
   if [[ ! -x "$bin_path" ]]; then
     echo "Build finished, but whisper-cli was not found at $bin_path." >&2
@@ -275,14 +316,14 @@ install_model() {
     esac
   fi
 
-  mkdir -p "$MODEL_DIR"
+  mkdir -p "$MODEL_DIR" || return 1
   if [[ -s "$MODEL_DEST" ]]; then
     echo "Model already present: $MODEL_DEST"
   else
     echo "Downloading Whisper model: $MODEL_NAME"
     curl --proto '=https' --proto-redir '=https' --fail --location --retry 3 \
       --retry-delay 2 --connect-timeout 15 \
-      --continue-at - --output "$partial_dest" "$MODEL_URL"
+      --continue-at - --output "$partial_dest" "$MODEL_URL" || return 1
     if [[ ! -s "$partial_dest" ]]; then
       echo "Model download completed without producing a usable file." >&2
       return 1
@@ -290,9 +331,9 @@ install_model() {
     candidate="$partial_dest"
   fi
 
-  [[ -n "$PYTHON" ]] || find_python
+  [[ -n "$PYTHON" ]] || find_python || return 1
   # Reject common HTML/error downloads. The optional SHA-256 verifies the entire file.
-  "$PYTHON" - "$candidate" "$expected_sha256" <<'PY'
+  "$PYTHON" - "$candidate" "$expected_sha256" <<'PY' || return 1
 import hashlib
 import pathlib
 import sys
@@ -312,7 +353,7 @@ PY
     echo "Warning: this custom model has only a GGML header check. Set DICTATION_MODEL_SHA256 for full verification." >&2
   fi
   if [[ "$candidate" == "$partial_dest" ]]; then
-    mv -f "$partial_dest" "$MODEL_DEST"
+    mv -f "$partial_dest" "$MODEL_DEST" || return 1
     echo "Downloaded model: $MODEL_DEST"
   fi
 
@@ -320,7 +361,7 @@ PY
     echo "Refusing to replace a regular file at $MODEL_LINK." >&2
     return 1
   fi
-  ln -sfn "$MODEL_DEST" "$MODEL_LINK"
+  ln -sfn "$MODEL_DEST" "$MODEL_LINK" || return 1
   echo "Selected model: $MODEL_LINK -> $MODEL_NAME"
 }
 
@@ -402,11 +443,12 @@ main() {
     return 1
   fi
   if [[ "$SKIP_MODEL" == 0 && "$SKIP_DOWNLOAD" == 0 ]]; then
-    install_model
+    if ! install_model; then
+      echo "Speech model installation failed. Clipboard+ will still install; retry the model in setup." >&2
+    fi
   fi
   if [[ "$SKIP_MODEL" == 0 && -z "${DICTATION_WHISPER_BIN:-}" ]] && ! need whisper-cli && [[ ! -x "${HOME}/.local/opt/whisper.cpp-${WHISPER_VERSION}/build/bin/whisper-cli" ]]; then
-    echo "whisper-cli was not found. Re-run without --no-packages or set DICTATION_WHISPER_BIN." >&2
-    return 1
+    echo "Speech engine unavailable. Clipboard+ will install; re-run without --no-packages or set DICTATION_WHISPER_BIN for local dictation." >&2
   fi
   install_script
   install_gnome_shortcut
@@ -415,7 +457,6 @@ main() {
     return 0 # The quick installer opens the app and says so.
   fi
   echo
-  echo "Installed. Open Clipboard+ Desktop from your application menu to finish setup."
   if [[ "$SKIP_MODEL" == 1 ]]; then
     echo "No speech model was installed: choose one (or your own AI service) during setup."
   fi

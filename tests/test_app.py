@@ -514,7 +514,7 @@ class WindowTests(ServiceCase):
         self.window.model_source.set("download")
         release = __import__("threading").Event()
 
-        def download(language, device, model, progress, remote=None):
+        def download(language, device, model, progress, remote=None, pause=None):
             self.assertEqual(model, "")
             progress(50_000_000, 150_000_000)
             release.wait(5)

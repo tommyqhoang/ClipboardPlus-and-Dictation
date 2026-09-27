@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export DO_NOT_TRACK=1 DICTATION_TELEMETRY=0
 ruff check lib tests tools setup-desktop.py
 ruff format --check lib tests tools setup-desktop.py
 mypy --strict lib tools setup-desktop.py

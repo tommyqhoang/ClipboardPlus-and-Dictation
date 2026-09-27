@@ -145,6 +145,40 @@ class DictationTests(unittest.TestCase):
             self.assertEqual(d.finish(self.config, self.paths), "empty")
         self.assertIn("No speech", told.call_args.args[1])
 
+    def test_auto_paste_is_opt_in_and_retry_never_pastes(self):
+        with (
+            patch.object(d, "transcribe", return_value="hello"),
+            patch.object(d, "copy_text"),
+            patch.object(d, "record_transcript"),
+            patch.object(d, "paste_text", return_value=True) as paste,
+            patch.object(d, "notify") as told,
+        ):
+            for enabled, foreground, expected in (
+                (False, True, False),
+                (True, False, False),
+                (True, True, True),
+            ):
+                self.paths.audio.write_bytes(b"audio")
+                self.config.values["auto_paste"] = enabled
+                paste.reset_mock()
+                d.finish(self.config, self.paths, auto_paste=foreground)
+                self.assertEqual(paste.called, expected)
+            self.assertIn("Pasted.", told.call_args.args[1])
+            paste.return_value = False
+            self.paths.audio.write_bytes(b"audio")
+            d.finish(self.config, self.paths, auto_paste=True)
+            self.assertIn("Ready to paste", told.call_args.args[1])
+
+    def test_paste_uses_platform_helper_and_never_falls_back_across_wayland(self):
+        with (
+            patch.object(d.desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}),
+            patch.object(d.subprocess, "run", side_effect=FileNotFoundError) as run,
+        ):
+            self.assertFalse(d.paste_text(self.config))
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0][0], "wtype")
+
     def test_messages_speak_in_app_terms(self):
         with (
             patch.object(d.desktop, "available", return_value=True),

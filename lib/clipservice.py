@@ -25,6 +25,7 @@ import clipwatch
 import desktop
 import dictation as d
 import hotkeys
+import telemetry
 
 OWN_WRITE_SECONDS = 10.0  # How long the app's own clipboard write is recognised.
 PRUNE_SECONDS = 300.0
@@ -257,7 +258,8 @@ class Syncer:
     def _run(self, engine: SyncEngine) -> None:
         try:
             engine.run_once()
-        except Exception:  # noqa: BLE001 - a bug or odd server data must not loop or kill the service.
+        except Exception as exc:  # noqa: BLE001 - a bug or odd server data must not loop or kill the service.
+            telemetry.capture(exc, stage="sync")
             self._crashed = True
             self._due = self._clock() + clipsync.BACKOFF_MAX_SECONDS
             return
@@ -291,6 +293,9 @@ class Service:
         self._next_prune = clock() + PRUNE_SECONDS
         self._status: tuple[str, int, str, str] | None = None
         self._status_at = 0.0
+        # Counted for the daily statistics (numbers only, never what was copied).
+        self._day = time.strftime("%Y-%m-%d", time.localtime(clock()))
+        self.copied = {"text": 0, "image": 0}
 
     def paused(self) -> bool:
         return self._settings().paused(self._clock())
@@ -333,9 +338,11 @@ class Service:
             if clip.text:
                 if not self._is_own_write(clip.text, now):
                     self._store.add_text(clip.text, "desktop", now)
+                    self.copied["text"] += 1
                     self._changed(now)
             elif clip.image_png and settings.images:
                 self._store.add_image(clip.image_png, "desktop", now)
+                self.copied["image"] += 1
         except sqlite3.Error:
             self._fail("The clipboard history is busy; retrying.", now)
             return False
@@ -368,9 +375,33 @@ class Service:
             except (sqlite3.Error, OSError):
                 pass  # Retried on the next schedule.
             self._next_prune = now + PRUNE_SECONDS
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        if today != self._day:
+            self.send_statistics()
+            self._day = today
         self._report(now)
 
+    def send_statistics(self, wait: bool = False) -> None:
+        """One day's clipboard use, as counts, then start counting again."""
+        if not any(self.copied.values()):
+            return
+        try:
+            total = self._store.count()
+        except sqlite3.Error:
+            total = 0
+        telemetry.event(
+            "clipboard_daily",
+            wait=wait,
+            texts=self.copied["text"],
+            images=self.copied["image"],
+            history_size=total,
+            sync=self._syncer.state if self._syncer is not None else "off",
+        )
+        self.copied = {"text": 0, "image": 0}
+
     def _fail(self, message: str, now: float) -> None:
+        if message != self._error:
+            telemetry.capture(message=message, level="warning", stage="capture")
         self._error = message
         self._report(now)
 
@@ -440,6 +471,7 @@ def run(
                 try:
                     watcher = watcher_factory()
                 except clipwatch.Unavailable as exc:
+                    telemetry.capture(exc, level="warning", stage="watcher")
                     write_status(paths, "error", 0, str(exc), clock)
                     nap(retry_seconds)
                     continue
@@ -460,6 +492,8 @@ def run(
             if not ok:
                 nap(ERROR_PAUSE_SECONDS)
     finally:
+        if service is not None:
+            service.send_statistics(wait=True)  # The day so far, before quitting.
         if watcher is not None:
             watcher.close()
         if syncer is not None:
@@ -473,6 +507,7 @@ def run(
 
 def main() -> int:
     os.umask(0o077)
+    telemetry.install("clipboard")
     return run(d.Paths())
 
 

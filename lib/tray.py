@@ -20,6 +20,7 @@ import clipcontrol
 import desktop
 import dictation as d
 import hotkeys
+import telemetry
 import workflow
 from app_service import Service
 
@@ -265,6 +266,7 @@ class Tray:
         hotkeys.record_status(self.paths, self.hotkey_ok, conflict=conflict)
         announced, self.announced = self.announced, conflict
         if conflict is not None and conflict != announced:
+            telemetry.event("shortcut_conflict", kind="custom" if conflict.path else "desktop")
             self.notify(
                 f"{self.shortcut.label()} is also used by {conflict.name}, which gets it first. "
                 "Open Clipboard+ Desktop to fix it."
@@ -339,6 +341,16 @@ class Tray:
         )
         self.sync_history_shortcut()
         self.sync_login()
+        features = self.clip.features()
+        telemetry.event(
+            "tray_start",
+            dictation=features.dictation,
+            clipboard=features.clipboard,
+            setup_complete=self.service.completed(),
+            open_at_login=self.preferences.open_at_login(),
+            default_shortcut=self.shortcut == hotkeys.DEFAULT,
+            shortcut_ok=self.hotkey_ok,
+        )
         if not self.service.completed():
             self.open_window("--setup")
         self.running = True
@@ -453,6 +465,7 @@ def main() -> int:
         # Already running: opening the launcher again should show the window.
         open_app_window()
         return 0
+    telemetry.install("tray")
     import pystray  # type: ignore[import-not-found]
     from PIL import Image  # type: ignore[import-not-found, unused-ignore]
 

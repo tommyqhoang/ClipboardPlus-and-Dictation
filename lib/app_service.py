@@ -83,14 +83,21 @@ class MicrophoneTest:
         if self.process.stdout is not None:
             self.process.stdout.close()
 
-    def verdict(self) -> str:
+    def outcome(self) -> str:
+        """none, quiet, faint or good (for statistics; `verdict` says it in words)."""
         if not self.readings:
-            return "No sound came from that microphone. Pick another one, or check it is on."
+            return "none"
         if self.peak < 0.15:
-            return "That microphone is silent or very quiet. Try another one, or raise its level."
-        if not self.heard:
-            return "Heard you, but faintly. Move closer or raise the microphone level."
-        return "Sounds good. This microphone is ready."
+            return "quiet"
+        return "good" if self.heard else "faint"
+
+    def verdict(self) -> str:
+        return {
+            "none": "No sound came from that microphone. Pick another one, or check it is on.",
+            "quiet": "That microphone is silent or very quiet. Try another one, or raise its level.",
+            "faint": "Heard you, but faintly. Move closer or raise the microphone level.",
+            "good": "Sounds good. This microphone is ready.",
+        }[self.outcome()]
 
 
 @dataclass(frozen=True)
@@ -336,6 +343,7 @@ class Service:
         model: str,
         progress: Callable[[int, int], None] | None = None,
         remote: Remote | None = None,
+        pause: threading.Event | None = None,
     ) -> None:
         if d.busy(self.paths):
             raise d.DictationError("Finish recording before changing setup.")
@@ -363,7 +371,7 @@ class Service:
                 Path(model).expanduser()
                 if model
                 else onboarding.download_model(
-                    self.paths.config.parent / "models", language, progress
+                    self.paths.config.parent / "models", language, progress, pause
                 )
             )
             settings = dict(backend="local", model=str(path.resolve()), allow_remote=False)
@@ -385,7 +393,7 @@ class Service:
 
     def set_option(self, key: str, value: bool) -> None:
         """Save one on/off dictation option at once (the recording bar, live drafts)."""
-        if key not in ("overlay", "live"):
+        if key not in ("overlay", "live", "auto_paste"):
             raise ValueError(key)
         d.private_dir(self.paths.config.parent)
         saved = d.DEFAULTS | d.read_json(self.paths.config)
@@ -396,5 +404,16 @@ class Service:
         config = d.Config(self.paths)
         if action == "copy":
             d.copy_text(config, self.paths)
+        elif action == "copy-concise":
+            import rewriting
+
+            rewriting.run(config, self.paths, "copy")
         else:
             d.dispatch(config, self.paths, action)
+
+    def concise(self) -> str:
+        """Generate a reviewable draft while retaining the original transcript."""
+        import rewriting
+
+        rewriting.run(d.Config(self.paths), self.paths, "concise")
+        return str(d.read_json(self.paths.cache / "concise.json").get("text", ""))

@@ -313,6 +313,10 @@ class Preferences:
     def open_at_login(self) -> bool:
         return self.read().get("open_at_login", True) is not False
 
+    def share_usage(self) -> bool:
+        """Anonymous crash reports and usage statistics (telemetry.py): on unless declined."""
+        return self.read().get("share_usage", True) is not False
+
     def save(
         self,
         shortcut: Shortcut | None = None,
@@ -320,9 +324,12 @@ class Preferences:
         features: Features | None = None,
         clipboard: ClipboardSettings | None = None,
         history_shortcut: Shortcut | Literal[False] | None = None,
+        share_usage: bool | None = None,
     ) -> None:
         """Change the given preferences. `history_shortcut=False` switches it off."""
         values = self.read()
+        if share_usage is not None:
+            values["share_usage"] = share_usage
         if history_shortcut is not None:
             values["history_shortcut"] = history_shortcut and {
                 "modifiers": list(history_shortcut.modifiers),

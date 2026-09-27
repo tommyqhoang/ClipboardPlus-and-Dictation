@@ -10,6 +10,8 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
+import time
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
@@ -21,6 +23,7 @@ import clipui
 import desktop
 import dictation as d
 import hotkeys
+import telemetry
 import workflow
 from app_service import PROVIDERS, MicrophoneTest, Remote, Service
 
@@ -64,6 +67,8 @@ class App:
         self.last_text = ""
         self.transcript_seen: tuple[Any, ...] = ()
         self.download = (0, 0)
+        self.download_pause = threading.Event()
+        self.pause_download: ttk.Button | None = None
         self.buttons: list[ttk.Button] = []
         self.root.title(hotkeys.APP_NAME)
         self.rewrap_timer: str | None = None
@@ -621,6 +626,8 @@ class App:
         row.pack(fill="x")
         self.button("Turn on", lambda: choose(True), True, row, "left")
         self.button("Not now", lambda: choose(False), False, row, "left")
+        if not self.service.completed():
+            self.button("Back", self.choose_features, parent=self.actions(), side="left")
 
     def card(self, heading: str = "", hint: str = "") -> ttk.Frame:
         outline = tk.Frame(self.frame, background=BORDER, padx=1, pady=1)
@@ -729,6 +736,8 @@ class App:
             ).pack(anchor="w", padx=(26, 0))
         if note:
             ttk.Label(self.frame, text=note, style="Hint.TLabel").pack(anchor="w")
+        self.privacy_card()
+        self.button("Back", self.welcome, parent=self.actions(), side="left")
         self.button(
             "Continue",
             lambda: self.after_features(self.mode_var.get()),
@@ -807,13 +816,53 @@ class App:
                 command=lambda: self.apply_mode(self.settings_mode.get()),
             ).pack(anchor="w", pady=(6, 0))
 
-    def save_clipboard_options(self, keep_items: int, keep_days: int, images: bool) -> None:
+    def privacy_card(self) -> None:
+        card = self.card(
+            "Privacy",
+            "Optional crash reports and feature counts help improve the app. "
+            "Reports never include clipboard contents, transcripts, audio or account keys.",
+        )
         prefs = hotkeys.Preferences(self.service.paths)
+        self.share_usage = tk.BooleanVar(master=self.root, value=prefs.share_usage())
+
+        def save() -> None:
+            prefs.save(share_usage=self.share_usage.get())
+            self.status.set("Privacy preference saved.")
+
+        ttk.Checkbutton(
+            card,
+            text="Share anonymous crash reports and usage statistics",
+            variable=self.share_usage,
+            command=save,
+            style="Card.TCheckbutton",
+        ).pack(anchor="w", pady=(6, 0))
+        if os.environ.get("DO_NOT_TRACK", "") not in ("", "0") or os.environ.get(
+            "DICTATION_TELEMETRY", ""
+        ).lower() in ("0", "false", "off"):
+            ttk.Label(
+                card,
+                text="Reporting is disabled by your environment settings.",
+                style="CardHint.TLabel",
+            ).pack(anchor="w", pady=(6, 0))
+
+    def save_clipboard_options(self, keep_items: int, keep_days: int, images: bool) -> bool:
+        prefs = hotkeys.Preferences(self.service.paths)
+        previous = prefs.clipboard()
+        if (
+            keep_items < previous.keep_items or keep_days < previous.keep_days
+        ) and not messagebox.askyesno(
+            "Remove older clipboard items?",
+            "Reducing these limits may permanently delete older items on this computer. "
+            "Favorites and your Clipboard+ account are kept. Apply these limits?",
+            parent=self.root,
+        ):
+            return False
         prefs.save(
             clipboard=dataclasses.replace(
                 prefs.clipboard(), keep_items=keep_items, keep_days=keep_days, images=images
             )
         )
+        return True
 
     def clipboard_options_card(self) -> None:
         card = self.card(
@@ -825,7 +874,11 @@ class App:
         images = tk.BooleanVar(value=saved.images)
 
         def save(*_: object) -> None:
-            self.save_clipboard_options(int(items.get()), int(days.get()), images.get())
+            if not self.save_clipboard_options(int(items.get()), int(days.get()), images.get()):
+                current = hotkeys.Preferences(self.service.paths).clipboard()
+                items.set(str(current.keep_items))
+                days.set(str(current.keep_days))
+                images.set(current.images)
 
         for label, variable, values in (
             ("Keep up to this many items", items, ("100", "500", "1000", "5000", "10000")),
@@ -942,6 +995,7 @@ class App:
             self.shortcuts_card()
         self.clipboard_options_card()
         self.clipboard_plus_card()
+        self.privacy_card()
         self.button("Done", self.leave, True, self.actions(), "right")
 
     def tutorial_clipboard(self) -> None:
@@ -972,6 +1026,8 @@ class App:
         )
         self.clipboard_plus_card()
         self.button("Done", self.finish_setup, True, self.actions(), "right")
+        if not self.service.completed():
+            self.button("Back", self.choose_features, parent=self.actions(), side="left")
 
     def settings(self) -> None:
         if not self.features().dictation:
@@ -1027,6 +1083,7 @@ class App:
         # A live level meter while testing (hidden otherwise).
         self.meter = tk.Canvas(voice, height=10, background=SURFACE, highlightthickness=0)
         for key, text in (
+            ("auto_paste", "Automatically paste into the app I am using"),
             ("overlay", "Show the recording bar (voice levels, then “Copied”)"),
             ("live", "Show a live draft while recording (uses more processing)"),
         ):
@@ -1106,7 +1163,11 @@ class App:
         if self.features().clipboard:
             self.clipboard_options_card()
         self.clipboard_plus_card()
+        if not setup:
+            self.privacy_card()
         self.button("Continue" if setup else "Save", self.prepare, True, self.actions(), "right")
+        if setup:
+            self.button("Back", self.choose_features, parent=self.actions(), side="left")
         if not setup:
             self.button("Close", self.leave, parent=self.actions(), side="right")
         # Discovery only lists devices; it never opens the microphone.
@@ -1148,6 +1209,7 @@ class App:
 
     def set_option(self, key: str, value: tk.BooleanVar) -> None:
         self.service.set_option(key, bool(value.get()))
+        telemetry.event("setting_changed", setting=key, on=bool(value.get()))
         self.status.set("Saved. It applies to your next recording.")
 
     def test_microphone(self) -> None:
@@ -1188,6 +1250,7 @@ class App:
         self.mic_test = None
         self.mic_button.state(["!disabled"])
         self.status.set(test.verdict())
+        telemetry.event("mic_test", result=test.outcome())
 
     def background(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
         """Run `work` off the UI thread; `poll` passes its result to `done`. Nothing locks."""
@@ -1196,6 +1259,9 @@ class App:
     def show_microphones(self, devices: list[str]) -> None:
         if self.page != "settings" or not self.device_picker.winfo_exists():
             return  # The user moved on while we were looking.
+        if not devices:
+            self.status.set("No microphones found. Connect a microphone and choose Refresh.")
+            return
         names = getattr(self.service, "microphone_names", {})
         # Friendly names in the list; `prepare` saves the device they stand for.
         self.device_ids = {names.get(device, device): device for device in devices}
@@ -1223,25 +1289,49 @@ class App:
                 return
             remote = Remote(self.endpoint.get(), self.api_model.get(), self.api_key.get())
         self.download = (0, 0)
+        self.download_pause.clear()
 
         def report(done: int, total: int) -> None:
             self.download = (done, total)
 
         setup = not self.service.completed()
+        began = time.monotonic()
 
         def done(_: object) -> None:
+            if self.pause_download is not None and self.pause_download.winfo_exists():
+                self.pause_download.pack_forget()
+            telemetry.event(
+                "dictation_setup",
+                source=source,
+                language=language,
+                first_run=setup,
+                seconds=round(time.monotonic() - began),
+            )
             if setup:
                 self.after_dictation_setup()
             else:
                 self.status.set("Settings saved.")  # Stay here: no walkthrough again.
 
+        if source == "download":
+            if self.pause_download is None or not self.pause_download.winfo_exists():
+                self.pause_download = ttk.Button(self.actions(), text="Pause download")
+            self.pause_download.configure(text="Pause download", command=self.pause_model)
+            self.pause_download.pack(side="left")
         self.submit(
-            lambda: self.service.prepare(language, device, model, report, remote),
+            lambda: self.service.prepare(
+                language, device, model, report, remote, self.download_pause
+            ),
             done,
             "Checking your settings. Nothing is recording."
             if remote
             else "Getting your speech model ready. Nothing is recording.",
         )
+
+    def pause_model(self) -> None:
+        self.download_pause.set()
+        if self.pause_download is not None:
+            self.pause_download.configure(text="Resume download", command=self.prepare)
+        self.status.set("Pausing download. Downloaded data is kept; choose Resume to continue.")
 
     def tutorial(self) -> None:
         if not self.features().dictation:
@@ -1301,6 +1391,8 @@ class App:
             self.actions(),
             "right",
         )
+        if not self.service.completed():
+            self.button("Back", self.choose_features, parent=self.actions(), side="left")
 
     def clipboard_plus_card(self) -> None:
         """The account card, where the clipboard history is (or an old key still lives)."""
@@ -1309,6 +1401,14 @@ class App:
             self.account = clipui.AccountCard(self)
 
     def finish_setup(self) -> None:
+        features = self.features()
+        telemetry.event(
+            "setup_complete",
+            mode=self.setup_mode or "both",
+            dictation=features.dictation,
+            clipboard=features.clipboard,
+            share_usage=hotkeys.Preferences(self.service.paths).share_usage(),
+        )
         self.submit(self.service.complete, lambda _: self.leave(), "Saving your setup…")
 
     def leave(self) -> None:
@@ -1487,13 +1587,15 @@ class App:
         row.pack(fill="x")
         self.copy = ttk.Button(row, text="Copy transcript", command=lambda: self.action("copy"))
         self.copy.pack(side="left")
+        self.concise = ttk.Button(row, text="Make concise", command=self.make_concise)
+        self.concise.pack(side="left", padx=(8, 0))
         self.retry = ttk.Button(
             row, text="Retry saved recording", command=lambda: self.action("transcribe")
         )
         self.retry.pack(side="right")
         self.discard = ttk.Button(row, text="Discard", command=self.discard_audio)
         self.discard.pack(side="right", padx=(0, 8))
-        self.buttons.extend([self.copy, self.retry, self.discard])
+        self.buttons.extend([self.copy, self.concise, self.retry, self.discard])
         # Shown only when they apply: Cancel while recording, Retry/Discard for saved audio.
         # (Retry is shown before Discard, so Discard lands to its left as designed.)
         self.situational: dict[ttk.Button, Callable[[], None]] = {
@@ -1514,7 +1616,9 @@ class App:
         redraw: Callable[[], None] | None = None,
     ) -> None:
         """Unbind the other custom shortcut (kept in the keyboard settings) so ours works."""
-        if hotkeys.gnome_release(conflict.path):
+        released = hotkeys.gnome_release(conflict.path)
+        telemetry.event("shortcut_take_over", ok=released, which=status)
+        if released:
             hotkeys.record_status(self.service.paths, True, status)
             (redraw or self.home)()
             self.status.set(f"Done. The shortcut belongs to {hotkeys.APP_NAME} now.")
@@ -1543,6 +1647,35 @@ class App:
             lambda: self.service.action(action),
             lambda _: self.status.set("Copied to clipboard." if action == "copy" else ""),
             "Working…",
+        )
+
+    def make_concise(self) -> None:
+        config = d.Config(self.service.paths)
+        if not config.s("rewrite_endpoint") or not config.s("rewrite_model"):
+            clipui.TextPreview(
+                self.root,
+                "Set up Make concise",
+                "Make concise needs a text AI service. Run this command in a terminal:\n\n"
+                "dictate-toggle --setup-rewrite\n\n"
+                "Choose a local text model (such as one served by Ollama), or your own "
+                "HTTPS service. The setup asks before allowing transcripts to leave this computer. "
+                "Then return here and choose Make concise. Your original transcript is kept.",
+                lambda: None,
+            )
+            return
+
+        def show_draft(text: object) -> None:
+            clipui.TextPreview(
+                self.root,
+                "Concise draft — review before copying",
+                str(text),
+                lambda: self.action("copy-concise"),
+            )
+
+        self.submit(
+            self.service.concise,
+            show_draft,
+            "Making a concise draft… Your original transcript is kept.",
         )
 
     def discard_audio(self) -> None:
@@ -1605,6 +1738,7 @@ class App:
             self.situate(button, bool(retained) and not active)
         self.help_button.state(["disabled"] if active else ["!disabled"])
         self.copy.state(["!disabled"] if self.service.paths.text.exists() else ["disabled"])
+        self.concise.state(["!disabled"] if self.service.paths.text.exists() else ["disabled"])
         color = ACCENT
         if active:
             color = DANGER if recording else WARNING
@@ -1735,12 +1869,18 @@ class App:
                 if self.polls % 5 == 0:  # About once a second.
                     self.clipboard_page.refresh()
         except (d.DictationError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            telemetry.capture(
+                exc,
+                level="warning" if isinstance(exc, d.DictationError) else "error",
+                page=self.page,
+            )
             self.status.set(
                 str(exc)
                 if isinstance(exc, d.DictationError)
                 else "Something went wrong. Check microphone permissions, connections, and free disk space, then retry."
             )
-        except Exception:  # noqa: BLE001 - never let one failure stop the window updating.
+        except Exception as exc:  # noqa: BLE001 - never let one failure stop the window updating.
+            telemetry.capture(exc, page=self.page)
             self.status.set("Something went wrong. Please try again.")
         if self.page != "closed":
             self.timer = self.root.after(200, self.poll)
@@ -1797,8 +1937,12 @@ def main(argv: list[str] | None = None) -> int:
         # The running window shows itself, on the requested page if any.
         d.atomic(paths.runtime / "show-window", page or "show")
         return 0
+    telemetry.install("window")
     try:
         root = tk.Tk(className="WhisperDictation")
+
+        telemetry.watch_tk(root)
+        telemetry.event("app_open", page=page or "home")
         window = App(root, Service(paths), page)
         if page == "clipboard":
             root.after_idle(window.bring_forward)  # Opened by its shortcut: ready to type.
