@@ -195,6 +195,8 @@ class Store:
         try:
             self._db.execute("PRAGMA busy_timeout = 5000")
             self._db.execute("PRAGMA journal_mode = WAL")
+            # Deleted clips are overwritten, not left readable in free pages.
+            self._db.execute("PRAGMA secure_delete = ON")
             self._upgrade()
         except BaseException:
             self._db.close()
@@ -368,13 +370,17 @@ class Store:
             return None
         sha = hashlib.sha256(b"image\0" + png).hexdigest()
         stamp = time.time() if now is None else now
+        with self._lock:
+            known = self._db.execute("SELECT 1 FROM items WHERE sha = ?", (sha,)).fetchone()
+        # Decoding a large image is slow: done before taking the write lock, so saving a
+        # transcript at the same moment never waits on it.
+        thumb = b"" if known else _thumbnail(png, THUMBNAIL_PIXELS)
         with self._transaction() as db:
             existing = db.execute("SELECT id FROM items WHERE sha = ?", (sha,)).fetchone()
             if existing:
                 return self._touch(db, int(existing["id"]), stamp)
             name = f"{sha}.png"
             _write_private(self._images / name, png)
-            thumb = _thumbnail(png, THUMBNAIL_PIXELS)
             if thumb:
                 _write_private(self._thumbs / name, thumb)
             cursor = db.execute(
@@ -448,6 +454,10 @@ class Store:
         with self._transaction() as db:
             db.execute("DELETE FROM tombstones")
             db.execute("DELETE FROM meta")
+        with self._lock:
+            # Nothing erased may linger in the write-ahead log or the file's free space.
+            self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._db.execute("VACUUM")
         for folder in (self._images, self._thumbs):
             for entry in folder.iterdir():
                 if _FILE_NAME.fullmatch(entry.name):

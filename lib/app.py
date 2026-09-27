@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -719,7 +720,20 @@ class App:
     def clipboard(self) -> None:
         self.reset("clipboard", "", "")
         if self.clipboard_store is None:
-            self.clipboard_store = clipstore.Store(self.service.paths.clipboard)
+            try:
+                self.clipboard_store = clipstore.Store(self.service.paths.clipboard)
+            except (clipstore.StoreError, sqlite3.DatabaseError) as exc:
+                telemetry.capture(exc, level="warning", page="clipboard")
+                self.clipboard_page = None
+                self.card(
+                    "Your clipboard history can’t be opened right now",
+                    str(exc)
+                    if isinstance(exc, clipstore.StoreError)
+                    else "The history file is busy or damaged. The clipboard service repairs "
+                    "a damaged file by itself; try again in a moment.",
+                )
+                self.button("Try again", self.clipboard, True, self.actions(), "right")
+                return
         self.clipboard_page = clipui.ClipboardPage(self, self.clipboard_store)
         self.clipboard_page.render()
 

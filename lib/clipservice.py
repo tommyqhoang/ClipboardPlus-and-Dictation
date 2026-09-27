@@ -437,6 +437,26 @@ def _quit_requested(paths: d.Paths) -> bool:
     return False
 
 
+def _store_problem(paths: d.Paths, exc: Exception) -> str:
+    """Say what's wrong; an unreadable database is set aside so capture can start over."""
+    if isinstance(exc, clipstore.StoreError):
+        return str(exc)
+    if isinstance(exc, sqlite3.OperationalError):
+        return "The clipboard history is busy; retrying."
+    database = paths.clipboard / "clips.db"
+    kept = database.with_name(f"clips.db.damaged-{int(time.time())}")
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            part = database.with_name(database.name + suffix)
+            if part.exists():
+                part.rename(kept.with_name(kept.name + suffix))
+    except OSError:
+        return "The clipboard history file is damaged and could not be set aside."
+    return (
+        f"The clipboard history file was damaged, so a new one was started ({kept.name} was kept)."
+    )
+
+
 def run(
     paths: d.Paths,
     *,
@@ -475,7 +495,14 @@ def run(
                     write_status(paths, "error", 0, str(exc), clock)
                     nap(retry_seconds)
                     continue
-                store = store or clipstore.Store(paths.clipboard)
+                if store is None:
+                    try:
+                        store = clipstore.Store(paths.clipboard)
+                    except (clipstore.StoreError, sqlite3.DatabaseError) as exc:
+                        telemetry.capture(exc, level="warning", stage="store")
+                        write_status(paths, "error", 0, _store_problem(paths, exc), clock)
+                        nap(retry_seconds)
+                        continue
                 syncer = syncer or Syncer(store, paths, clock)
                 service = Service(
                     store, watcher, prefs.settings, prefs.enabled, paths, clock, syncer

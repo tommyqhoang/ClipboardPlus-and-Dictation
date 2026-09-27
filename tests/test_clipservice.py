@@ -295,6 +295,26 @@ class ResilienceTests(ServiceCase):
         service.step(0)
         self.assertEqual(self.texts(), ["b"])
 
+    def test_a_damaged_history_file_is_set_aside_so_capture_can_restart(self):
+        self.store.close()
+        database = self.paths.clipboard / "clips.db"
+        for part in database.parent.glob("clips.db*"):
+            part.unlink()
+        database.write_bytes(b"this is not a database" * 100)
+        with self.assertRaises(sqlite3.DatabaseError) as caught:
+            clipstore.Store(self.paths.clipboard)
+        message = clipservice._store_problem(self.paths, caught.exception)
+        self.assertIn("damaged", message)
+        self.assertFalse(database.exists())
+        self.assertEqual(len(list(database.parent.glob("clips.db.damaged-*"))), 1)
+        clipstore.Store(self.paths.clipboard).close()  # A fresh history opens.
+
+    def test_a_wipe_leaves_no_erased_text_in_the_database_files(self):
+        self.store.add_text("top secret phrase", "desktop", self.now)
+        self.store.wipe()
+        for part in (self.paths.clipboard).glob("clips.db*"):
+            self.assertNotIn(b"top secret phrase", part.read_bytes())
+
 
 class MaintenanceTests(ServiceCase):
     def test_retention_runs_on_a_schedule(self):

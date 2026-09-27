@@ -118,7 +118,8 @@ class ClipboardControl:
 
     def stop(self) -> None:
         """Ask a service this app started to quit (it restarts with the next launch)."""
-        if self._process is not None:
+        if self._process is not None and self._process.poll() is None:
+            # Only a running service reads it; a stale file would stop the next one.
             d.private_dir(self._paths.runtime)
             d.atomic(self._paths.runtime / "clip-quit", "quit")
 
