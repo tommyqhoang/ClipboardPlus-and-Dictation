@@ -530,8 +530,7 @@ def open_app(config: Config) -> None:
 def overlay_python() -> str:
     """A Python that can draw windows: the app's private environment when installed
     (the shortcut may run a system Python without Tk), otherwise this one."""
-    prefix = Path(__file__).resolve().parents[1]
-    venv = prefix / "share/whisper-dictation/venv"
+    venv = desktop.install_prefix(Path(__file__)) / "share/whisper-dictation/venv"
     private = (
         venv / "Scripts/pythonw.exe"
         if desktop.platform_name() == "windows"

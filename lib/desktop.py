@@ -34,6 +34,14 @@ def user_id() -> int:
     return int(getattr(os, "getuid", os.getpid)())
 
 
+def install_prefix(module: Path) -> Path:
+    """The prefix an installed module lives under: …/lib/whisper-dictation, or …/lib."""
+    folder = module.resolve().parent
+    if folder.name == "whisper-dictation" and folder.parent.name == "lib":
+        return folder.parents[1]
+    return folder.parent
+
+
 def roots() -> tuple[Path, Path, Path]:
     home = Path.home()
     system = platform_name()

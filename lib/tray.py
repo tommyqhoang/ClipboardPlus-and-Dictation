@@ -83,7 +83,7 @@ class GnomeHotKey:
         path: str = hotkeys.GNOME_PATH,
         name: str = hotkeys.APP_NAME,
     ) -> None:
-        self.command = command or HERE.parent / "bin/dictate-toggle"
+        self.command = command or desktop.install_prefix(HERE / "tray.py") / "bin/dictate-toggle"
         self.path, self.name = path, name
         self.conflict: hotkeys.Conflict | None = None  # Who else has these keys.
 

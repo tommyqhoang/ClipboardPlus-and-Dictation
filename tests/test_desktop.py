@@ -165,7 +165,7 @@ class DesktopTests(unittest.TestCase):
             before = config.read_bytes()
             subprocess.run(setup, env=env, check=True, capture_output=True)
             self.assertEqual(config.read_bytes(), before)
-            module = prefix / "lib/dictation.py"
+            module = prefix / "lib/whisper-dictation/dictation.py"
             result = subprocess.run(
                 [sys.executable, str(module), "--status"],
                 env=env,
@@ -257,9 +257,29 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup, "install_app_launcher"),
             ):
                 setup.install(root / ".local")
-            library = root / ".local/lib"
+            library = root / ".local/lib/whisper-dictation"
             for name in ("tray.py", "tray-recording.png", "whisper-dictation.png", "app.py"):
                 self.assertTrue((library / name).is_file(), f"{name} was not installed")
+
+    def test_install_moves_an_old_install_out_of_the_shared_lib_folder(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shared = root / ".local/lib"
+            shared.mkdir(parents=True)
+            for name in ("dictation.py", "app.py", "tray-recording.png"):
+                (shared / name).write_text("old")
+            (shared / "someone-elses.py").write_text("keep me")
+            with (
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(root / "run")}),
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config")}),
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup, "install_app_launcher"),
+            ):
+                setup.install(root / ".local")
+            self.assertEqual([path.name for path in shared.glob("*.py")], ["someone-elses.py"])
+            self.assertFalse((shared / "tray-recording.png").exists())
+            self.assertTrue((shared / "whisper-dictation/dictation.py").is_file())
 
     def test_notifications_carry_the_product_name(self):
         import hotkeys
@@ -274,8 +294,8 @@ class DesktopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             prefix = root / ".local"
-            (prefix / "lib").mkdir(parents=True)
-            (prefix / "lib/app.py").write_text("# app")
+            (prefix / "lib/whisper-dictation").mkdir(parents=True)
+            (prefix / "lib/whisper-dictation/app.py").write_text("# app")
             venv = PurePosixPath("/venv/bin/python")
             with (
                 patch.object(setup.desktop, "platform_name", return_value="linux"),
@@ -284,25 +304,32 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup, "stop_menubar") as stop,
             ):
                 setup.install_app_launcher(prefix)
-                login.assert_called_once_with(True, [str(venv), str(prefix / "lib/tray.py")])
+                login.assert_called_once_with(
+                    True, [str(venv), str(prefix / "lib/whisper-dictation/tray.py")]
+                )
                 entry = (prefix / "share/applications/whisper-dictation.desktop").read_text()
                 self.assertIn(f"Name={setup.hotkeys.APP_NAME}\n", entry)
                 self.assertIn('Exec="/venv/bin/python"', entry)
                 self.assertIn("tray.py", entry)
                 self.assertIn("Terminal=false", entry)
-                self.assertIn(f"Icon={prefix / 'lib/whisper-dictation.png'}", entry)
+                self.assertIn(
+                    f"Icon={prefix / 'lib/whisper-dictation/whisper-dictation.png'}", entry
+                )
                 with patch.object(setup.subprocess, "Popen") as process:
                     # Still running when the check ends: it started.
                     running = setup.subprocess.TimeoutExpired("app", 3)
                     process.return_value.wait.side_effect = running
                     setup.launch(prefix)  # No private environment yet: the window.
-                    self.assertIn(str(prefix / "lib/app.py"), process.call_args.args[0])
+                    self.assertIn(
+                        str(prefix / "lib/whisper-dictation/app.py"), process.call_args.args[0]
+                    )
                     windowed = setup.gui_python(prefix)[1]
                     windowed.parent.mkdir(parents=True)
                     windowed.touch()
                     setup.launch(prefix)
                     self.assertEqual(
-                        process.call_args.args[0], [str(windowed), str(prefix / "lib/tray.py")]
+                        process.call_args.args[0],
+                        [str(windowed), str(prefix / "lib/whisper-dictation/tray.py")],
                     )
                     process.return_value.wait.side_effect = None
                     process.return_value.wait.return_value = 0  # A second copy handing over.

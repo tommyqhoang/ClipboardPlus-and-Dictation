@@ -3,7 +3,6 @@ set -euo pipefail
 
 APP_NAME="Dictation Toggle"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_SRC="${PROJECT_DIR}/bin/dictate-toggle"
 BIN_DEST="${HOME}/.local/bin/dictate-toggle"
 MODEL_DIR="${HOME}/.local/share/whisper.cpp/models"
 MODEL_NAME="${DICTATION_MODEL_NAME:-ggml-base.en.bin}"
@@ -366,13 +365,9 @@ PY
 }
 
 install_script() {
-  mkdir -p "${HOME}/.local/bin" "${HOME}/.local/lib"
-  install -m 0644 "${PROJECT_DIR}/lib/dictation.py" "${HOME}/.local/lib/dictation.py"
-  install -m 0644 "${PROJECT_DIR}/lib/desktop.py" "${HOME}/.local/lib/desktop.py"
-  install -m 0644 "${PROJECT_DIR}/lib/onboarding.py" "${HOME}/.local/lib/onboarding.py"
-  install -m 0644 "${PROJECT_DIR}/lib/rewriting.py" "${HOME}/.local/lib/rewriting.py"
-  install -m 0644 "${PROJECT_DIR}/lib/workflow.py" "${HOME}/.local/lib/workflow.py"
-  install -m 0755 "$BIN_SRC" "$BIN_DEST"
+  mkdir -p "${HOME}/.local/bin"
+  # setup-desktop.py installs the app into ~/.local/lib/whisper-dictation and writes
+  # the dictate-toggle launcher.
   "$PYTHON" "${PROJECT_DIR}/setup-desktop.py"
   echo "Installed $BIN_DEST"
 }
@@ -404,6 +399,7 @@ install_gnome_shortcut() {
   if ! {
     gsettings set "$KEYBINDING_SCHEMA" name "$APP_NAME" &&
       gsettings set "$KEYBINDING_SCHEMA" command "\"$BIN_DEST\"" &&
+      gsettings set "$KEYBINDING_SCHEMA" binding "" &&
       gsettings set "$KEYBINDING_SCHEMA" binding "$DEFAULT_BINDING"
   }; then
     echo "Could not configure the GNOME shortcut; the command was still installed." >&2

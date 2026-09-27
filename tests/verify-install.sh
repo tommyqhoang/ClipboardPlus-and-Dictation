@@ -13,7 +13,7 @@ import pathlib
 import sys
 import tempfile
 
-sys.path.insert(0, str(pathlib.Path.home() / ".local/lib"))
+sys.path.insert(0, str(pathlib.Path.home() / ".local/lib/whisper-dictation"))
 import clipservice, clipsync, clipui, clipwatch_linux  # noqa: E401,F401
 import clipstore
 

@@ -30,7 +30,7 @@ under Xvfb, never on the user's display.
 
 ## Working rules
 
-1. The user runs the **installed copy** in `~/.local/lib`, not the repo. After
+1. The user runs the **installed copy** in `~/.local/lib/whisper-dictation`, not the repo. After
    changing app code, `./install.sh` is needed before they see it — ask first.
 2. Every user-facing change keeps the calm, plain-language voice of the UI copy.
 3. Never send transcripts, clipboard content or keys anywhere the user did not

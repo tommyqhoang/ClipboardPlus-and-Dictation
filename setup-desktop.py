@@ -120,6 +120,24 @@ MODULES = (
     "clipui.py",
     "overlay.py",
 )
+# The app's own folder, so its generically named modules (app.py, tray.py…) never
+# mix with other tools' files in the shared ~/.local/lib. Older versions used it.
+LIB = "lib/whisper-dictation"
+LEGACY_LIB = "lib"
+
+
+def remove_app_files(folder: Path) -> None:
+    """Remove only this app's modules, icons and their compiled caches from `folder`."""
+    for name in (*MODULES, *(name for _, name in ICONS), "whisper-dictation.ico"):
+        (folder / name).unlink(missing_ok=True)
+    cache = folder / "__pycache__"
+    for name in MODULES:
+        for compiled in cache.glob(Path(name).stem + ".*.pyc"):
+            compiled.unlink()
+    if cache.is_dir() and not any(cache.iterdir()):
+        cache.rmdir()
+
+
 # The menu bar (macOS, PyObjC) and tray (Windows/Linux, pystray) apps run from a
 # private environment so the system or Homebrew Python is never modified.
 GUI_REQUIREMENTS = {
@@ -229,7 +247,7 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
     paths = dictation.Paths()
     if dictation.busy(paths):
         raise dictation.DictationError("Finish the current dictation before installing.")
-    module = prefix / "lib/dictation.py"
+    module = prefix / LIB / "dictation.py"
     bindir = prefix / "bin"
     # Shared folders (often symlinked by dotfiles): create them, never re-permission
     # them. The files written into them are owner-only.
@@ -241,12 +259,14 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
     for source, name in ICONS:
         if source.is_file():
             shutil.copyfile(source, module.parent / name)
+    if (prefix / LEGACY_LIB / "dictation.py").is_file():
+        remove_app_files(prefix / LEGACY_LIB)  # Moved into the app's own folder.
     if desktop.platform_name() == "windows":
         launcher = bindir / "dictate-toggle.cmd"
         python = str(Path(sys.executable)).replace("%", "%%")
         dictation.atomic(
             launcher,
-            f'@echo off\nsetlocal DisableDelayedExpansion\n"{python}" -X utf8 "%~dp0..\\lib\\dictation.py" %*\n',
+            f'@echo off\nsetlocal DisableDelayedExpansion\n"{python}" -X utf8 "%~dp0..\\lib\\whisper-dictation\\dictation.py" %*\n',
         )
     else:
         launcher = bindir / "dictate-toggle"
@@ -291,17 +311,17 @@ def app_bundle(prefix: Path) -> Path:
 
 
 def tray_command(prefix: Path, python: Path) -> list[str]:
-    return [str(python), str(prefix / "lib/tray.py")]
+    return [str(python), str(prefix / LIB / "tray.py")]
 
 
 def install_app_launcher(prefix: Path) -> None:
-    module = prefix / "lib/app.py"
+    module = prefix / LIB / "app.py"
     preferences = hotkeys.Preferences(dictation.Paths())
     if desktop.platform_name() != "macos":
         python = gui_environment(prefix)
         hotkeys.set_login_item(preferences.open_at_login(), tray_command(prefix, python))
     if desktop.platform_name() == "windows":
-        windows_shortcut(prefix / "lib/tray.py", python)
+        windows_shortcut(prefix / LIB / "tray.py", python)
     elif desktop.platform_name() == "macos":
         bundle = app_bundle(prefix)
         for old_name in ("Whisper Dictation.app", "Clipboard+ Desktop.app"):
@@ -314,7 +334,10 @@ def install_app_launcher(prefix: Path) -> None:
                 and plistlib.loads(legacy_info.read_bytes()).get("CFBundleIdentifier")
                 == "org.whisperdictation.desktop"
                 and legacy_launcher.is_file()
-                and str(prefix / "lib/menubar.py") in legacy_launcher.read_text()
+                and any(
+                    str(prefix / folder / "menubar.py") in legacy_launcher.read_text()
+                    for folder in (LIB, LEGACY_LIB)
+                )
             ):
                 legacy.rename(bundle)
                 break
@@ -380,7 +403,7 @@ def install_app_launcher(prefix: Path) -> None:
 
         dictation.atomic(
             entry,
-            f"[Desktop Entry]\nType=Application\nName={hotkeys.APP_NAME}\nComment=Dictate anywhere and keep your clipboard history\nExec={quote(str(python))} {quote(str(prefix / 'lib/tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\n",
+            f"[Desktop Entry]\nType=Application\nName={hotkeys.APP_NAME}\nComment=Dictate anywhere and keep your clipboard history\nExec={quote(str(python))} {quote(str(prefix / LIB / 'tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\n",
         )
 
 
@@ -388,7 +411,7 @@ LAUNCH_CHECK_SECONDS = 3.0
 
 
 def launch(prefix: Path) -> None:
-    module = prefix / "lib/app.py"
+    module = prefix / LIB / "app.py"
     if not module.is_file():
         raise dictation.DictationError("The desktop app is not installed at this location.")
     if desktop.platform_name() == "macos":
@@ -454,41 +477,18 @@ def uninstall(prefix: Path) -> None:
     if dictation.busy(dictation.Paths()):
         raise dictation.DictationError("Finish or cancel the active session before uninstalling.")
     if dictation.read_json(receipt).get("shortcut") and desktop.platform_name() == "windows":
-        windows_shortcut(prefix / "lib/tray.py", gui_python(prefix)[1], remove=True)
+        windows_shortcut(prefix / LIB / "tray.py", gui_python(prefix)[1], remove=True)
     stop_clipboard_service(dictation.Paths())
     if desktop.platform_name() != "macos":
         stop_menubar(dictation.Paths())
         windowed = gui_python(prefix)[1]
         if windowed.exists():
             hotkeys.set_login_item(False, tray_command(prefix, windowed))
+    for folder in (prefix / LIB, prefix / LEGACY_LIB):
+        remove_app_files(folder)
+    if (prefix / LIB).is_dir() and not any((prefix / LIB).iterdir()):
+        (prefix / LIB).rmdir()
     for relative in (
-        "lib/telemetry.py",
-        "lib/dictation.py",
-        "lib/desktop.py",
-        "lib/onboarding.py",
-        "lib/rewriting.py",
-        "lib/workflow.py",
-        "lib/app.py",
-        "lib/app_service.py",
-        "lib/hotkeys.py",
-        "lib/menubar.py",
-        "lib/tray.py",
-        "lib/clipboardplus.py",
-        "lib/clipstore.py",
-        "lib/clipwatch.py",
-        "lib/clipwatch_linux.py",
-        "lib/clipwatch_macos.py",
-        "lib/clipwatch_windows.py",
-        "lib/clipservice.py",
-        "lib/clipsync.py",
-        "lib/clipcontrol.py",
-        "lib/clipui.py",
-        "lib/overlay.py",
-        "lib/tray-recording.png",
-        "lib/menubar-icon.png",
-        "lib/menubar-recording.png",
-        "lib/whisper-dictation.png",
-        "lib/whisper-dictation.ico",
         "share/applications/whisper-dictation.desktop",
         "bin/dictate-toggle",
         "bin/dictate-toggle.cmd",
@@ -496,18 +496,13 @@ def uninstall(prefix: Path) -> None:
         f"bin/{hotkeys.APP_NAME}.command",
     ):
         (prefix / relative).unlink(missing_ok=True)
-    cache = prefix / "lib/__pycache__"
-    for name in MODULES:
-        for compiled in cache.glob(Path(name).stem + ".*.pyc"):
-            compiled.unlink()
-    if cache.is_dir() and not any(cache.iterdir()):
-        cache.rmdir()
     if desktop.platform_name() == "linux":
         hotkeys.gnome_remove(prefix / "bin/dictate-toggle")
-        hotkeys.gnome_remove(
-            hotkeys.history_command(prefix / "lib", str(gui_python(prefix)[1])),
-            path=hotkeys.GNOME_HISTORY_PATH,
-        )
+        for folder in (prefix / LIB, prefix / LEGACY_LIB):
+            hotkeys.gnome_remove(
+                hotkeys.history_command(folder, str(gui_python(prefix)[1])),
+                path=hotkeys.GNOME_HISTORY_PATH,
+            )
     receipt.unlink()
     venv = prefix / "share/whisper-dictation/venv"
     # Only a directory this installer created (it holds pyvenv.cfg) is removed.
