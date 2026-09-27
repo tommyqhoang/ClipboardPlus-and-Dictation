@@ -119,6 +119,7 @@ DEFAULTS: dict[str, Any] = {
     "vad_model": "",
     "preview_notifications": False,
     "overlay": True,
+    "notifications": False,  # Session messages as desktop notifications (the pill shows them).
     "auto_paste": True,
     "rewrite_endpoint": "",
     "rewrite_model": "",
@@ -235,9 +236,16 @@ class Config:
                 raise DictationError(f"Required executable unavailable: {Path(command).name}")
 
 
-def notify(config: Config | None, message: str) -> None:
-    """A desktop notification (with default settings when they could not be read)."""
+def notify(config: Config | None, message: str, *, session: bool = False) -> None:
+    """A desktop notification (with default settings when they could not be read).
+
+    A `session` message repeats what the recording pill already shows, so it is sent
+    only when the user wants notifications too, or has turned the pill off. Errors and
+    messages with no pill on screen are always sent.
+    """
     values = config.values if config is not None else DEFAULTS
+    if session and values["overlay"] and not values["notifications"]:
+        return
     command = desktop.notification_command(values)
     if desktop.available(command[0]):
         try:
@@ -493,9 +501,14 @@ def finish(config: Config, paths: Paths, *, auto_paste: bool = False) -> str:
             if pasted
             else "Ready to paste: press "
             + ("Command+V." if desktop.platform_name() == "macos" else "Ctrl+V."),
+            session=auto_paste,  # Only the shortcut's session has the pill.
         )
     else:
-        notify(config, "No speech detected. Previous transcript and clipboard kept.")
+        notify(
+            config,
+            "No speech detected. Previous transcript and clipboard kept.",
+            session=auto_paste,
+        )
     if not config.b("keep_audio"):
         paths.audio.unlink(missing_ok=True)
     return ("pasted" if pasted else "copied") if text else "empty"
@@ -630,7 +643,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                 "Microphone could not start. Choose a microphone in Settings and allow microphone access."
             )
         state("recording")
-        notify(config, "Recording. Press your shortcut again to stop.")
+        notify(config, "Recording. Press your shortcut again to stop.", session=True)
         while True:
             control = read_json(paths.control)
             if control.get("token") == token and control.get("action") in ("stop", "cancel"):
@@ -652,6 +665,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                 notify(
                     config,
                     f"Recording stops automatically in {max(1, math.ceil(remaining))} seconds.",
+                    session=True,
                 )
             if remaining <= 0:
                 break
@@ -660,7 +674,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                     preview = pending.result()
                     atomic(paths.preview, preview)
                     if preview and config.b("preview_notifications"):
-                        notify(config, "Draft: " + preview[-160:])
+                        notify(config, "Draft: " + preview[-160:], session=True)
                 except (DictationError, OSError):
                     state(
                         "recording", "Live preview unavailable; final transcription will still run."
@@ -686,9 +700,9 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
         if cancelled:
             paths.audio.unlink(missing_ok=True)
             state("idle", "Recording cancelled.", result="cancelled")
-            notify(config, "Recording cancelled.")
+            notify(config, "Recording cancelled.", session=True)
         else:
-            notify(config, loading)
+            notify(config, loading, session=True)
             recorded = time.monotonic() - started
             began = time.monotonic()
             result = finish(config, paths, auto_paste=True)
@@ -769,7 +783,9 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
                 )
                 print("Cancelling…" if action == "cancel" else "Stopping…")
             else:
-                notify(config, "Still transcribing. Your text will be ready in a moment.")
+                notify(
+                    config, "Still transcribing. Your text will be ready in a moment.", session=True
+                )
                 print("Dictation is busy; audio is protected until this session finishes.")
             return
         if action == "cancel":
@@ -958,9 +974,10 @@ def main() -> int:
             )
         return 0
     except (DictationError, OSError, EOFError, subprocess.SubprocessError) as exc:
-        telemetry.capture(
-            exc, level="warning" if isinstance(exc, DictationError) else "error", wait=True
-        )
+        # A DictationError is an expected, explained condition (setup unfinished, no
+        # speech…) shown to the user; only real failures are crash reports.
+        if not isinstance(exc, DictationError):
+            telemetry.capture(exc, wait=True)
         notify(
             config,
             str(exc)

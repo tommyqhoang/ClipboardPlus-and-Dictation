@@ -413,7 +413,7 @@ class Service:
 
     def set_option(self, key: str, value: bool) -> None:
         """Save one on/off dictation option at once (the recording bar, live drafts)."""
-        if key not in ("overlay", "live", "auto_paste"):
+        if key not in ("overlay", "live", "auto_paste", "notifications"):
             raise ValueError(key)
         d.private_dir(self.paths.config.parent)
         saved = d.DEFAULTS | d.read_json(self.paths.config)

@@ -494,11 +494,22 @@ def main() -> int:
         # Already running: opening the launcher again should show the window.
         open_app_window()
         return 0
-    telemetry.install("tray")
-    import pystray  # type: ignore[import-not-found]
-    from PIL import Image  # type: ignore[import-not-found, unused-ignore]
-
     try:
+        if desktop.platform_name() == "linux" and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            print("No desktop session to show the tray icon in; it starts at your next login.")
+            return 1
+        telemetry.install("tray")
+        try:
+            import pystray  # type: ignore[import-not-found]
+        except Exception as exc:  # noqa: BLE001 - pystray connects to the display on import.
+            if type(exc).__name__ not in ("DisplayNameError", "DisplayConnectionError"):
+                raise
+            print("The tray icon can't reach the display; it starts at your next login.")
+            return 1
+        from PIL import Image  # type: ignore[import-not-found, unused-ignore]
+
         (paths.runtime / "menubar-quit").unlink(missing_ok=True)
         tray = Tray(pystray, Image)
         tray.icon.run(setup=tray.started)

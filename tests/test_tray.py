@@ -308,6 +308,19 @@ class TrayTests(unittest.TestCase):
         with patch.object(tray.desktop, "platform_name", return_value="macos"):
             self.assertEqual(tray.main(), 1)
 
+    def test_main_without_a_display_exits_quietly_instead_of_crashing(self):
+        with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}),
+            patch.object(tray.telemetry, "capture") as capture,
+        ):
+            self.assertEqual(tray.main(), 1)
+        capture.assert_not_called()
+        # The lock is released: a later start (at login) is not blocked.
+        again = tray.desktop.lock(self.paths.runtime / "menubar.lock")
+        self.assertIsNotNone(again)
+        os.close(again)
+
     def use_features(self, dictation, clipboard):
         hotkeys.Preferences(self.paths).save(features=hotkeys.Features(dictation, clipboard))
         stamp = self.tray.preferences.path.stat().st_mtime

@@ -1279,6 +1279,7 @@ class App:
             ("auto_paste", "Automatically paste into the app I am using"),
             ("overlay", "Show the recording bar (voice levels, then “Copied”)"),
             ("live", "Show a live draft while recording (uses more processing)"),
+            ("notifications", "Also show desktop notifications (always on without the bar)"),
         ):
             switch = tk.BooleanVar(master=self.root, value=config.b(key))
             ttk.Checkbutton(
@@ -2164,11 +2165,8 @@ class App:
                 if self.polls % 5 == 0:  # About once a second.
                     self.clipboard_page.refresh()
         except (d.DictationError, OSError, ValueError, subprocess.SubprocessError) as exc:
-            telemetry.capture(
-                exc,
-                level="warning" if isinstance(exc, d.DictationError) else "error",
-                page=self.page,
-            )
+            if not isinstance(exc, d.DictationError):  # Those are explained on screen.
+                telemetry.capture(exc, page=self.page)
             self.status.set(
                 str(exc)
                 if isinstance(exc, d.DictationError)

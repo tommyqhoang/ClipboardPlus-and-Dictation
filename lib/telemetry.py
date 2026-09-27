@@ -37,10 +37,10 @@ SENTRY_DSN = (
     "https://c697e9ce83dad48da2dc775d930eac30@o4508955926396928.ingest.us.sentry.io/"
     "4512154615808000"
 )
-# Google Analytics 4: fill both in to turn statistics on (see README "Analytics").
-# GA4 Admin > Data streams > (the stream) > Measurement ID, and on the same page
-# Measurement Protocol API secrets > Create. Environment variables override them.
-ANALYTICS_URL = "https://clipboardplus-api.apercallc.com/api/telemetry/desktop"
+# Usage counts go to the Clipboard+ API (clipboardplus.API), which checks them against
+# a fixed schema before relaying them to Google Analytics. The previous
+# clipboardplus-api.apercallc.com host was never set up in DNS, so nothing arrived.
+ANALYTICS_URL = "https://backend-production-74d4.up.railway.app/api/telemetry/desktop"
 TIMEOUT = 4.0
 WAIT_SECONDS = 3.0  # How long a short-lived process waits for its report to go out.
 MAX_REPORTS = 20  # Per process: a failure loop never floods the project.
@@ -111,11 +111,23 @@ CHOICES = {
     "mode": {"both", "clipboard", "dictation"},
     "kind": {"text", "image", "custom", "desktop"},
     "action": {"add", "remove", "set", "clear"},
-    "result": {"ok", "empty", "success", "silent", "quiet", "no_audio"},
+    "result": {
+        *("ok", "empty", "success", "silent", "quiet", "no_audio"),
+        *("copied", "pasted", "good", "faint", "none"),  # Dictation and mic test outcomes.
+    },
     "sync": {"off", "idle", "syncing", "error", "offline", "connected"},
     "page": {"home", "clipboard", "dictation", "settings", "account", "setup"},
     "stage": {"sync", "capture", "watcher", "recording"},
-    "setting": {"share_usage", "overlay", "live", "auto_paste", "dictation", "clipboard"},
+    "setting": {
+        "share_usage",
+        "overlay",
+        "live",
+        "auto_paste",
+        "dictation",
+        "clipboard",
+        "voice",
+        "notifications",
+    },
 }
 
 
@@ -143,12 +155,21 @@ def allowed() -> bool:
         return False
     if "unittest" in sys.modules and not os.environ.get("DICTATION_TELEMETRY_TESTS"):
         return False  # A test run never reports itself.
-    try:
-        with (_config_dir() / "menubar.json").open(encoding="utf-8") as stream:
-            value = json.load(stream).get(PREFERENCE)
-    except (OSError, ValueError, AttributeError):
-        return False  # Nothing is sent before the user has agreed.
-    return value is True
+
+    def read(name: str) -> dict[str, Any]:
+        try:
+            with (_config_dir() / name).open(encoding="utf-8") as stream:
+                found = json.load(stream)
+        except (OSError, ValueError):
+            return {}
+        return found if isinstance(found, dict) else {}
+
+    value = read("menubar.json").get(PREFERENCE)
+    if value is not None:
+        return value is True
+    # On by default, but only once setup, whose first step shows the switch, is done:
+    # nothing is sent before the user has seen the choice.
+    return read("welcome.json").get("complete") is True
 
 
 def client_id() -> str:

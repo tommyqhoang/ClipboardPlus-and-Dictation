@@ -150,6 +150,23 @@ class DictationTests(unittest.TestCase):
             d.dispatch(self.config, self.paths, "toggle")
             self.assertIn("Still finishing", told.call_args.args[1])
 
+    def test_session_notifications_follow_the_pill_and_the_setting(self):
+        with (
+            patch.object(d.desktop, "available", return_value=True),
+            patch.object(d.subprocess, "run") as run,
+        ):
+            self.config.values.update(overlay=True, notifications=False)
+            d.notify(self.config, "Recording.", session=True)
+            run.assert_not_called()  # The pill already says it.
+            d.notify(self.config, "Microphone could not start.")
+            self.assertEqual(run.call_count, 1)  # Errors always reach the user.
+            self.config.values.update(notifications=True)
+            d.notify(self.config, "Recording.", session=True)
+            self.assertEqual(run.call_count, 2)
+            self.config.values.update(overlay=False, notifications=False)
+            d.notify(self.config, "Recording.", session=True)
+            self.assertEqual(run.call_count, 3)  # No pill: notifications are the feedback.
+
     def test_discarding_a_failed_recording_clears_its_error(self):
         (self.root / "fail").touch()
         self.start()

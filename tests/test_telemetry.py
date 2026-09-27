@@ -42,10 +42,18 @@ class TelemetryTests(unittest.TestCase):
             self.assertFalse(telemetry.allowed())  # No choice made yet: nothing is sent.
         (self.root / "menubar.json").write_text('{"features": {}}', encoding="utf-8")
         with self.enabled():
-            self.assertFalse(telemetry.allowed())
+            self.assertFalse(telemetry.allowed())  # Setup (and its switch) not seen yet.
+        (self.root / "welcome.json").write_text('{"complete": true}', encoding="utf-8")
+        with self.enabled():
+            self.assertTrue(telemetry.allowed())  # On by default once setup is done.
         (self.root / "menubar.json").write_text('{"share_usage": false}', encoding="utf-8")
         with self.enabled():
             self.assertFalse(telemetry.allowed())
+
+    def test_usage_goes_to_the_same_api_as_the_account(self) -> None:
+        import clipboardplus
+
+        self.assertTrue(telemetry.ANALYTICS_URL.startswith(clipboardplus.API + "/api/"))
 
     def test_usage_event_accepts_only_fixed_schema(self) -> None:
         sent: list[tuple[str, bytes, dict[str, str]]] = []
