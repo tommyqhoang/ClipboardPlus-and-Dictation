@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
   <url>
-    <loc>https://tommyqhoang.github.io/whisper-dictation/</loc>
+    <loc>https://tommyqhoang.github.io/ClipboardPlus-and-Dictation/</loc>
     <lastmod>2026-09-26</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
-    <image:image><image:loc>https://tommyqhoang.github.io/whisper-dictation/assets/clipboard.webp</image:loc></image:image>
-    <image:image><image:loc>https://tommyqhoang.github.io/whisper-dictation/assets/dictation.webp</image:loc></image:image>
-    <image:image><image:loc>https://tommyqhoang.github.io/whisper-dictation/assets/settings.webp</image:loc></image:image>
+    <image:image><image:loc>https://tommyqhoang.github.io/ClipboardPlus-and-Dictation/assets/clipboard.webp</image:loc></image:image>
+    <image:image><image:loc>https://tommyqhoang.github.io/ClipboardPlus-and-Dictation/assets/dictation.webp</image:loc></image:image>
+    <image:image><image:loc>https://tommyqhoang.github.io/ClipboardPlus-and-Dictation/assets/settings.webp</image:loc></image:image>
   </url>
 </urlset>

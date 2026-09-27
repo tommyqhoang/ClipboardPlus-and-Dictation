@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://tommyqhoang.github.io/whisper-dictation/sitemap.xml
+Sitemap: https://tommyqhoang.github.io/ClipboardPlus-and-Dictation/sitemap.xml

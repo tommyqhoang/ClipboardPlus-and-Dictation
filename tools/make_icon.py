@@ -1,4 +1,4 @@
-"""Render the application icons: the Clipboard+ clipboard with a microphone badge.
+"""Render the application icons: a Clipboard+ clipboard with an integrated microphone.
 
 Run from the repository root: python3 tools/make_icon.py  (needs Pillow; any OS)
 Writes lib/whisper-dictation.png (runtime window/launcher icon),
@@ -6,9 +6,10 @@ lib/menubar-*.png (macOS menu bar images), lib/tray-recording.png,
 assets/icon-1024.png, assets/icon-recording-1024.png, assets/AppIcon.icns (macOS),
 assets/icon.ico (Windows), and the matching website icons in site/assets/.
 
-The artwork matches the Clipboard+ logo (an orange clipboard with a cloud) so the
-desktop app, the extension and the website look like one product; the badge marks
-the dictation that only the desktop app has. It turns red while recording.
+The artwork keeps the Clipboard+ orange clipboard, but gives dictation one clear,
+integrated focal point.  A detached circular microphone read like an unread
+notification at small sizes, so the microphone now lives inside the clipboard.
+It turns red while recording.
 """
 
 from __future__ import annotations
@@ -93,33 +94,22 @@ def render(badge: tuple[int, int, int, int] = INK) -> Any:
     _circle(draw, 482, 150, 15, fill=INK)
     _box(draw, (334, 158, 630, 290), 34, fill=INK)
     _box(draw, (334 + 34, 158 + 34, 630 - 34, 290 - 34), 10, fill=PAPER)
-    # The cloud, drawn as an outline on the orange.
-    for r, fill in ((0, INK), (-30, ORANGE)):
-        _circle(draw, 408, 486, 72 + r, fill=fill)
-        _circle(draw, 494, 438, 94 + r, fill=fill)
-        _circle(draw, 574, 492, 66 + r, fill=fill)
-        _box(draw, (340 - r, 486 - r, 640 + r, 574 + r), 44 + r, fill=fill)
-    # Two lines of text.
-    _line(draw, (330, 660), (630, 660), 40, INK)
-    _line(draw, (330, 748), (530, 748), 40, INK)
-    # The dictation badge, cut out of the board by a white ring.
-    _circle(draw, 766, 792, 214, fill=PAPER)
-    _circle(draw, 766, 792, 184, fill=badge)
-    _microphone(draw, 766, 800, 72, PAPER)
+    # A generous white label makes the microphone readable even at 16 px.  It is
+    # deliberately inset on all sides: a single, unified clipboard mark instead
+    # of a detached lower-corner badge that resembles an unread notification.
+    _box(draw, (306, 384, 658, 752), 58, fill=PAPER)
+    _microphone(draw, 482, 550, 102, badge)
     return image.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
 
 
 def render_glyph(size: int, color: tuple[int, int, int, int]) -> Any:
-    """One-color silhouette for the macOS menu bar (a template image at 2x)."""
+    """One-color clipboard-and-microphone silhouette for the macOS menu bar."""
     big = 1024 * SCALE
     image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    clear = (0, 0, 0, 0)
-    _box(draw, (190, 160, 770, 930), 96, outline=color, width=76 * SCALE)
-    _box(draw, (330, 110, 630, 280), 44, fill=color)
-    _circle(draw, 770, 800, 240, fill=clear)
-    _circle(draw, 770, 800, 188, fill=color)
-    _microphone(draw, 770, 808, 74, clear)
+    _box(draw, (214, 180, 810, 932), 94, outline=color, width=72 * SCALE)
+    _box(draw, (332, 116, 692, 282), 46, fill=color)
+    _microphone(draw, 512, 566, 126, color)
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 

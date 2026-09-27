@@ -2,7 +2,7 @@
 
 > Clipboard+ and Dictation is a free clipboard manager for macOS, Windows and Linux. It keeps a searchable history of everything you copy (text, links and images) on your computer, works fully offline with no account, and can optionally sync across all your computers and the Clipboard+ browser extension when you sign in or use an API key. Voice dictation in any app, with private on-device Whisper transcription, is built in. (Also known as Whisper Dictation & Clipboard+.)
 
-- Website: https://tommyqhoang.github.io/whisper-dictation/
+- Website: https://tommyqhoang.github.io/ClipboardPlus-and-Dictation/
 - Clipboard+ (account, website and browser extension): https://clipboardplus.apercallc.com
 - Contact: https://apercallc.com/contact
 
@@ -22,6 +22,6 @@
 
 ## Install
 
-- macOS or Linux, in Terminal: bash -c "$(curl -fsSL https://raw.githubusercontent.com/tommyqhoang/whisper-dictation/main/bootstrap.sh)"
-- Windows (x64), in PowerShell: & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/tommyqhoang/whisper-dictation/main/bootstrap.ps1).Content))
+- macOS or Linux, in Terminal: bash -c "$(curl -fsSL https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.sh)"
+- Windows (x64), in PowerShell: & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.ps1).Content))
 - The installer adds only missing dependencies, downloads the app, and opens it. First-run setup asks whether to use Clipboard history, Dictation, or both.

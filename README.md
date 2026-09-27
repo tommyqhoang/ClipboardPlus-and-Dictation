@@ -1,6 +1,7 @@
 # Clipboard+ and Dictation
 
-*Formerly Whisper Dictation & Clipboard+.* Download page: https://clipboardplus.apercallc.com/desktop.html
+*Formerly Whisper Dictation & Clipboard+.* Download page: https://clipboardplus.apercallc.com/desktop.html ·
+Source: https://github.com/tommyqhoang/ClipboardPlus-and-Dictation
 
 Free desktop app for Linux, macOS, and Windows with two features you can use
 separately or together:
@@ -56,13 +57,13 @@ acceptance testing.
 macOS or Linux (Debian/Ubuntu, Fedora, Arch, openSUSE), in Terminal:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/tommyqhoang/wayland-whisper-dictation/main/bootstrap.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.sh)"
 ```
 
 Windows x64, in PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/tommyqhoang/wayland-whisper-dictation/main/bootstrap.ps1).Content))
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.ps1).Content))
 ```
 
 These commands execute downloaded code: review the bootstrap script first if

@@ -72,7 +72,7 @@ main() (
   archive="$work/app.tar.gz"
   curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
     --proto-redir '=https' \
-    "https://github.com/tommyqhoang/wayland-whisper-dictation/archive/${ref}.tar.gz" -o "$archive"
+    "https://github.com/tommyqhoang/ClipboardPlus-and-Dictation/archive/${ref}.tar.gz" -o "$archive"
   mkdir "$work/app"
   tar -xzf "$archive" --strip-components=1 -C "$work/app"
   # The installers leave the closing words to this script.

@@ -61,7 +61,7 @@ try {
         Write-Warning "Speech engine setup failed: $_. Clipboard+ will still install; retry speech setup later."
     }
     $archive = Join-Path $work 'app.zip'
-    Invoke-WebRequest -UseBasicParsing "https://github.com/tommyqhoang/wayland-whisper-dictation/archive/$Ref.zip" -OutFile $archive
+    Invoke-WebRequest -UseBasicParsing "https://github.com/tommyqhoang/ClipboardPlus-and-Dictation/archive/$Ref.zip" -OutFile $archive
     $source = Join-Path $work 'source'
     Expand-Archive -LiteralPath $archive -DestinationPath $source
     $app = Get-ChildItem -LiteralPath $source -Directory | Select-Object -First 1
