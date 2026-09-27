@@ -231,8 +231,10 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
         raise dictation.DictationError("Finish the current dictation before installing.")
     module = prefix / "lib/dictation.py"
     bindir = prefix / "bin"
-    dictation.private_dir(module.parent)
-    dictation.private_dir(bindir)
+    # Shared folders (often symlinked by dotfiles): create them, never re-permission
+    # them. The files written into them are owner-only.
+    module.parent.mkdir(parents=True, exist_ok=True)
+    bindir.mkdir(parents=True, exist_ok=True)
     for filename in MODULES:
         source = REPOSITORY / "lib" / filename
         dictation.atomic(module.parent / filename, source.read_text(encoding="utf-8"))

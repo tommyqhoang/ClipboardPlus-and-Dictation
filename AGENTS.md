@@ -1,16 +1,38 @@
-<claude-mem-context>
-# Memory Context
+# AGENTS.md — Clipboard+ and Dictation (wayland-whisper-dictation)
 
-# claude-mem status
+Rules for every agent (Claude, Codex, Hermes) working in this repo.
 
-This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
+## What it is
 
-Memory injection starts on your second session in a project.
+A desktop app with two features, each optional: **Dictation** (press a global
+shortcut, speak, the transcript is pasted or copied; whisper.cpp on-device or
+the user's own AI service) and **Clipboard+** (searchable clipboard history,
+optionally synced to a Clipboard+ account). Python + Tk, Linux first (GNOME
+Wayland/X11), also macOS and Windows.
 
-`/learn-codebase` is available if the user wants to front-load the entire repo into memory in a single pass (~5 minutes on a typical repo, optional). Otherwise memory builds passively as work happens.
+- `lib/app.py` — the window (setup, Dictation, Clipboard, Settings tabs)
+- `lib/dictation.py` — recording/transcription worker and the CLI
+- `lib/tray.py`, `lib/menubar.py` — the always-running tray / menu bar app
+- `lib/overlay.py` — the recording pill
+- `lib/clip*.py`, `lib/clipboardplus.py` — clipboard capture, storage, sync
+- `setup-desktop.py`, `install.sh`, `bootstrap.*` — installers
+- `site/` — unused; the download page lives on the Clipboard+ site
 
-Live activity: http://localhost:37701
-How it works: `/how-it-works`
+## Verify before claiming done
 
-This message disappears once the first observation lands.
-</claude-mem-context>
+```sh
+sh tests/check.sh          # ruff, format, mypy --strict, shellcheck, shfmt, tests
+sh tests/with-xvfb.sh python3 -m unittest discover -s tests   # tests only, headless
+```
+
+Use `/usr/bin/python3` (the shell's Homebrew python has no Tk). GUI tests run
+under Xvfb, never on the user's display.
+
+## Working rules
+
+1. The user runs the **installed copy** in `~/.local/lib`, not the repo. After
+   changing app code, `./install.sh` is needed before they see it — ask first.
+2. Every user-facing change keeps the calm, plain-language voice of the UI copy.
+3. Never send transcripts, clipboard content or keys anywhere the user did not
+   choose; telemetry must stay free of content (see `lib/telemetry.py`).
+4. Add a test with every bug fix; keep `mypy --strict` and ruff clean.
