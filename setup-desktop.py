@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import plistlib
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -230,6 +232,32 @@ def gui_environment(prefix: Path) -> Path:
     return windowed
 
 
+def kill_lock_holder(lock: Path) -> None:
+    """Force-stop whatever holds `lock`: a build predating the quit-flag, or one wedged.
+
+    Left running, it keeps serving old code from a path an upgrade may have already
+    removed (menu clicks that open a window silently do nothing), and it never
+    releases the lock for the new build to take its place.
+    """
+    if desktop.platform_name() == "windows" or not shutil.which("lsof"):
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        pids = subprocess.run(
+            ["lsof", "-t", str(lock)], capture_output=True, text=True, check=False
+        ).stdout.split()
+        if not pids:
+            return
+        for pid_text in pids:
+            try:
+                pid = int(pid_text)
+            except ValueError:
+                continue
+            if pid != os.getpid():
+                with contextlib.suppress(OSError):
+                    os.kill(pid, sig)
+        time.sleep(0.5)
+
+
 def stop_menubar(paths: dictation.Paths) -> None:
     """Ask a running menu bar app to quit so an upgrade takes effect."""
     lock = paths.runtime / "menubar.lock"
@@ -240,6 +268,13 @@ def stop_menubar(paths: dictation.Paths) -> None:
             return
         if attempt == 0:
             dictation.atomic(paths.runtime / "menubar-quit", "quit")
+        time.sleep(0.1)
+    kill_lock_holder(lock)
+    for attempt in range(20):
+        fd = desktop.lock(lock)
+        if fd is not None:
+            os.close(fd)
+            return
         time.sleep(0.1)
 
 
@@ -305,9 +340,19 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
     return launcher
 
 
+def applications_root(prefix: Path) -> Path:
+    """/Applications when this is the default, per-user install and it is writable (no
+    admin password needed on a standard admin account) — where Finder, Spotlight and
+    Launchpad expect apps to be. A non-admin account, or a custom --prefix asking for
+    everything kept in one place, gets prefix-relative ~/Applications instead."""
+    system = Path("/Applications")
+    if prefix == Path.home() / ".local" and os.access(system, os.W_OK):
+        return system
+    return prefix.parent / "Applications"
+
+
 def app_bundle(prefix: Path) -> Path:
-    # ~/Applications is writable without an administrator password and is indexed by macOS.
-    return prefix.parent / f"Applications/{hotkeys.APP_NAME}.app"
+    return applications_root(prefix) / f"{hotkeys.APP_NAME}.app"
 
 
 def tray_command(prefix: Path, python: Path) -> list[str]:
@@ -324,6 +369,20 @@ def install_app_launcher(prefix: Path) -> None:
         windows_shortcut(prefix / LIB / "tray.py", python)
     elif desktop.platform_name() == "macos":
         bundle = app_bundle(prefix)
+        # Earlier installs always used ~/Applications; move ours in rather than leave
+        # a stale copy behind when /Applications is writable now.
+        other_root = prefix.parent / "Applications"
+        other_bundle = other_root / f"{hotkeys.APP_NAME}.app"
+        other_info = other_bundle / "Contents/Info.plist"
+        if (
+            not bundle.exists()
+            and other_bundle != bundle
+            and other_info.is_file()
+            and plistlib.loads(other_info.read_bytes()).get("CFBundleIdentifier")
+            == "org.whisperdictation.desktop"
+        ):
+            bundle.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(other_bundle), str(bundle))
         for old_name in ("Whisper Dictation.app", "Clipboard+ Desktop.app"):
             legacy = bundle.with_name(old_name)
             legacy_info = legacy / "Contents/Info.plist"

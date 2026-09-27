@@ -81,8 +81,21 @@ class App:
         self.toolbar_padding = (PAD, 12, PAD, 8)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        width = min(780, max(360, screen_width - 80))
-        height = min(640, max(360, screen_height - 100))
+        usable_width, usable_height = screen_width - 80, screen_height - 100
+        if sys.platform == "darwin":
+            # winfo_screenheight() is the full panel; a fixed guess at the Dock and menu
+            # bar's height is wrong on a taller Dock and can push the bottom bar (Save,
+            # Cancel…) under it. AppKit's visibleFrame already excludes both exactly.
+            try:
+                from AppKit import NSScreen  # type: ignore[import-not-found]
+
+                visible = NSScreen.mainScreen().visibleFrame()
+                usable_width = int(visible.size.width) - 40
+                usable_height = int(visible.size.height) - 40
+            except Exception:  # noqa: BLE001 - falls back to the guess below.
+                pass
+        width = min(780, max(360, usable_width))
+        height = min(640, max(360, usable_height))
         saved = self.saved_size()
         if saved is not None:
             # The size the user left it at, as long as it still fits this screen.
@@ -986,6 +999,29 @@ class App:
                 command=lambda: self.apply_mode(self.settings_mode.get()),
             ).pack(anchor="w", pady=(6, 0))
 
+    def general_card(self) -> None:
+        if desktop.platform_name() != "macos":
+            return  # Windows and Linux toggle this from the tray icon's menu.
+        card = self.card("General")
+        prefs = hotkeys.Preferences(self.service.paths)
+        self.open_at_login_var = tk.BooleanVar(master=self.root, value=prefs.open_at_login())
+
+        def save() -> None:
+            enabled = self.open_at_login_var.get()
+            prefs.save(open_at_login=enabled)
+            bundle = os.environ.get("WHISPER_DICTATION_BUNDLE", "")
+            if bundle.endswith(".app"):
+                hotkeys.set_login_item(enabled, ["/usr/bin/open", bundle])
+            self.saved("Preference saved.")
+
+        ttk.Checkbutton(
+            card,
+            text="Open at login",
+            variable=self.open_at_login_var,
+            command=save,
+            style="Card.TCheckbutton",
+        ).pack(anchor="w", pady=(6, 0))
+
     def privacy_card(self) -> None:
         card = self.card(
             "Privacy",
@@ -1068,6 +1104,37 @@ class App:
         self.button(
             "Delete all clipboard data", self.delete_clipboard_data, parent=row, side="left"
         )
+        pause_row = ttk.Frame(card, style="Card.TFrame")
+        pause_row.pack(fill="x", pady=(10, 0))
+        if saved.paused(time.time()):
+            ttk.Label(pause_row, text="Capture is paused.", style="Card.TLabel").pack(side="left")
+            self.button(
+                "Resume capture",
+                lambda: self.set_capture_paused(None),
+                parent=pause_row,
+                side="right",
+            )
+        else:
+            self.button(
+                "Pause until I resume",
+                lambda: self.set_capture_paused(-1.0),
+                parent=pause_row,
+                side="right",
+            )
+            self.button(
+                "Pause 1 hour",
+                lambda: self.set_capture_paused(3600.0),
+                parent=pause_row,
+                side="right",
+            )
+
+    def set_capture_paused(self, seconds: float | None) -> None:
+        """`None` resumes capture; -1 pauses until resumed; a positive number pauses that long."""
+        prefs = hotkeys.Preferences(self.service.paths)
+        until = 0.0 if seconds is None else seconds if seconds == -1.0 else time.time() + seconds
+        prefs.save(clipboard=dataclasses.replace(prefs.clipboard(), paused_until=until))
+        self.saved("Capture resumed." if seconds is None else "Clipboard capture paused.")
+        self.settings()
 
     def delete_clipboard_data(self) -> None:
         if messagebox.askyesno(
@@ -1166,6 +1233,7 @@ class App:
         if self.service.completed():  # During setup the choice was just made.
             self.features_card()
             self.shortcuts_card()
+            self.general_card()
         self.clipboard_options_card()
         self.clipboard_plus_card()
         self.privacy_card()
@@ -1372,6 +1440,7 @@ class App:
         if not setup:  # During setup the choice was just made; changing it here strands it.
             self.features_card()
             self.shortcuts_card()
+            self.general_card()
         if self.features().clipboard:
             self.clipboard_options_card()
         self.clipboard_plus_card()

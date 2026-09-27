@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import Any
 
 import clipcontrol
+import clipstore
 import desktop
 import dictation as d
 import hotkeys
 import objc  # type: ignore[import-not-found]
+import telemetry
 import workflow
 from app_service import Service
 from AppKit import (  # type: ignore[import-not-found]
@@ -27,20 +29,42 @@ from AppKit import (  # type: ignore[import-not-found]
     NSAlertFirstButtonReturn,
     NSApplication,
     NSApplicationActivationPolicyAccessory,
-    NSEvent,
-    NSEventMaskKeyDown,
-    NSFont,
+    NSBezelBorder,
+    NSButton,
+    NSColor,
     NSImage,
+    NSImageScaleProportionallyUpOrDown,
+    NSImageView,
     NSMakeRect,
-    NSMenu,
-    NSMenuItem,
+    NSMakeSize,
+    NSMaxYEdge,
+    NSPasteboard,
+    NSPasteboardTypeString,
+    NSPopover,
+    NSPopoverBehaviorTransient,
+    NSScrollView,
+    NSSearchField,
     NSStatusBar,
+    NSTableColumn,
+    NSTableView,
+    NSTableViewUniformColumnAutoresizingStyle,
+    NSTextAlignmentCenter,
     NSTextField,
     NSVariableStatusItemLength,
+    NSView,
+    NSViewController,
+    NSViewHeightSizable,
+    NSViewWidthSizable,
 )
-from Foundation import NSObject, NSTimer  # type: ignore[import-not-found]
+from Foundation import NSIndexSet, NSObject, NSTimer  # type: ignore[import-not-found]
 
 HERE = Path(__file__).resolve().parent
+POPOVER_WIDTH = 380.0
+POPOVER_HEIGHT = 420.0
+POPOVER_ROWS = 8
+POPOVER_PREVIEW_CHARS = 60
+ROW_HEIGHT = 40.0
+THUMB_SIZE = 28.0
 
 
 def fourcc(code: str) -> int:
@@ -170,6 +194,9 @@ class Controller(NSObject):  # type: ignore[misc]
         self.view: tuple[Any, ...] | None = None
         self.shortcut = self.preferences.shortcut()
         self.phase = ""
+        self.store: clipstore.Store | None = None
+        self.rows: clipstore.Items = []
+        self.selected = 0
         return self
 
     # -- lifecycle --------------------------------------------------------
@@ -179,7 +206,9 @@ class Controller(NSObject):  # type: ignore[misc]
         self.recording_image = template("menubar-recording.png", template_image=False)
         self.item.button().setImage_(self.idle_image)
         self.item.button().setToolTip_(hotkeys.APP_NAME)
-        self.build_menu()
+        self.item.button().setTarget_(self)
+        self.item.button().setAction_("togglePopover:")
+        self.build_popover()
         self.hotkey = GlobalHotKey(self.pressed)
         self.hotkey.on(HISTORY_ID, lambda: self.open_window("--clipboard"))
         self.hotkey_ok = True
@@ -204,49 +233,111 @@ class Controller(NSObject):  # type: ignore[misc]
             self.open_window("--setup")
 
     @objc.python_method
-    def build_menu(self) -> None:
-        menu = NSMenu.alloc().init()
-        menu.setAutoenablesItems_(False)
-        self.status_line = self.add(menu, "Ready", None)
-        self.status_line.setEnabled_(False)
-        self.clipboard_line = self.add(menu, "", None)
-        self.clipboard_line.setEnabled_(False)
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.history_item = self.add(menu, "Clipboard History…", "openClipboard:")
-        self.pause_item = self.add(menu, "Pause Clipboard Capture", None)
-        pause_menu = NSMenu.alloc().init()
-        self.add(pause_menu, "For 1 Hour", "pauseHour:")
-        self.add(pause_menu, "Until I Resume", "pauseUntilResumed:")
-        self.pause_item.setSubmenu_(pause_menu)
-        self.resume_item = self.add(menu, "Resume Clipboard Capture", "resumeCapture:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.toggle_item = self.add(menu, "Start Dictation", "toggle:")
-        self.cancel_item = self.add(menu, "Cancel Recording", "cancel:")
-        self.copy_item = self.add(menu, "Copy Last Transcript", "copyLast:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.shortcut_item = self.add(menu, "", None)
-        submenu = NSMenu.alloc().init()
-        for index, preset in enumerate(hotkeys.PRESETS):
-            entry = self.add(submenu, preset.label(), "choosePreset:")
-            entry.setTag_(index)
-        submenu.addItem_(NSMenuItem.separatorItem())
-        self.add(submenu, "Record New Shortcut…", "recordShortcut:")
-        self.shortcut_item.setSubmenu_(submenu)
-        self.login_item = self.add(menu, "Open at Login", "toggleLogin:")
-        self.add(menu, "Clipboard+ Website…", "clipboardPlus:")
-        self.add(menu, "Settings…", "openSettings:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.add(menu, f"Quit {hotkeys.APP_NAME}", "quit:")
-        self.item.setMenu_(menu)
-        self.update_shortcut_menu()
+    def framed(self, view: Any, rect: Any) -> Any:
+        """Pin a factory-made control (button/label) to a fixed frame.
+
+        `buttonWithTitle:target:action:` and `labelWithString:` return views set up for
+        Auto Layout (translatesAutoresizingMaskIntoConstraints=NO) with no constraints of
+        their own; anywhere Auto Layout later re-lays them out (a table view's cell views
+        do this on every reload) that collapses the view instead of honoring setFrame_.
+        """
+        view.setTranslatesAutoresizingMaskIntoConstraints_(True)
+        view.setFrame_(rect)
+        return view
 
     @objc.python_method
-    def add(self, menu: Any, title: str, action: str | None) -> Any:
-        entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
-        if action:
-            entry.setTarget_(self)
-        menu.addItem_(entry)
-        return entry
+    def build_popover(self) -> None:
+        """A Maccy-style quick view: clicking the icon shows recent clips, a search
+        field and Clear History, plus a slim dictation header/footer. Everything else
+        (shortcut presets, Open at Login, pausing capture) lives in Settings now."""
+        self.popover = NSPopover.alloc().init()
+        self.popover.setBehavior_(NSPopoverBehaviorTransient)
+        self.popover.setContentSize_(NSMakeSize(POPOVER_WIDTH, POPOVER_HEIGHT))
+        root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, POPOVER_WIDTH, POPOVER_HEIGHT))
+
+        self.header_status = self.framed(
+            NSTextField.labelWithString_(""), NSMakeRect(12, 392, 210, 20)
+        )
+        root.addSubview_(self.header_status)
+        self.header_button = self.framed(
+            NSButton.buttonWithTitle_target_action_("Start", self, "toggle:"),
+            NSMakeRect(298, 386, 70, 28),
+        )
+        root.addSubview_(self.header_button)
+        self.cancel_button = self.framed(
+            NSButton.buttonWithTitle_target_action_("Cancel", self, "cancel:"),
+            NSMakeRect(230, 386, 60, 28),
+        )
+        self.cancel_button.setHidden_(True)
+        root.addSubview_(self.cancel_button)
+
+        self.search_field = NSSearchField.alloc().initWithFrame_(
+            NSMakeRect(8, 344, POPOVER_WIDTH - 16, 28)
+        )
+        self.search_field.setPlaceholderString_("Search clipboard history")
+        self.search_field.setDelegate_(self)
+        root.addSubview_(self.search_field)
+
+        self.scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(8, 44, POPOVER_WIDTH - 16, 292)
+        )
+        self.scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        self.scroll.setHasVerticalScroller_(True)
+        self.scroll.setBorderType_(NSBezelBorder)
+        self.table = NSTableView.alloc().initWithFrame_(self.scroll.bounds())
+        self.table.setHeaderView_(None)
+        self.table.setRowHeight_(ROW_HEIGHT)
+        self.table.setColumnAutoresizingStyle_(NSTableViewUniformColumnAutoresizingStyle)
+        column = NSTableColumn.alloc().initWithIdentifier_("item")
+        # A fresh column defaults to 100pt; nothing forces it to the table's real width
+        # until the popover is actually on screen, which is after the first reloadData().
+        column.setWidth_(POPOVER_WIDTH - 16 - 16)
+        self.table.addTableColumn_(column)
+        self.table.setDataSource_(self)
+        self.table.setDelegate_(self)
+        self.table.setTarget_(self)
+        self.table.setAction_("rowActivated:")
+        self.scroll.setDocumentView_(self.table)
+        root.addSubview_(self.scroll)
+
+        self.empty_label = self.framed(
+            NSTextField.wrappingLabelWithString_(""), NSMakeRect(24, 160, POPOVER_WIDTH - 48, 60)
+        )
+        self.empty_label.setAlignment_(NSTextAlignmentCenter)
+        self.empty_label.setTextColor_(NSColor.secondaryLabelColor())
+        root.addSubview_(self.empty_label)
+
+        self.clear_button = self.framed(
+            NSButton.buttonWithTitle_target_action_("Clear", self, "clearHistory:"),
+            NSMakeRect(8, 8, 70, 28),
+        )
+        root.addSubview_(self.clear_button)
+        self.full_button = self.framed(
+            NSButton.buttonWithTitle_target_action_("Full History…", self, "openFullHistory:"),
+            NSMakeRect(86, 8, 120, 28),
+        )
+        root.addSubview_(self.full_button)
+        self.copy_last_button = self.framed(
+            NSButton.buttonWithTitle_target_action_("Copy Last Transcript", self, "copyLast:"),
+            NSMakeRect(8, 8, 190, 28),
+        )
+        self.copy_last_button.setHidden_(True)
+        root.addSubview_(self.copy_last_button)
+        settings_button = self.framed(
+            NSButton.buttonWithTitle_target_action_("Settings…", self, "openSettings:"),
+            NSMakeRect(210, 8, 90, 28),
+        )
+        root.addSubview_(settings_button)
+        quit_button = self.framed(
+            NSButton.buttonWithTitle_target_action_("Quit", self, "quit:"),
+            NSMakeRect(308, 8, 60, 28),
+        )
+        quit_button.setToolTip_(f"Quit {hotkeys.APP_NAME}")
+        root.addSubview_(quit_button)
+
+        content = NSViewController.alloc().init()
+        content.setView_(root)
+        self.popover.setContentViewController_(content)
 
     # -- actions ----------------------------------------------------------
     @objc.python_method
@@ -268,15 +359,19 @@ class Controller(NSObject):  # type: ignore[misc]
         )
 
     def toggle_(self, _sender: Any) -> None:
+        self.popover.close()
         self.pressed()
 
     def cancel_(self, _sender: Any) -> None:
+        self.popover.close()
         self.run_engine("--cancel")
 
     def copyLast_(self, _sender: Any) -> None:
+        self.popover.close()
         self.run_engine("--copy-last")
 
     def openSettings_(self, _sender: Any) -> None:
+        self.popover.close()
         self.open_window("--settings")
 
     @objc.python_method
@@ -289,50 +384,6 @@ class Controller(NSObject):  # type: ignore[misc]
         # Clicking the app in Finder or Launchpad shows the window, not nothing.
         self.open_window("")
         return False
-
-    def choosePreset_(self, sender: Any) -> None:
-        self.apply_shortcut(hotkeys.PRESETS[sender.tag()])
-
-    def recordShortcut_(self, _sender: Any) -> None:
-        self.hotkey.unregister()  # Otherwise pressing the old shortcut toggles recording.
-        captured: list[hotkeys.Shortcut] = []
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_("Press your new shortcut")
-        alert.setInformativeText_(
-            "Hold ⌃ Control, ⌥ Option or ⌘ Command and press a letter, number or Space — "
-            "or press a function key."
-        )
-        alert.addButtonWithTitle_("Save")
-        alert.addButtonWithTitle_("Cancel")
-        field = NSTextField.labelWithString_(self.shortcut.label())
-        field.setFont_(NSFont.systemFontOfSize_(20))
-        field.setFrame_(NSMakeRect(0, 0, 260, 30))
-        alert.setAccessoryView_(field)
-
-        def key_down(event: Any) -> Any:
-            shortcut = hotkeys.from_mac_event(
-                event.keyCode(),
-                int(event.modifierFlags()),
-                event.charactersIgnoringModifiers() or "",
-            )
-            problem = shortcut.problem()
-            field.setStringValue_(shortcut.label() + (f"  — {problem}" if problem else ""))
-            captured[:] = [] if problem else [shortcut]
-            return None  # Swallow the key so the alert does not act on it.
-
-        monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
-            NSEventMaskKeyDown, key_down
-        )
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        try:
-            saved = alert.runModal() == NSAlertFirstButtonReturn
-        finally:
-            NSEvent.removeMonitor_(monitor)
-        if saved and captured:
-            self.apply_shortcut(captured[0])
-        else:
-            self.hotkey_ok = self.hotkey.register(self.shortcut)
-            hotkeys.record_status(self.paths, self.hotkey_ok)
 
     @objc.python_method
     def apply_shortcut(self, shortcut: hotkeys.Shortcut) -> None:
@@ -347,11 +398,9 @@ class Controller(NSObject):  # type: ignore[misc]
                 f"Keeping {self.shortcut.label()}.",
             )
         hotkeys.record_status(self.paths, self.hotkey_ok)
-        self.update_shortcut_menu()
-
-    def toggleLogin_(self, _sender: Any) -> None:
-        self.preferences.save(open_at_login=not self.preferences.open_at_login())
-        self.sync_login_item()
+        self.view = None
+        if self.popover.isShown():
+            self.refresh_popover_header()
 
     @objc.python_method
     def sync_login_item(self) -> None:
@@ -360,22 +409,6 @@ class Controller(NSObject):  # type: ignore[misc]
         bundle = os.environ.get("WHISPER_DICTATION_BUNDLE", "")
         if bundle.endswith(".app"):
             hotkeys.set_login_item(enabled, ["/usr/bin/open", bundle])
-        self.login_item.setState_(1 if enabled else 0)
-
-    def clipboardPlus_(self, _sender: Any) -> None:
-        self.service.open_clipboard_website()
-
-    def openClipboard_(self, _sender: Any) -> None:
-        self.open_window("--clipboard")
-
-    def pauseHour_(self, _sender: Any) -> None:
-        self.clip.pause(3600)
-
-    def pauseUntilResumed_(self, _sender: Any) -> None:
-        self.clip.pause(None)
-
-    def resumeCapture_(self, _sender: Any) -> None:
-        self.clip.resume()
 
     def quit_(self, _sender: Any) -> None:
         self.clip.stop()
@@ -391,24 +424,9 @@ class Controller(NSObject):  # type: ignore[misc]
 
     # -- state ------------------------------------------------------------
     @objc.python_method
-    def update_shortcut_menu(self) -> None:
-        self.shortcut_item.setTitle_(f"Shortcut: {self.shortcut.label()}")
-        for entry in self.shortcut_item.submenu().itemArray():
-            if entry.action() == "choosePreset:":
-                entry.setState_(1 if hotkeys.PRESETS[entry.tag()] == self.shortcut else 0)
-        self.refresh_(None)
-
-    @objc.python_method
     def apply_features(self) -> None:
-        """Show only the chosen features' menu items and own the shortcut accordingly."""
+        """Own the global shortcuts for the chosen features and refresh the popover to match."""
         features = self.clip.features()
-        paused = self.clip.paused()
-        for item in (self.toggle_item, self.cancel_item, self.copy_item, self.shortcut_item):
-            item.setHidden_(not features.dictation)
-        for item in (self.clipboard_line, self.history_item):
-            item.setHidden_(not features.clipboard)
-        self.pause_item.setHidden_(not features.clipboard or paused)
-        self.resume_item.setHidden_(not features.clipboard or not paused)
         if features.dictation and not self.dictation_registered:
             self.hotkey_ok = self.hotkey.register(self.shortcut)
             self.dictation_registered = True
@@ -422,10 +440,9 @@ class Controller(NSObject):  # type: ignore[misc]
             self.hotkey.unregister(HISTORY_ID)
             ok = history is None or self.hotkey.register(history, HISTORY_ID)
             hotkeys.record_status(self.paths, ok, hotkeys.HISTORY_STATUS)
-        self.history_item.setTitle_(
-            f"Clipboard History…    {history.label()}" if history else "Clipboard History…"
-        )
-        self.view = None  # Redraw the status lines.
+        if self.popover.isShown():
+            self.refresh_popover_layout()
+        self.view = None  # Redraw the status icon.
 
     @objc.python_method
     def follow_window_shortcut(self) -> None:
@@ -480,45 +497,231 @@ class Controller(NSObject):  # type: ignore[misc]
         elapsed = int(current.get("elapsed_seconds", 0))
         ready = self.ready()
         # Redraw only when something visible changed; this runs twice a second.
-        view = (
-            phase,
-            elapsed if phase == "recording" else 0,
-            self.shortcut,
-            self.hotkey_ok,
-            ready,
-            self.paths.text.exists(),
-            self.clip.status_line(),
-        )
-        if view == self.view:
+        view = (phase, elapsed if phase == "recording" else 0, self.shortcut, self.hotkey_ok, ready)
+        if view != self.view:
+            self.view = view
+            button = self.item.button()
+            if phase == "recording":
+                button.setImage_(self.recording_image)
+                button.setTitle_(f" {elapsed // 60}:{elapsed % 60:02d}")
+            elif active:
+                button.setImage_(self.idle_image)
+                button.setTitle_(" …")
+            else:
+                button.setImage_(self.idle_image)
+                button.setTitle_("")
+        if self.popover.isShown():
+            self.refresh_popover_header()
+
+    # -- popover ------------------------------------------------------------
+    def togglePopover_(self, _sender: Any) -> None:
+        if self.popover.isShown():
+            self.popover.close()
             return
-        self.view = view
-        label = self.shortcut.label()
-        self.clipboard_line.setTitle_(self.clip.status_line())
-        button = self.item.button()
-        if phase == "recording":
-            button.setImage_(self.recording_image)
-            button.setTitle_(f" {elapsed // 60}:{elapsed % 60:02d}")
-            self.status_line.setTitle_("Recording…")
-            self.toggle_item.setTitle_(f"Stop and Transcribe    {label}")
-        elif active:
-            button.setImage_(self.idle_image)
-            button.setTitle_(" …")
-            self.status_line.setTitle_("Transcribing…")
-            self.toggle_item.setTitle_("Transcribing…")
+        self.search_field.setStringValue_("")
+        self.refresh_popover_layout()
+        self.popover.showRelativeToRect_ofView_preferredEdge_(
+            self.item.button().bounds(), self.item.button(), NSMaxYEdge
+        )
+        window = self.popover.contentViewController().view().window()
+        if window is not None:
+            window.makeFirstResponder_(self.search_field)
+
+    @objc.python_method
+    def refresh_popover_layout(self) -> None:
+        """Show only the sections the chosen features need."""
+        features = self.clip.features()
+        for view in (self.header_status, self.header_button, self.cancel_button):
+            view.setHidden_(not features.dictation)
+        self.search_field.setHidden_(not features.clipboard)
+        self.clear_button.setHidden_(not features.clipboard)
+        self.full_button.setHidden_(not features.clipboard)
+        self.copy_last_button.setHidden_(features.clipboard or not features.dictation)
+        if features.clipboard:
+            self.scroll.setHidden_(False)
+            self.run_query(self.search_field.stringValue())
         else:
-            button.setImage_(self.idle_image)
-            button.setTitle_("")
-            self.status_line.setTitle_(
+            self.scroll.setHidden_(True)
+            self.empty_label.setStringValue_(
+                "Turn on Clipboard history in Settings to see recent copies here."
+            )
+            self.empty_label.setHidden_(False)
+        self.refresh_popover_header()
+
+    @objc.python_method
+    def refresh_popover_header(self) -> None:
+        if not self.clip.features().dictation:
+            return
+        try:
+            current = workflow.snapshot(self.paths)
+        except (d.DictationError, OSError, ValueError):
+            current = {"phase": "idle", "active": False, "elapsed_seconds": 0}
+        active = bool(current["active"])
+        phase = str(current["phase"]) if active else "idle"
+        elapsed = int(current.get("elapsed_seconds", 0))
+        label = self.shortcut.label()
+        self.cancel_button.setHidden_(phase != "recording")
+        if phase == "recording":
+            self.header_status.setStringValue_(f"Recording… {elapsed // 60}:{elapsed % 60:02d}")
+            self.header_button.setTitle_("Stop")
+            self.header_button.setEnabled_(True)
+        elif active:
+            self.header_status.setStringValue_("Transcribing…")
+            self.header_button.setTitle_("…")
+            self.header_button.setEnabled_(False)
+        else:
+            self.header_status.setStringValue_(
                 "Finish setup to start"
-                if not ready
+                if not self.ready()
                 else f"Press {label} anywhere to dictate"
                 if self.hotkey_ok
                 else f"{label} is taken — choose another shortcut"
             )
-            self.toggle_item.setTitle_(f"Start Dictation    {label}")
-        self.toggle_item.setEnabled_(not active or phase == "recording")
-        self.cancel_item.setEnabled_(phase == "recording")
-        self.copy_item.setEnabled_(not active and self.paths.text.exists())
+            self.header_button.setTitle_("Start")
+            self.header_button.setEnabled_(True)
+
+    @objc.python_method
+    def open_store(self) -> clipstore.Store | None:
+        if self.store is None:
+            try:
+                self.store = clipstore.Store(self.paths.clipboard)
+            except (clipstore.StoreError, OSError) as exc:
+                telemetry.capture(exc, level="warning", stage="popover_store")
+        return self.store
+
+    @objc.python_method
+    def run_query(self, query: str) -> None:
+        store = self.open_store()
+        self.rows = store.list(query=query, limit=POPOVER_ROWS) if store is not None else []
+        self.table.reloadData()
+        self.selected = 0
+        if self.rows:
+            self.empty_label.setHidden_(True)
+            self.select_row(0)
+        else:
+            self.empty_label.setStringValue_(
+                "Clipboard history isn’t available."
+                if store is None
+                else "No matches."
+                if query
+                else "Nothing copied yet."
+            )
+            self.empty_label.setHidden_(False)
+
+    @objc.python_method
+    def row_text(self, item: clipstore.Item) -> str:
+        text = (
+            item.label
+            or item.text
+            or (f"Image ({item.width}×{item.height})" if item.kind == "image" else "")
+        )
+        flat = " ".join(text.split())
+        return flat if len(flat) <= POPOVER_PREVIEW_CHARS else flat[:POPOVER_PREVIEW_CHARS] + "…"
+
+    @objc.python_method
+    def select_row(self, row: int) -> None:
+        if not self.rows:
+            return
+        row = max(0, min(row, len(self.rows) - 1))
+        self.selected = row
+        self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(row), False)
+        self.table.scrollRowToVisible_(row)
+
+    @objc.python_method
+    def move_selection(self, delta: int) -> None:
+        self.select_row(self.selected + delta)
+
+    @objc.python_method
+    def activate_selected(self) -> None:
+        if 0 <= self.selected < len(self.rows):
+            self.copy_item(self.rows[self.selected])
+        self.popover.close()
+
+    @objc.python_method
+    def copy_item(self, item: clipstore.Item) -> None:
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        if item.kind == "image" and self.store is not None:
+            path = self.store.image_path(item)
+            image = NSImage.alloc().initWithContentsOfFile_(str(path)) if path.is_file() else None
+            if image is not None:
+                pasteboard.writeObjects_([image])
+                return
+        pasteboard.setString_forType_(item.text, NSPasteboardTypeString)
+
+    def numberOfRowsInTableView_(self, _table_view: Any) -> int:
+        return len(self.rows)
+
+    def tableView_viewForTableColumn_row_(self, _table_view: Any, column: Any, row: int) -> Any:
+        item = self.rows[row]
+        width = column.width()
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, ROW_HEIGHT))
+        view.setAutoresizingMask_(NSViewWidthSizable)
+        text_x = 8.0
+        if item.kind == "image":
+            thumb_path = self.store.thumb_path(item) if self.store is not None else None
+            image = (
+                NSImage.alloc().initWithContentsOfFile_(str(thumb_path))
+                if thumb_path is not None
+                else None
+            )
+            if image is not None:
+                thumb = NSImageView.alloc().initWithFrame_(
+                    NSMakeRect(8, (ROW_HEIGHT - THUMB_SIZE) / 2, THUMB_SIZE, THUMB_SIZE)
+                )
+                thumb.setImage_(image)
+                thumb.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+                view.addSubview_(thumb)
+                text_x = 8.0 + THUMB_SIZE + 8.0
+        label = self.framed(
+            NSTextField.labelWithString_(self.row_text(item)),
+            NSMakeRect(text_x, 0, width - text_x - 8, ROW_HEIGHT),
+        )
+        label.setAutoresizingMask_(NSViewWidthSizable)
+        view.addSubview_(label)
+        return view
+
+    def rowActivated_(self, sender: Any) -> None:
+        row = sender.clickedRow()
+        if row >= 0:
+            self.select_row(row)
+            self.activate_selected()
+
+    def controlTextDidChange_(self, _notification: Any) -> None:
+        self.run_query(self.search_field.stringValue())
+
+    def control_textView_doCommandBySelector_(
+        self, _control: Any, _text_view: Any, selector: str
+    ) -> bool:
+        if selector == "moveDown:":
+            self.move_selection(1)
+        elif selector == "moveUp:":
+            self.move_selection(-1)
+        elif selector == "insertNewline:":
+            self.activate_selected()
+        elif selector == "cancelOperation:":
+            self.popover.close()
+        else:
+            return False
+        return True
+
+    def clearHistory_(self, _sender: Any) -> None:
+        store = self.open_store()
+        if store is None:
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Clear clipboard history?")
+        alert.setInformativeText_("Removes everything except favorites. This can’t be undone.")
+        alert.addButtonWithTitle_("Clear History")
+        alert.addButtonWithTitle_("Cancel")
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        if alert.runModal() == NSAlertFirstButtonReturn:
+            store.clear(keep_favorites=True)
+            self.run_query(self.search_field.stringValue())
+
+    def openFullHistory_(self, _sender: Any) -> None:
+        self.popover.close()
+        self.open_window("--clipboard")
 
 
 def open_app_window(page: str = "") -> None:
