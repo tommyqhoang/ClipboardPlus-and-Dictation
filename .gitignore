@@ -9,5 +9,6 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.venv-*/
 .coverage.*
 .superpowers/
