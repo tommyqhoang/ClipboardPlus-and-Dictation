@@ -24,6 +24,8 @@ class TelemetryTests(unittest.TestCase):
         self.addCleanup(self.roots.stop)
         telemetry._sent.clear()
         telemetry._reports = 0
+        # The user agreed during setup (each test that needs otherwise removes it).
+        (self.root / "menubar.json").write_text('{"share_usage": true}', encoding="utf-8")
 
     def enabled(self) -> patch.dict[str, str]:
         return patch.dict(
@@ -34,6 +36,12 @@ class TelemetryTests(unittest.TestCase):
 
     def test_disabled_by_environment_and_preference(self) -> None:
         with patch.dict(os.environ, {"DO_NOT_TRACK": "1"}, clear=False):
+            self.assertFalse(telemetry.allowed())
+        (self.root / "menubar.json").unlink()
+        with self.enabled():
+            self.assertFalse(telemetry.allowed())  # No choice made yet: nothing is sent.
+        (self.root / "menubar.json").write_text('{"features": {}}', encoding="utf-8")
+        with self.enabled():
             self.assertFalse(telemetry.allowed())
         (self.root / "menubar.json").write_text('{"share_usage": false}', encoding="utf-8")
         with self.enabled():

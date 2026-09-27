@@ -145,9 +145,9 @@ def allowed() -> bool:
         return False  # A test run never reports itself.
     try:
         with (_config_dir() / "menubar.json").open(encoding="utf-8") as stream:
-            value = json.load(stream).get(PREFERENCE, True)
+            value = json.load(stream).get(PREFERENCE)
     except (OSError, ValueError, AttributeError):
-        return not (_config_dir() / "menubar.json").exists()
+        return False  # Nothing is sent before the user has agreed.
     return value is True
 
 

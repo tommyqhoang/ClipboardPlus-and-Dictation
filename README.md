@@ -35,8 +35,8 @@ API. External services may charge; no subscription is required for local use.
 ## Privacy and anonymous diagnostics
 
 The setup flow and **Settings → Privacy** include a single switch, **Share anonymous
-crash reports and usage statistics**. It starts on, and you can turn it off at any
-time. `DO_NOT_TRACK=1` or `DICTATION_TELEMETRY=0` disables reporting for a launch.
+crash reports and usage statistics**. It starts off: nothing is sent unless you
+turn it on, and you can turn it off again at any time. `DO_NOT_TRACK=1` or `DICTATION_TELEMETRY=0` disables reporting for a launch.
 
 When enabled, usage reports contain a random per-installation identifier, a fixed
 event name, approved feature choices, and bounded counts or durations. Crash reports

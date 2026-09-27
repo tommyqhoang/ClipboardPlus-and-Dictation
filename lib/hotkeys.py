@@ -316,8 +316,8 @@ class Preferences:
         return self.read().get("open_at_login", True) is not False
 
     def share_usage(self) -> bool:
-        """Anonymous crash reports and usage statistics (telemetry.py): on unless declined."""
-        return self.read().get("share_usage", True) is not False
+        """Anonymous crash reports and usage statistics (telemetry.py): only once agreed."""
+        return self.read().get("share_usage") is True
 
     def save(
         self,
