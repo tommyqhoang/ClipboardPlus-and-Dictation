@@ -49,6 +49,9 @@ WARNING = "#c98a12"
 IDLE = "#9aa8b3"
 HOVER = "#eef5f4"  # A list row under the pointer.
 PAD = 20  # The page's side padding.
+# Past this, a maximized window centers a readable column instead of stretching
+# buttons and fields across the whole screen.
+CONTENT_MAX = 960
 # Pages reached from the header tabs once setup is done; they need no big title.
 TAB_PAGES = ("home", "clipboard", "settings")
 
@@ -72,6 +75,9 @@ class App:
         self.buttons: list[ttk.Button] = []
         self.root.title(hotkeys.APP_NAME)
         self.rewrap_timer: str | None = None
+        self.bottom_timer: str | None = None
+        self.gutter = 0  # Extra side space around the centered column on wide windows.
+        self.toolbar_padding = (PAD, 12, PAD, 8)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         width = min(780, max(360, screen_width - 80))
@@ -181,10 +187,20 @@ class App:
             return width, height
         return None
 
+    def maximized(self) -> bool:
+        try:
+            if self.root.state() == "zoomed" or int(self.root.attributes("-fullscreen")):
+                return True  # Zoomed on Windows and macOS.
+            return sys.platform.startswith("linux") and bool(int(self.root.attributes("-zoomed")))
+        except (tk.TclError, ValueError):
+            return False
+
     def save_size(self) -> None:
         width, height = self.root.winfo_width(), self.root.winfo_height()
         if width < 200 or height < 200:
             return  # Never shown (or withdrawn): keep what was saved.
+        if self.maximized():
+            return  # Reopening at screen size, unmaximized, looks broken: keep the normal size.
         try:
             d.private_dir(self.size_file().parent)
             d.atomic(self.size_file(), json.dumps({"width": width, "height": height}))
@@ -353,7 +369,15 @@ class App:
             focuscolor=ACCENT_SOFT,
             relief="flat",
             padding=(12, 4),
-            font=self.fonts["brand"],
+            font=self.fonts["body"],
+        )
+        style.map(
+            "Tab.Current.TButton",
+            background=[("active", ACCENT_SOFT)],
+            lightcolor=[("active", ACCENT_SOFT)],
+            darkcolor=[("active", ACCENT_SOFT)],
+            bordercolor=[("active", ACCENT_SOFT)],
+            foreground=[("active", ACCENT_ACTIVE)],
         )
         style.configure("Toolbar.TFrame", background=BACKGROUND)
         style.configure(
@@ -409,7 +433,7 @@ class App:
 
     def header(self) -> None:
         """Brand on the left; the tabs (or the setup step) on the right. Always in view."""
-        bar = ttk.Frame(self.root, style="Header.TFrame", padding=(PAD - 4, 8))
+        bar = self.header_bar = ttk.Frame(self.root, style="Header.TFrame", padding=(PAD - 4, 8))
         bar.pack(fill="x")
         # Packed first so a narrow window clips the name, never the tabs.
         self.nav = ttk.Frame(bar, style="Header.TFrame")
@@ -431,7 +455,7 @@ class App:
         """Actions and status. Hidden while it has nothing to show, to give the page room."""
         self.bottom = tk.Frame(self.root, background=BORDER)
         tk.Frame(self.bottom, height=1, background=BORDER).pack(fill="x")
-        bar = ttk.Frame(self.bottom, style="Header.TFrame", padding=(PAD, 8))
+        bar = self.bottom_inner = ttk.Frame(self.bottom, style="Header.TFrame", padding=(PAD, 8))
         bar.pack(fill="x")
         self.status.trace_add("write", lambda *_: self.update_bottom())
         self.bar_actions = ttk.Frame(bar, style="Header.TFrame")
@@ -446,6 +470,11 @@ class App:
             style="Step.TLabel",
         )
         self.status_label.pack(anchor="w")
+        # Wrap to the room the buttons leave, which a fixed guess got wrong in narrow windows.
+        self.bar_info.bind(
+            "<Configure>",
+            lambda event: self.status_label.configure(wraplength=max(120, event.width)),
+        )
 
     def show_toast(self, message: str) -> None:
         """Confirm an immediate preference save without making the user hunt for a button."""
@@ -466,11 +495,14 @@ class App:
 
     def show_toolbar(self, padding: tuple[int, int, int, int]) -> ttk.Frame:
         """The fixed area above the scrolling page, for this page's controls."""
-        self.toolbar.configure(padding=padding)
+        self.toolbar_padding = padding
+        left, top, right, bottom = padding
+        self.toolbar.configure(padding=(left + self.gutter, top, right + self.gutter, bottom))
         self.toolbar.pack(fill="x", before=self.container)
         return self.toolbar
 
     def update_bottom(self) -> None:
+        self.bottom_timer = None
         wanted = bool(
             self.bar_actions.winfo_children() or self.status.get() or self.progress.winfo_manager()
         )
@@ -521,17 +553,34 @@ class App:
             self.canvas.yview_scroll(steps, "units")
 
     def resize_scroll_region(self, event: tk.Event[Any]) -> None:
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        # From the canvas's left edge, so a centered column stays centered (a region
+        # narrower than the canvas would be pinned to its left).
+        bottom = (self.canvas.bbox("all") or (0, 0, 0, 0))[3]
+        self.canvas.configure(scrollregion=(0, 0, self.canvas.winfo_width(), bottom))
 
     def resize_content(self, event: tk.Event[Any]) -> None:
-        self.canvas.itemconfigure(self.frame_window, width=event.width)
+        content = min(event.width, CONTENT_MAX)
+        # Centered in the window, not the canvas, so the column (and the header lined up
+        # with it) stays put when a scrollbar appears on a long page.
+        full = max(event.width, self.container.winfo_width())
+        gutter = max(0, min((full - content) // 2, event.width - content))
+        self.canvas.itemconfigure(self.frame_window, width=content)
+        self.canvas.coords(self.frame_window, gutter, 0)
+        if gutter != self.gutter:
+            self.gutter = gutter
+            # The header, toolbar and bottom bar line up with the column.
+            self.header_bar.configure(padding=(PAD - 4 + gutter, 8))
+            self.bottom_inner.configure(padding=(PAD + gutter, 8))
+            if self.toolbar.winfo_manager():
+                self.show_toolbar(self.toolbar_padding)
+        self.resize_scroll_region(event)
         # Re-wrap once the user stops dragging, not on every pixel.
         if self.rewrap_timer is not None:
             self.root.after_cancel(self.rewrap_timer)
-        self.rewrap_timer = self.root.after(80, lambda: self.rewrap(event.width))
+        self.rewrap_timer = self.root.after(80, lambda: self.rewrap(content))
 
     def rewrap(self, canvas_width: int) -> None:
-        """Let every wrapped label follow the window's width (they were sized for the old one)."""
+        """Let every wrapped label follow the column's width (they were sized for the old one)."""
         self.rewrap_timer = None
         # A narrow window keeps the icon and the tabs; the full name no longer fits.
         self.brand.configure(text=hotkeys.APP_NAME if canvas_width >= 700 else "")
@@ -550,7 +599,6 @@ class App:
                 current = int(str(widget.cget("wraplength") or 0))
                 if current > 0:
                     widget.configure(wraplength=max(120, current + change))  # type: ignore[call-arg]
-        self.status_label.configure(wraplength=max(200, self.wraplength - 180))
 
     def reset(self, page: str, title: str, subtitle: str, step: str = "") -> None:
         if self.page == "shortcut" and page != "shortcut":
@@ -583,7 +631,8 @@ class App:
             ).pack(anchor="w", pady=(0, 14))
         self.status.set("")
         # The page fills the bar after this; show or hide it once it has.
-        self.root.after_idle(self.update_bottom)
+        if self.bottom_timer is None:
+            self.bottom_timer = self.root.after_idle(self.update_bottom)
 
     def bordered(self, parent: tk.Misc, pady: tuple[int, int] = (0, 8)) -> ttk.Frame:
         """A white, outlined panel inside `parent`."""
@@ -1954,8 +2003,9 @@ class App:
         self.root.after_cancel(self.timer)
         if self.toast_after is not None:
             self.root.after_cancel(self.toast_after)
-        if self.rewrap_timer is not None:
-            self.root.after_cancel(self.rewrap_timer)
+        for timer in (self.rewrap_timer, self.bottom_timer):
+            if timer is not None:
+                self.root.after_cancel(timer)
         self.done = lambda _: None
         self.executor.shutdown(wait=True)
         self.helper.shutdown(wait=False, cancel_futures=True)  # Lookups only; nothing to save.

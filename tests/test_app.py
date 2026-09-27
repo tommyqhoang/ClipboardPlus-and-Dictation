@@ -429,6 +429,42 @@ class WindowTests(ServiceCase):
             future.result(timeout=5)
         self.tick()
 
+    def test_wide_window_centers_one_column_and_tabs_hold_still(self):
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.settings()
+            self.root.deiconify()
+            self.root.geometry("1800x900")
+            self.root.update()
+            canvas = self.window.canvas
+            left = int(canvas.coords(self.window.frame_window)[0])
+            column = int(canvas.itemcget(self.window.frame_window, "width"))
+            self.assertEqual(column, self.gui.CONTENT_MAX)
+            self.assertGreater(left, 0)
+            # The header lines up with the column instead of the far edge of the screen.
+            self.assertEqual(
+                int(self.window.header_bar.cget("padding")[0]), self.gui.PAD - 4 + left
+            )
+            places = []
+            for page in ("clipboard", "dictation", "settings"):
+                self.window.tab(page)
+                self.root.update()
+                places.append(
+                    [
+                        (tab.winfo_x(), tab.winfo_width(), tab.winfo_height())
+                        for tab in self.window.nav.winfo_children()
+                    ]
+                )
+            self.assertEqual(places[0], places[1])
+            self.assertEqual(places[1], places[2])
+
+    def test_maximized_size_is_not_remembered(self):
+        with patch.object(self.window, "maximized", return_value=True):
+            self.root.deiconify()
+            self.root.geometry("1500x900")
+            self.root.update()
+            self.window.save_size()
+        self.assertFalse(self.window.size_file().exists())
+
     def test_first_launch_walkthrough_no_recording(self):
         self.window.tray = False
         self.assertEqual(self.window.page, "welcome")
