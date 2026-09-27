@@ -350,7 +350,7 @@ class Service:
         if language not in ("en", "auto") or not device.strip():
             raise d.DictationError("Choose a language and microphone first.")
         if desktop.platform_name() == "windows" and device == "default":
-            raise d.DictationError("Choose a microphone using Find microphones.")
+            raise d.DictationError("Choose Refresh, then pick the microphone you’ll speak into.")
         candidate = d.Config(self.paths)
         key_file = d.key_file(self.paths)
         settings: dict[str, object]

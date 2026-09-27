@@ -142,6 +142,9 @@ class App:
             self.root.bind_all(
                 f"<{key}>", functools.partial(self.scroll_key, amount, what), add="+"
             )
+        self.default_button: ttk.Button | None = None
+        self.root.bind_all("<Return>", self.on_return, add="+")
+        self.root.bind_all("<KP_Enter>", self.on_return, add="+")
         self.language = tk.StringVar(value="English")
         self.device = tk.StringVar(value="default")
         self.device_ids: dict[str, str] = {}  # Shown microphone name -> device id.
@@ -605,6 +608,7 @@ class App:
             self.end_capture()
         self.page = page
         self.buttons = []
+        self.default_button = None
         self.account = None
         for area in (self.frame, self.bar_actions, self.toolbar, self.nav):
             for child in area.winfo_children():
@@ -761,8 +765,26 @@ class App:
             button.pack(side=side, padx=(8, 0) if side == "right" else (0, 8))
         else:
             button.pack(fill="x", pady=5)
+        if primary and parent is self.bar_actions:
+            self.default_button = button  # The page's main action: Enter presses it.
         self.buttons.append(button)
         return button
+
+    def on_return(self, event: tk.Event[Any]) -> str | None:
+        """Enter presses the focused button, or else the page's main action."""
+        widget = event.widget
+        if (
+            not isinstance(widget, tk.Misc)
+            or widget.winfo_toplevel() is not self.root
+            or isinstance(widget, tk.Text)
+            or self.page in ("clipboard", "shortcut", "closed")  # They handle Enter.
+        ):
+            return None
+        target = widget if isinstance(widget, ttk.Button) else self.default_button
+        if target is None or not target.winfo_exists() or target.instate(["disabled"]):
+            return None
+        target.invoke()
+        return "break"
 
     def actions(self) -> ttk.Frame:
         return self.bar_actions
@@ -878,7 +900,11 @@ class App:
             features=hotkeys.Features(dictation, clipboard)
         )
         self.settings()
-        self.saved("Settings saved. Your tools are ready to use.")
+        if dictation and not self.service.ready():
+            # Setup now continues on this page; don't claim it's ready yet.
+            self.status.set("Saved. Finish setting up dictation below, then choose Continue.")
+        else:
+            self.saved("Settings saved. Your tools are ready to use.")
 
     def features_card(self) -> None:
         card = self.card("What you use", "Changes apply at once.")
@@ -1111,9 +1137,11 @@ class App:
             ],
         )
         self.clipboard_plus_card()
+        if self.service.completed():  # Reopened to reread: back to the history.
+            self.button("Back", self.clipboard, True, self.actions(), "right")
+            return
         self.button("Done", self.finish_setup, True, self.actions(), "right")
-        if not self.service.completed():
-            self.button("Back", self.choose_features, parent=self.actions(), side="left")
+        self.button("Back", self.choose_features, parent=self.actions(), side="left")
 
     def settings(self) -> None:
         if not self.features().dictation:
@@ -1470,6 +1498,9 @@ class App:
             style="CardHint.TLabel",
             wraplength=self.wraplength - 50,
         ).pack(anchor="w", pady=(10, 0))
+        if self.service.completed():  # "How it works" from the Dictation tab.
+            self.button("Back", self.home, True, self.actions(), "right")
+            return
         self.button(
             "Done" if self.tray else "Start dictating",
             self.finish_setup,
@@ -1477,8 +1508,7 @@ class App:
             self.actions(),
             "right",
         )
-        if not self.service.completed():
-            self.button("Back", self.choose_features, parent=self.actions(), side="left")
+        self.button("Back", self.choose_features, parent=self.actions(), side="left")
 
     def clipboard_plus_card(self) -> None:
         """The account card, where the clipboard history is (or an old key still lives)."""
@@ -1514,7 +1544,7 @@ class App:
                 if desktop.platform_name() == "macos"
                 else "Hold Ctrl, Alt or Win/Super and press a letter, number or Space — "
             )
-            + "or press a function key (F1–F12).",
+            + "or press a function key (F1–F12). Enter saves, Esc cancels.",
         )
         self.capture = self.service.paths.runtime / "shortcut-capture"
         d.private_dir(self.capture.parent)
@@ -1540,7 +1570,18 @@ class App:
         self.root.bind("<KeyRelease>", self.shortcut_release)
         self.root.focus_force()
 
-    def shortcut_key(self, event: tk.Event[Any]) -> str:
+    def shortcut_key(self, event: tk.Event[Any]) -> str | None:
+        if not self.held:
+            # Bare Tab, Esc and Enter can't be shortcuts; they move, cancel and save.
+            if event.keysym in ("Tab", "ISO_Left_Tab"):
+                return None
+            if event.keysym == "Escape":
+                self.shortcut_done()
+                return "break"
+            if event.keysym in ("Return", "KP_Enter"):
+                if self.captured is not None:
+                    self.save_shortcut()
+                return "break"
         if event.keysym in hotkeys.TK_MODIFIERS:
             self.held.add(hotkeys.TK_MODIFIERS[event.keysym])
             return "break"
@@ -1576,7 +1617,6 @@ class App:
         paste = "Command\u00a0+\u00a0V" if platform == "macos" else "Ctrl\u00a0+\u00a0V"
         if platform == "linux":
             paste += " (Ctrl\u00a0+\u00a0Shift\u00a0+\u00a0V in a terminal)"
-        place = {"macos": "menu bar", "windows": "system tray"}.get(platform, "top bar")
         conflict = hotkeys.shortcut_conflict(self.service.paths)
         if conflict is not None:
             title = f"{shortcut} is taken by something else"
@@ -1599,10 +1639,20 @@ class App:
         else:
             title = f"{shortcut} is taken"
             subtitle = (
-                f"Another app already uses {shortcut}. Choose a different shortcut from the "
-                f"{place} icon. Until then, record from here."
+                f"Another app already uses {shortcut}. Choose a different shortcut below. "
+                "Until then, record from here."
             )
         self.reset("home", title, subtitle)
+        if conflict is None and title == f"{shortcut} is taken":
+            fixes = ttk.Frame(self.frame)
+            fixes.pack(fill="x", pady=(0, 12))
+            self.button(
+                "Choose another shortcut",
+                lambda: self.shortcut_page(back=self.home),
+                True,
+                fixes,
+                "left",
+            )
         if conflict is not None:
             fixes = ttk.Frame(self.frame)
             fixes.pack(fill="x", pady=(0, 12))
@@ -1746,7 +1796,8 @@ class App:
                 "Choose a local text model (such as one served by Ollama), or your own "
                 "HTTPS service. The setup asks before allowing transcripts to leave this computer. "
                 "Then return here and choose Make concise. Your original transcript is kept.",
-                lambda: None,
+                lambda: self.copy_text("dictate-toggle --setup-rewrite"),
+                "Copy command",
             )
             return
 
@@ -1763,6 +1814,10 @@ class App:
             show_draft,
             "Making a concise draft… Your original transcript is kept.",
         )
+
+    def copy_text(self, text: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
 
     def discard_audio(self) -> None:
         if messagebox.askyesno(
@@ -1867,8 +1922,6 @@ class App:
             text = source.read_text(encoding="utf-8") if seen[2] >= 0 else ""
             if text != self.last_text:
                 self.show_transcript(text)
-        if self.closing and not active:
-            self.destroy()
 
     def open_page(self, request: str) -> None:
         """Honor a page request from the tray or a shortcut when it is safe to leave."""
@@ -1943,6 +1996,9 @@ class App:
                 for button in self.buttons:
                     button.state(["!disabled"])
                 done, self.done = self.done, lambda _: None
+                if self.closing:
+                    self.destroy()
+                    return
                 done(future.result())
             if self.page == "home" and self.pending is None:
                 self.refresh()
@@ -1972,22 +2028,29 @@ class App:
             self.timer = self.root.after(200, self.poll)
 
     def close(self) -> None:
-        if self.pending is not None:
+        """Close the window. A recording runs on its own and is not touched."""
+        if self.pending is None:
+            self.destroy()
+            return
+        downloading = (
+            self.pause_download is not None
+            and self.pause_download.winfo_exists()
+            and bool(self.pause_download.winfo_manager())
+            and not self.download_pause.is_set()
+        )
+        if not downloading:
             messagebox.showinfo(
                 "Please wait",
                 "An operation is finishing. Keep this window open until it completes.",
                 parent=self.root,
             )
-        elif d.busy(self.service.paths):
-            if messagebox.askyesno(
-                "Finish recording?",
-                "Finish the current recording/transcription before closing?",
-                parent=self.root,
-            ):
-                self.closing = True
-                self.action("toggle")
-        else:
-            self.destroy()
+        elif messagebox.askokcancel(
+            "Pause the download and close?",
+            "What’s downloaded so far is kept. Open Settings later to finish it.",
+            parent=self.root,
+        ):
+            self.pause_model()
+            self.closing = True  # Closes once the download has stopped.
 
     def end_capture(self) -> None:
         """Stop recording keys for a new shortcut; the tray re-enables the shortcut."""

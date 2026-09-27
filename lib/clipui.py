@@ -721,7 +721,14 @@ class ClipboardPage:
 class TextPreview:
     """A selectable, scrollable full-text preview without changing the clipboard."""
 
-    def __init__(self, parent: tk.Misc, title: str, text: str, copy: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        parent: tk.Misc,
+        title: str,
+        text: str,
+        copy: Callable[[], None],
+        copy_label: str = "Copy",
+    ) -> None:
         window = self.window = tk.Toplevel(parent)
         window.title(title)
         window.transient(parent)  # type: ignore[call-overload]
@@ -739,9 +746,21 @@ class TextPreview:
         content.configure(state="disabled")
         row = ttk.Frame(body)
         row.pack(fill="x", pady=(12, 0))
-        ttk.Button(row, text="Copy", command=copy).pack(side="left")
+        self.copy_button = ttk.Button(row, text=copy_label, command=lambda: self.copied(copy))
+        self.copy_button.pack(side="left")
         ttk.Button(row, text="Close", command=window.destroy).pack(side="right")
+        self.copy_label = copy_label
         window.bind("<Escape>", lambda _: window.destroy())
+
+    def copied(self, copy: Callable[[], None]) -> None:
+        """Copy, and say so here: the main window's status is hidden behind this one."""
+        copy()
+        self.copy_button.configure(text="Copied")
+        self.window.after(1500, self.restore)
+
+    def restore(self) -> None:
+        if self.copy_button.winfo_exists():
+            self.copy_button.configure(text=self.copy_label)
 
 
 class DisconnectDialog:
@@ -757,7 +776,7 @@ class DisconnectDialog:
         ttk.Label(
             body,
             text="Your Clipboard+ account keeps its copy. Choose what happens "
-            "to history on this computer.",
+            "to history on this computer. Deleting it can’t be undone.",
             wraplength=400,
         ).pack(pady=(0, 16))
         for label, result in (
@@ -765,7 +784,12 @@ class DisconnectDialog:
             ("Disconnect and delete local history", False),
             ("Cancel", None),
         ):
-            button = ttk.Button(body, text=label, command=functools.partial(self.choose, result))
+            button = ttk.Button(
+                body,
+                text=label,
+                style="Danger.TButton" if result is False else "TButton",
+                command=functools.partial(self.choose, result),
+            )
             button.pack(fill="x", pady=3)
         button.focus_set()
         window.protocol("WM_DELETE_WINDOW", lambda: self.choose(None))

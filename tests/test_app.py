@@ -68,7 +68,7 @@ class ServiceTests(ServiceCase):
             with self.assertRaises(d.DictationError):
                 self.service.prepare(language, device, "")
         with patch.object(desktop, "platform_name", return_value="windows"):
-            with self.assertRaisesRegex(d.DictationError, "Choose a microphone"):
+            with self.assertRaisesRegex(d.DictationError, "pick the microphone"):
                 self.service.prepare("en", "default", "")
         with patch.object(d, "busy", return_value=True):
             with self.assertRaises(d.DictationError):
@@ -827,8 +827,6 @@ class WindowTests(ServiceCase):
         self.finish()
         self.window.home()
         with patch.object(self.gui.messagebox, "askyesno", return_value=False):
-            with patch.object(d, "busy", return_value=True):
-                self.window.close()
             self.window.discard_audio()
         with (
             patch.object(self.gui.messagebox, "askyesno", return_value=True),
@@ -837,11 +835,13 @@ class WindowTests(ServiceCase):
             self.window.discard_audio()
             self.finish()
             action.assert_called_with("discard")
-            with patch.object(d, "busy", return_value=True):
-                self.window.close()
-                self.finish()
-            self.assertTrue(self.window.closing)
-        self.tick()
+        # A recording runs in its own process: closing never stops or waits for it.
+        with (
+            patch.object(d, "busy", return_value=True),
+            patch.object(self.service, "action") as action,
+        ):
+            self.window.close()
+            action.assert_not_called()
         self.assertEqual(self.window.page, "closed")
 
     def test_activation_existing_user_and_file_errors(self):
