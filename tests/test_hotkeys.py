@@ -232,8 +232,9 @@ class HotkeyTests(unittest.TestCase):
             )
         listed = f"[{hotkeys.GNOME_PATH!r}, {hotkeys.GNOME_HISTORY_PATH!r}]"
         self.assertIn(["set", *hotkeys.GNOME_LIST, listed], calls)
-        self.assertIn("/venv/python /lib/app.py --clipboard", calls[-2][-1])
-        self.assertEqual(calls[-1][-1], "<Shift><Super>f")
+        self.assertIn("/venv/python /lib/app.py --clipboard", calls[-3][-1])
+        # Cleared, then set: GNOME grabs the keys again even if the value is unchanged.
+        self.assertEqual([call[-1] for call in calls[-2:]], ["", "<Shift><Super>f"])
 
     def test_gnome_shortcut_pauses_and_removes_only_its_own_binding(self):
         calls = []

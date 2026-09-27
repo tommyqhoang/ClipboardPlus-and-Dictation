@@ -1854,6 +1854,13 @@ class App:
     ) -> None:
         """Unbind the other custom shortcut (kept in the keyboard settings) so ours works."""
         released = hotkeys.gnome_release(conflict.path)
+        if released:
+            # GNOME gave the keys to the other binding; ours must grab them again.
+            hotkeys.gnome_regrab(
+                hotkeys.GNOME_HISTORY_PATH
+                if status == "history-shortcut-status"
+                else hotkeys.GNOME_PATH
+            )
         telemetry.event("shortcut_take_over", ok=released, which=status)
         if released:
             hotkeys.record_status(self.service.paths, True, status)

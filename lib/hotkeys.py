@@ -548,7 +548,35 @@ def gnome_shortcut(
             gsettings("set", *GNOME_LIST, "[" + ", ".join(entries + [repr(path)]) + "]")
         gsettings("set", schema, "name", name)
         gsettings("set", schema, "command", _gnome_command(command))
-        gsettings("set", schema, "binding", shortcut.gnome() if shortcut else "")
+        # Cleared first so GNOME grabs the keys again: a grab lost to another binding
+        # (since released) is not retried until the binding actually changes.
+        gsettings("set", schema, "binding", "")
+        if shortcut:
+            gsettings("set", schema, "binding", shortcut.gnome())
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
+def gnome_regrab(path: str, run: Any = subprocess.run) -> bool:
+    """Make GNOME grab a binding's keys again, e.g. once another binding let go of them."""
+    if not path.startswith(GNOME_LIST_PREFIX) or not shutil.which("gsettings"):
+        return False
+    schema = f"{GNOME_LIST[0]}.custom-keybinding:{path}"
+    try:
+        found = run(
+            ["gsettings", "get", schema, "binding"], capture_output=True, text=True, timeout=10
+        )
+        binding = str(found.stdout).strip().strip("'")
+        if found.returncode or not binding:
+            return False
+        for value in ("", binding):
+            run(
+                ["gsettings", "set", schema, "binding", value],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
     except (OSError, subprocess.SubprocessError):
         return False
     return True
