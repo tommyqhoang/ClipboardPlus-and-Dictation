@@ -354,11 +354,18 @@ class Service:
         candidate = d.Config(self.paths)
         key_file = d.key_file(self.paths)
         settings: dict[str, object]
+        new_host = False
         if remote is not None:
-            host = urllib.parse.urlsplit(remote.endpoint).hostname
+            host = urllib.parse.urlsplit(remote.endpoint.strip()).hostname
             loopback = host in ("localhost", "127.0.0.1", "::1")
-            if not remote.key and not key_file.is_file() and not loopback:
-                raise d.DictationError("Enter the API key for your transcription service.")
+            # A saved key belongs to the service it was entered for; never send it elsewhere.
+            new_host = host != urllib.parse.urlsplit(candidate.s("endpoint")).hostname
+            if not remote.key and not loopback and (new_host or not key_file.is_file()):
+                raise d.DictationError(
+                    f"Enter the API key for {host}. A saved key is only used with its own service."
+                    if key_file.is_file()
+                    else "Enter the API key for your transcription service."
+                )
             # Choosing a service is the explicit consent to send audio to it.
             settings = dict(
                 backend="http",
@@ -380,7 +387,7 @@ class Service:
         d.private_dir(self.paths.config.parent)
         if remote is not None and remote.key:
             d.atomic(key_file, remote.key.strip())  # atomic() creates owner-only files.
-        elif remote is None:
+        elif remote is None or new_host:
             key_file.unlink(missing_ok=True)
         # Save the user's file settings, not temporary DICTATION_* environment
         # overrides inherited by this desktop process.

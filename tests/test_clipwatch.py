@@ -45,6 +45,31 @@ class SharedTests(unittest.TestCase):
         secret = clipwatch.Clip(text="hunter2", image_png=b"png", concealed=True)
         self.assertEqual(clipwatch.limit_clip(secret), clipwatch.Clip(concealed=True))
 
+    def test_copied_api_keys_and_private_keys_are_never_kept(self):
+        for secret in (
+            "sk-proj-abcdefghijklmnopqrstuvwx",
+            "  ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+            "cp_live_abcdefghijklmnop1234",
+            "AKIAABCDEFGHIJKLMNOP",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----",
+        ):
+            with self.subTest(secret=secret[:12]):
+                self.assertEqual(
+                    clipwatch.limit_clip(clipwatch.Clip(text=secret)),
+                    clipwatch.Clip(concealed=True),
+                )
+        for ordinary in (
+            "sk-",
+            "Use your sk-proj-abcdefghijklmnopqrstuvwx key here",  # Prose around it is kept.
+            "https://example.com/a/very/long/path/with/segments",
+            "0123456789abcdef0123456789abcdef0123456789",
+        ):
+            with self.subTest(ordinary=ordinary[:12]):
+                self.assertEqual(
+                    clipwatch.limit_clip(clipwatch.Clip(text=ordinary)),
+                    clipwatch.Clip(text=ordinary),
+                )
+
     def test_trim_png_cuts_trailing_padding_only(self):
         png = make_png()
         self.assertEqual(clipwatch.trim_png(png + b"\x00\x00"), png)

@@ -96,9 +96,15 @@ class ServiceTests(ServiceCase):
                 "en", "USB Mic", "", remote=app_service.Remote(remote.endpoint, "m", "")
             )
             self.assertEqual(key.read_text(), "sk-test")
+            # The key is never sent to a different service: a new host needs its own key.
+            other = app_service.Remote("https://api.other.example/v1/audio", "m", "")
+            with self.assertRaisesRegex(d.DictationError, "api.other.example"):
+                self.service.prepare("en", "USB Mic", "", remote=other)
+            self.assertEqual(d.read_json(self.paths.config)["endpoint"], remote.endpoint)
             local = app_service.Remote("http://127.0.0.1:8080/inference", "", "")
             self.service.prepare("en", "USB Mic", "", remote=local)
             self.assertFalse(d.read_json(self.paths.config)["allow_remote"])
+            self.assertFalse(key.exists())  # Not handed to a local server either.
             model = self.folder / "model.bin"
             model.write_bytes(b"lmgg-fixture")
             self.service.prepare("en", "USB Mic", str(model))

@@ -735,7 +735,8 @@ class App:
             "How it works",
             "It saves text, links and images you copy so you can find them again. Everything "
             "stays on this computer unless you connect a Clipboard+ account, and even then "
-            "images are never uploaded. Anything a password manager marks as secret is "
+            "images are never uploaded. Anything a password manager marks as secret, and anything that looks like an "
+            "API key or private key, is "
             "skipped. You can pause or turn it off at any time.",
         )
 
