@@ -740,9 +740,19 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
 
 def dispatch(config: Config, paths: Paths, action: str) -> None:
     command_fd = lock(paths.runtime / "command.lock")
+    began = paths.runtime / "command-started"
     if command_fd is None:
-        print("Another shortcut action is running.")  # A double press: nothing to add.
+        print("Another shortcut action is running.")
+        try:
+            held = time.time() - began.stat().st_mtime
+        except OSError:
+            held = 0.0
+        # A quick double press needs no message; a long retry or rewrite does, or the
+        # shortcut just seems broken.
+        if held > 2:
+            notify(config, "Still finishing the last request. Try again in a moment.")
         return
+    atomic(began, str(time.time()))
     try:
         if busy(paths):
             if action == "discard":

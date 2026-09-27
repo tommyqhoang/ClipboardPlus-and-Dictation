@@ -137,6 +137,19 @@ class DictationTests(unittest.TestCase):
         self.cli("--transcribe")
         self.assertFalse(self.paths.audio.exists())
 
+    def test_a_press_during_a_long_action_says_so_but_a_double_press_does_not(self):
+        held = d.lock(self.paths.runtime / "command.lock")
+        self.addCleanup(os.close, held)
+        began = self.paths.runtime / "command-started"
+        began.write_text("x")
+        with patch.object(d, "notify") as told:
+            d.dispatch(self.config, self.paths, "toggle")  # Just started: a double press.
+            told.assert_not_called()
+            old = time.time() - 30
+            os.utime(began, (old, old))
+            d.dispatch(self.config, self.paths, "toggle")
+            self.assertIn("Still finishing", told.call_args.args[1])
+
     def test_discarding_a_failed_recording_clears_its_error(self):
         (self.root / "fail").touch()
         self.start()
