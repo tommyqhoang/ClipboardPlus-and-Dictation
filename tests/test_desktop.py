@@ -346,7 +346,10 @@ class DesktopTests(unittest.TestCase):
             ):
                 setup.install_app_launcher(prefix)
                 bundle = root / "Applications/Clipboard+ and Dictation.app"
-                login.assert_called_once_with(True, ["/usr/bin/open", str(bundle)])
+                # The executable itself, so launchd supervises it (KeepAlive).
+                login.assert_called_once_with(
+                    True, [str(bundle / "Contents/MacOS/WhisperDictation")]
+                )
                 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
                 self.assertEqual(info["CFBundleIdentifier"], "org.whisperdictation.desktop")
                 self.assertIn("Record speech only", info["NSMicrophoneUsageDescription"])

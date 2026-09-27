@@ -408,7 +408,12 @@ class Controller(NSObject):  # type: ignore[misc]
         # Set by the bundle launcher; the Python interpreter is a different bundle.
         bundle = os.environ.get("WHISPER_DICTATION_BUNDLE", "")
         if bundle.endswith(".app"):
-            hotkeys.set_login_item(enabled, ["/usr/bin/open", bundle])
+            # The executable itself (not `open`, which returns at once) so launchd
+            # supervises the app and KeepAlive can restart it after a crash.
+            executable = Path(bundle) / "Contents/MacOS/WhisperDictation"
+            hotkeys.set_login_item(
+                enabled, [str(executable)] if executable.is_file() else ["/usr/bin/open", bundle]
+            )
 
     def quit_(self, _sender: Any) -> None:
         self.clip.stop()

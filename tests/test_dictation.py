@@ -251,7 +251,13 @@ class DictationTests(unittest.TestCase):
         (self.root / "slow").touch()
         self.start()
         self.cli()
-        time.sleep(0.15)
+        # A fixed sleep raced the worker: wait until the stop is picked up and the
+        # slow transcription is running, when a new press must be told it is busy.
+        deadline = time.monotonic() + 10
+        while d.read_json(self.paths.state).get("phase") != "transcribing":
+            if time.monotonic() > deadline:
+                self.fail(f"Expected transcribing, got {d.read_json(self.paths.state)}")
+            time.sleep(0.03)
         before = self.paths.audio.read_bytes()
         self.assertIn("busy", self.cli().stdout)
         self.assertEqual(before, self.paths.audio.read_bytes())

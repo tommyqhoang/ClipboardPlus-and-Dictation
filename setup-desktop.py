@@ -444,7 +444,9 @@ def install_app_launcher(prefix: Path) -> None:
             shutil.copyfile(icon, resources / "AppIcon.icns")
         # Finder caches bundle icons; a new modification time refreshes it.
         os.utime(bundle)
-        hotkeys.set_login_item(preferences.open_at_login(), ["/usr/bin/open", str(bundle)])
+        # The executable itself (not `open`, which returns at once) so launchd
+        # supervises the app and KeepAlive can restart it after a crash.
+        hotkeys.set_login_item(preferences.open_at_login(), [str(executable)])
     else:
         entry = prefix / "share/applications/whisper-dictation.desktop"
         entry.parent.mkdir(parents=True, exist_ok=True)

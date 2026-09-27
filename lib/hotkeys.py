@@ -5,6 +5,7 @@ Windows/Linux tray. Pure data and files only; GUI toolkits live elsewhere.
 from __future__ import annotations
 
 import json
+import os
 import plistlib
 import re
 import shlex
@@ -370,6 +371,7 @@ def set_login_item(
     home: Path | None = None,
     platform: str | None = None,
     registry: Any = None,
+    run: Any = subprocess.run,
 ) -> None:
     """Start the tray/menu bar app when the user logs in."""
     platform = platform or desktop.platform_name()
@@ -387,6 +389,8 @@ def set_login_item(
         return
     path = agent_path(home) if platform == "macos" else autostart_path(home)
     if not enabled:
+        if platform == "macos" and _menubar_is_idle():
+            _launchctl("bootout", AGENT_LABEL, run)
         path.unlink(missing_ok=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -396,8 +400,11 @@ def set_login_item(
             "ProgramArguments": command,
             "RunAtLoad": True,
             "ProcessType": "Interactive",
+            # Come back after a crash or a force quit; a clean Quit stays quit.
+            "KeepAlive": {"SuccessfulExit": False},
         }
         d.atomic(path, plistlib.dumps(agent).decode("utf-8"))
+        _launchctl("bootstrap", str(path), run)
     else:
         d.atomic(
             path,
@@ -405,6 +412,35 @@ def set_login_item(
             f"Exec={shlex.join(command)}\nIcon=whisper-dictation\n"
             "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
         )
+
+
+def _launchctl(action: str, argument: str, run: Any) -> None:
+    """Apply an agent change now instead of at the next login.
+
+    Bootstrap of an already-loaded agent fails harmlessly, as does booting one
+    out that is not loaded; neither is worth reporting.
+    """
+    try:
+        run(
+            ["launchctl", action, f"gui/{desktop.user_id()}", argument],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _menubar_is_idle() -> bool:
+    """Whether the menu bar app is running; unloading its agent would quit it."""
+    try:
+        fd = desktop.lock(d.Paths().runtime / "menubar.lock")
+    except OSError:
+        return False
+    if fd is None:
+        return False
+    os.close(fd)
+    return True
 
 
 HISTORY_STATUS = "history-shortcut-status"

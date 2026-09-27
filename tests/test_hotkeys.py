@@ -98,14 +98,33 @@ class HotkeyTests(unittest.TestCase):
         )
         self.assertEqual(self.preferences.shortcut(), custom)
 
+    def test_the_agent_is_registered_with_launchd_right_away(self):
+        calls = []
+
+        def run(args, **_):
+            calls.append(args)
+            return Mock(returncode=0, stdout="", stderr="")
+
+        command = ["/usr/bin/open", str(self.folder / "Clipboard+ and Dictation.app")]
+        with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/launchctl"):
+            with patch.object(hotkeys, "_menubar_is_idle", return_value=True):
+                hotkeys.set_login_item(True, command, self.folder, "macos", run=run)
+                self.assertEqual(calls[-1][:2], ["launchctl", "bootstrap"])
+                agent = plistlib.loads(hotkeys.agent_path(self.folder).read_bytes())
+                # Comes back after a crash or force quit; a clean Quit stays quit.
+                self.assertEqual(agent["KeepAlive"], {"SuccessfulExit": False})
+                hotkeys.set_login_item(False, command, self.folder, "macos", run=run)
+                self.assertEqual(calls[-1][:2], ["launchctl", "bootout"])
+                self.assertFalse(hotkeys.agent_path(self.folder).exists())
+
     def test_login_items_per_platform(self):
         command = ["/usr/bin/open", str(self.folder / "Whisper Dictation.app")]
-        hotkeys.set_login_item(True, command, self.folder, "macos")
+        hotkeys.set_login_item(True, command, self.folder, "macos", run=Mock())
         agent = plistlib.loads(hotkeys.agent_path(self.folder).read_bytes())
         self.assertEqual(agent["Label"], hotkeys.AGENT_LABEL)
         self.assertEqual(agent["ProgramArguments"], command)
         self.assertTrue(agent["RunAtLoad"])
-        hotkeys.set_login_item(False, command, self.folder, "macos")
+        hotkeys.set_login_item(False, command, self.folder, "macos", run=Mock())
         self.assertFalse(hotkeys.agent_path(self.folder).exists())
         tray = ["/venv/bin/python", "/app with space/tray.py"]
         hotkeys.set_login_item(True, tray, self.folder, "linux")
@@ -133,18 +152,19 @@ class HotkeyTests(unittest.TestCase):
             output = "['/other/']" if args[1] == "get" else ""
             return Mock(returncode=0, stdout=output, stderr="")
 
+        linux_default = hotkeys.default_shortcut("linux")
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
             self.assertTrue(
-                hotkeys.gnome_shortcut(hotkeys.DEFAULT, PurePosixPath("/bin/toggle"), run)
+                hotkeys.gnome_shortcut(linux_default, PurePosixPath("/bin/toggle"), run)
             )
             self.assertIn(
                 ["set", *hotkeys.GNOME_LIST, f"['/other/', {hotkeys.GNOME_PATH!r}]"], calls
             )
             self.assertEqual(calls[-1][-2:], ["binding", "<Shift><Super>d"])
             failing = Mock(return_value=Mock(returncode=1, stdout="", stderr="no schema"))
-            self.assertFalse(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/t"), failing))
+            self.assertFalse(hotkeys.gnome_shortcut(linux_default, Path("/t"), failing))
         with patch.object(hotkeys.shutil, "which", return_value=None):
-            self.assertFalse(hotkeys.gnome_shortcut(hotkeys.DEFAULT, Path("/t")))
+            self.assertFalse(hotkeys.gnome_shortcut(linux_default, Path("/t")))
 
     def gsettings(self, custom, built_in=""):
         """A fake gsettings: custom shortcuts {path: (name, binding)} and built-in listings."""
@@ -176,8 +196,9 @@ class HotkeyTests(unittest.TestCase):
             "org.gnome.desktop.wm.keybindings close ['<Primary>q', '<Alt>F4']"
         )
         run = self.gsettings(custom, built_in)
+        linux_default = hotkeys.default_shortcut("linux")
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
-            found = hotkeys.gnome_conflict(hotkeys.DEFAULT, hotkeys.GNOME_PATH, run)
+            found = hotkeys.gnome_conflict(linux_default, hotkeys.GNOME_PATH, run)
             self.assertEqual(found, hotkeys.Conflict("Whisper Dictation", old))
             window_menu = hotkeys.gnome_conflict(
                 hotkeys.Shortcut(("alt",), "Space"), hotkeys.GNOME_PATH, run
@@ -191,7 +212,7 @@ class HotkeyTests(unittest.TestCase):
             free = hotkeys.Shortcut(("ctrl", "alt"), "Space")
             self.assertIsNone(hotkeys.gnome_conflict(free, hotkeys.GNOME_PATH, run))
         with patch.object(hotkeys.shutil, "which", return_value=None):
-            self.assertIsNone(hotkeys.gnome_conflict(hotkeys.DEFAULT, hotkeys.GNOME_PATH, run))
+            self.assertIsNone(hotkeys.gnome_conflict(linux_default, hotkeys.GNOME_PATH, run))
 
     def test_a_conflict_is_shared_with_the_window_and_can_be_released(self):
         paths = d.Paths()
@@ -224,11 +245,10 @@ class HotkeyTests(unittest.TestCase):
 
         command = hotkeys.history_command(PurePosixPath("/lib"), "/venv/python")
         self.assertEqual(command, ["/venv/python", "/lib/app.py", "--clipboard"])
+        linux_history = hotkeys.default_history_shortcut("linux")
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
             self.assertTrue(
-                hotkeys.gnome_shortcut(
-                    hotkeys.DEFAULT_HISTORY, command, run, path=hotkeys.GNOME_HISTORY_PATH
-                )
+                hotkeys.gnome_shortcut(linux_history, command, run, path=hotkeys.GNOME_HISTORY_PATH)
             )
         listed = f"[{hotkeys.GNOME_PATH!r}, {hotkeys.GNOME_HISTORY_PATH!r}]"
         self.assertIn(["set", *hotkeys.GNOME_LIST, listed], calls)

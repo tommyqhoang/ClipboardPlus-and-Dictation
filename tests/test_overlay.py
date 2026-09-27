@@ -78,7 +78,8 @@ class WorkerHandoverTests(unittest.TestCase):
                 private.parent.mkdir(parents=True)
                 private.touch()
                 with patch.object(d.desktop, "platform_name", return_value="linux"):
-                    self.assertEqual(d.overlay_python(), str(private))
+                    # install_prefix resolves symlinks (/var → /private/var on macOS).
+                    self.assertEqual(d.overlay_python(), str(private.resolve()))
 
     def test_turned_off_it_is_never_started(self):
         config = Mock(b=Mock(return_value=False))
