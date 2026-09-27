@@ -143,6 +143,8 @@ class App:
                 f"<{key}>", functools.partial(self.scroll_key, amount, what), add="+"
             )
         self.default_button: ttk.Button | None = None
+        # The dictation fields as last saved, to catch leaving Settings with edits.
+        self.settings_snapshot: tuple[str, ...] | None = None
         self.root.bind_all("<Return>", self.on_return, add="+")
         self.root.bind_all("<KP_Enter>", self.on_return, add="+")
         self.language = tk.StringVar(value="English")
@@ -607,6 +609,7 @@ class App:
         if self.page == "shortcut" and page != "shortcut":
             self.end_capture()
         self.page = page
+        self.settings_snapshot = None
         self.buttons = []
         self.default_button = None
         self.account = None
@@ -657,7 +660,42 @@ class App:
             + ["settings"]
         )
 
+    def settings_values(self) -> tuple[str, ...]:
+        return (
+            self.language.get(),
+            self.device_ids.get(self.device.get(), self.device.get()),
+            self.model_source.get(),
+            self.model.get(),
+            self.endpoint.get().strip(),
+            self.api_model.get().strip(),
+            self.api_key.get(),
+        )
+
+    def confirm_leave(self) -> bool:
+        """Before leaving Settings with unsaved dictation changes, offer to save them."""
+        if (
+            self.page != "settings"
+            or self.settings_snapshot is None
+            or self.pending is not None
+            or self.settings_values() == self.settings_snapshot
+        ):
+            return True
+        answer = messagebox.askyesnocancel(
+            "Save your changes?",
+            "You changed your dictation settings but haven’t saved them.",
+            parent=self.root,
+        )
+        if answer:
+            self.prepare()  # Stays here to show how saving went.
+        return answer is False
+
+    def close_settings(self) -> None:
+        if self.confirm_leave():
+            self.leave()
+
     def tab(self, name: str) -> None:
+        if not self.confirm_leave():
+            return
         self.quick = False  # Browsing now: Esc no longer closes the window.
         if name == "clipboard":
             self.clipboard()
@@ -1283,7 +1321,13 @@ class App:
         if setup:
             self.button("Back", self.choose_features, parent=self.actions(), side="left")
         if not setup:
-            self.button("Close", self.leave, parent=self.actions(), side="right")
+            self.button(
+                "Close",
+                self.close_settings,
+                parent=self.actions(),
+                side="right",
+            )
+            self.settings_snapshot = self.settings_values()
         # Discovery only lists devices; it never opens the microphone.
         self.root.after_idle(self.find_microphones)
 
@@ -1381,10 +1425,16 @@ class App:
         self.device_ids = {names.get(device, device): device for device in devices}
         self.device_picker.configure(values=list(self.device_ids))
         current = self.device_ids.get(self.device.get(), self.device.get())
+        unchanged = self.settings_snapshot is not None and current == self.settings_snapshot[1]
         if current not in devices:
             # Never silently pick an arbitrary device: the system default is safest.
             current = "default" if "default" in devices else devices[0]
         self.device.set(names.get(current, current))
+        if unchanged and self.settings_snapshot is not None:
+            # Replacing a missing saved microphone is not the user's edit.
+            snapshot = list(self.settings_snapshot)
+            snapshot[1] = current
+            self.settings_snapshot = tuple(snapshot)
         found = f"{len(devices)} microphone{'s' if len(devices) != 1 else ''} found."
         self.status.set(f"{found} Pick the one you’ll speak into.")
 
@@ -1425,6 +1475,8 @@ class App:
                 self.after_dictation_setup()
             else:
                 self.status.set("Settings saved.")  # Stay here: no walkthrough again.
+                if self.page == "settings":
+                    self.settings_snapshot = self.settings_values()
 
         if source == "download":
             if self.pause_download is None or not self.pause_download.winfo_exists():
@@ -1954,7 +2006,7 @@ class App:
 
     def find(self) -> None:
         """Ctrl/⌘+F: search the clipboard history from any page."""
-        if not self.features().clipboard or not self.can_navigate():
+        if not self.features().clipboard or not self.can_navigate() or not self.confirm_leave():
             return
         if self.page != "clipboard" or self.clipboard_page is None:
             self.clipboard()
@@ -2029,6 +2081,8 @@ class App:
 
     def close(self) -> None:
         """Close the window. A recording runs on its own and is not touched."""
+        if not self.confirm_leave():
+            return
         if self.pending is None:
             self.destroy()
             return

@@ -457,6 +457,62 @@ class WindowTests(ServiceCase):
             self.assertEqual(places[0], places[1])
             self.assertEqual(places[1], places[2])
 
+    def test_help_goes_back_to_the_tab_instead_of_closing(self):
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.home()
+            self.window.tutorial()
+            [back] = [
+                button
+                for button in self.window.bar_actions.winfo_children()
+                if button.cget("text") == "Back"
+            ]
+            back.invoke()
+        self.assertEqual(self.window.page, "home")
+
+    def test_enter_presses_the_pages_main_action(self):
+        with (
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.gui.App, "prepare") as prepare,
+        ):
+            self.window.settings()
+            self.assertEqual(
+                self.window.on_return(SimpleNamespace(widget=self.window.frame)), "break"
+            )
+            prepare.assert_called_once()
+
+    def test_shortcut_capture_lets_escape_cancel_and_tab_move(self):
+        self.window.shortcut_page(back=self.window.home)
+        self.assertIsNone(self.window.shortcut_key(SimpleNamespace(keysym="Tab")))
+        self.window.shortcut_key(SimpleNamespace(keysym="Escape"))
+        self.assertEqual(self.window.page, "home")
+
+    def test_closing_during_download_pauses_it_first(self):
+        release = __import__("threading").Event()
+        self.window.pause_download = self.gui.ttk.Button(self.window.bar_actions)
+        self.window.pause_download.pack()
+        self.window.submit(release.wait, lambda _: None, "Downloading")
+        with patch.object(self.gui.messagebox, "askokcancel", return_value=True):
+            self.window.close()
+        self.assertTrue(self.window.download_pause.is_set())
+        self.assertNotEqual(self.window.page, "closed")
+        release.set()
+        self.finish()
+        self.assertEqual(self.window.page, "closed")
+
+    def test_leaving_settings_with_unsaved_changes_asks_first(self):
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.settings()
+            with patch.object(self.gui.messagebox, "askyesnocancel") as ask:
+                self.window.tab("settings")  # Nothing changed: no question.
+                ask.assert_not_called()
+            self.window.language.set("Multilingual / auto-detect")
+            with patch.object(self.gui.messagebox, "askyesnocancel", return_value=None):
+                self.window.tab("dictation")
+            self.assertEqual(self.window.page, "settings")  # Cancel stays.
+            with patch.object(self.gui.messagebox, "askyesnocancel", return_value=False):
+                self.window.tab("dictation")
+            self.assertEqual(self.window.page, "home")  # Don't save leaves.
+
     def test_maximized_size_is_not_remembered(self):
         with patch.object(self.window, "maximized", return_value=True):
             self.root.deiconify()
