@@ -29,15 +29,45 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install -r requirements-dev.txt pyinstaller
+      # The tray/menu-bar entry point needs the same GUI toolkit setup-desktop.py
+      # installs into its private venv for a source install — PyInstaller can
+      # only bundle what's actually importable while it analyzes the code.
+      - name: Install GUI runtime deps (macOS)
+        if: runner.os == 'macOS'
+        run: python -m pip install "pyobjc-framework-Cocoa==12.2.2" "Pillow==12.3.0"
+      - name: Install GUI runtime deps (Linux)
+        if: runner.os == 'Linux'
+        run: python -m pip install "pystray==0.19.5" "Pillow==12.3.0" "python-xlib==0.33"
+      - name: Install GUI runtime deps (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pip install "pystray==0.19.5" "Pillow==12.3.0"
       - run: pyinstaller ${{ matrix.spec }}
       - name: Smoke-launch every bundled entry point
         shell: bash
         run: |
           set -e
+          fail=0
           for exe in dist/clipboardplus/*; do
-            [ -x "$exe" ] || continue
-            "$exe" --help >/dev/null 2>&1 || echo "note: $exe has no --help, checked it starts"
+            [ -f "$exe" ] && [ -x "$exe" ] || continue
+            name="$(basename "$exe")"
+            log="/tmp/smoke-$name.log"
+            case "$name" in
+              dictation) timeout 5 "$exe" --status >"$log" 2>&1; code=$? ;;
+              *) timeout 5 "$exe" >"$log" 2>&1; code=$? ;;
+            esac
+            # 124 = still running after the timeout (a GUI entry point that
+            # started its run loop) — that's success, not a hang to report.
+            if [ "$code" -ne 0 ] && [ "$code" -ne 124 ] && [ "$code" -ne 2 ]; then
+              if grep -qE "Traceback \(most recent call last\)|ModuleNotFoundError|ImportError" "$log"; then
+                echo "SMOKE TEST FAILED: $name crashed on import (exit $code)"
+                cat "$log"
+                fail=1
+                continue
+              fi
+            fi
+            echo "OK: $name (exit $code)"
           done
+          [ "$fail" -eq 0 ]
       - name: Wrap (Linux)
         if: runner.os == 'Linux'
         run: |
