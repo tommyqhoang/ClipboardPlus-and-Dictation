@@ -847,7 +847,7 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
             os.close(fd)
             fd = None
             child = subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve()), "--worker", token],
+                desktop.relaunch("dictation", "--worker", token),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

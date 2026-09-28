@@ -181,7 +181,7 @@ def start(paths: d.Paths, config: d.Config) -> bool:
         return False
     try:
         subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--supervise", *command],
+            desktop.relaunch("engine", "--supervise", *command),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

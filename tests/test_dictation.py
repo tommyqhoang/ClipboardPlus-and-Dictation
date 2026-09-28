@@ -828,12 +828,41 @@ install_model
         self.assertFalse((invalid_dir / "selected.bin").exists())
 
 
+class WorkerRelaunchFrozenTests(unittest.TestCase):
+    def test_dispatch_relaunches_a_sibling_binary_when_frozen(self):
+        config = Mock(
+            check=Mock(),
+            b=Mock(return_value=True),
+        )
+        paths = Mock(
+            audio=Mock(exists=Mock(return_value=False)),
+            state=Path("/tmp/does-not-matter-state.json"),
+            runtime=Path("/tmp"),
+        )
+        process = Mock()
+        process.poll.return_value = 0  # "exited immediately" — only the argv matters here.
+        with (
+            patch.object(d, "lock", return_value=1),
+            patch.object(d, "read_json", return_value={}),
+            patch.object(d.os, "close"),
+            patch.object(d.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+            patch.object(d.desktop, "platform_name", return_value="linux"),
+            patch.object(d.subprocess, "Popen", return_value=process) as popen,
+        ):
+            with self.assertRaises(d.DictationError):
+                d.dispatch(config, paths, "start")
+        args = popen.call_args.args[0]
+        self.assertEqual(args[0], "/opt/Clipboard+/dictation")
+        self.assertEqual(args[1], "--worker")
+
+
 class OpenAppAndOverlayFrozenTests(unittest.TestCase):
     def test_open_app_launches_even_when_the_source_script_is_missing_and_frozen(self):
         config = Mock(b=Mock(return_value=True))
         with (
             patch.object(d.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
             patch.object(d.desktop, "relaunch", return_value=["/opt/Clipboard+/app"]),
+            patch.object(Path, "is_file", return_value=False),
             patch.object(d.subprocess, "Popen") as popen,
         ):
             d.open_app(config)
@@ -856,6 +885,7 @@ class OpenAppAndOverlayFrozenTests(unittest.TestCase):
         with (
             patch.object(d.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
             patch.object(d.desktop, "relaunch", return_value=["/opt/Clipboard+/overlay", token]),
+            patch.object(Path, "is_file", return_value=False),
             patch.object(d.subprocess, "Popen") as popen,
         ):
             result = d.start_overlay(config, token)

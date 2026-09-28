@@ -201,6 +201,22 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(str(args[1]).endswith("engine.py"))
         self.assertEqual(args[args.index("--supervise") + 1], "/usr/bin/whisper-server")
 
+    def test_the_engine_relaunches_a_sibling_binary_when_frozen(self):
+        with (
+            patch.object(engine, "server_binary", return_value="/usr/bin/whisper-server"),
+            patch.object(engine, "_free_port", return_value=1234),
+            patch.object(engine.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+            patch.object(engine.desktop, "platform_name", return_value="linux"),
+            patch.object(engine.subprocess, "Popen") as popen,
+        ):
+            self.assertTrue(engine.start(self.paths, self.config))
+        args = popen.call_args.args[0]
+        # No stray __file__ path when frozen — just the sibling binary and the
+        # real args, or argparse (with no positional defined) rejects it outright.
+        self.assertEqual(args[0], "/opt/Clipboard+/engine")
+        self.assertEqual(args[1], "--supervise")
+        self.assertEqual(args[args.index("--supervise") + 1], "/usr/bin/whisper-server")
+
 
 if __name__ == "__main__":
     unittest.main()
