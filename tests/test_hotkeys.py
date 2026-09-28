@@ -117,6 +117,35 @@ class HotkeyTests(unittest.TestCase):
                 self.assertEqual(calls[-1][:2], ["launchctl", "bootout"])
                 self.assertFalse(hotkeys.agent_path(self.folder).exists())
 
+    def test_a_changed_agent_replaces_the_one_launchd_already_loaded(self):
+        calls = []
+
+        def run(args, **_):
+            calls.append(args[:2])
+            return Mock(returncode=0, stdout="", stderr="")
+
+        bundle = str(self.folder / "Clipboard+ and Dictation.app")
+        executable = [bundle + "/Contents/MacOS/WhisperDictation"]
+        with patch.object(hotkeys, "_menubar_is_idle", return_value=False):  # App running.
+            hotkeys.set_login_item(True, ["/usr/bin/open", bundle], self.folder, "macos", run=run)
+            calls.clear()
+            # The old `open` agent never owned the app, so unloading it is safe.
+            hotkeys.set_login_item(True, executable, self.folder, "macos", run=run)
+            self.assertEqual(calls, [["launchctl", "bootout"], ["launchctl", "bootstrap"]])
+            calls.clear()
+            # Unchanged: nothing to unload (it would quit the running app).
+            hotkeys.set_login_item(True, executable, self.folder, "macos", run=run)
+            self.assertEqual(calls, [["launchctl", "bootstrap"]])
+
+    def test_bundle_login_command_runs_the_executable_so_launchd_supervises_it(self):
+        bundle = self.folder / "Clipboard+ and Dictation.app"
+        # No executable yet (e.g. a half-written bundle): fall back to `open`.
+        self.assertEqual(hotkeys.bundle_login_command(str(bundle)), ["/usr/bin/open", str(bundle)])
+        executable = bundle / "Contents/MacOS/WhisperDictation"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\n")
+        self.assertEqual(hotkeys.bundle_login_command(str(bundle)), [str(executable)])
+
     def test_login_items_per_platform(self):
         command = ["/usr/bin/open", str(self.folder / "Whisper Dictation.app")]
         hotkeys.set_login_item(True, command, self.folder, "macos", run=Mock())
@@ -320,7 +349,7 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(len(set(hotkeys.PRESETS)), len(hotkeys.PRESETS))
 
     def test_the_app_name_is_used_for_the_login_entry_and_gnome_binding(self):
-        self.assertEqual(hotkeys.APP_NAME, "Clipboard+ and Dictation")
+        self.assertEqual(hotkeys.APP_NAME, "Clipboard+")
         calls = []
 
         def run(args, **_):
@@ -329,7 +358,9 @@ class HotkeyTests(unittest.TestCase):
 
         with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
             hotkeys.gnome_shortcut(hotkeys.DEFAULT, PurePosixPath("/bin/toggle"), run)
-        self.assertTrue(any(call[-2:] == ["name", hotkeys.APP_NAME] for call in calls))
+        self.assertTrue(
+            any(call[-2:] == ["name", hotkeys.DICTATION_SHORTCUT_NAME] for call in calls)
+        )
         hotkeys.set_login_item(True, ["/x/python", "/x/tray.py"], self.folder, "linux")
         entry = (self.folder / ".config/autostart/whisper-dictation.desktop").read_text()
         self.assertIn(f"Name={hotkeys.APP_NAME}\n", entry)

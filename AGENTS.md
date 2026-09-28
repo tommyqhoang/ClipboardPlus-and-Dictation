@@ -1,4 +1,4 @@
-# AGENTS.md — Clipboard+ and Dictation (wayland-whisper-dictation)
+# AGENTS.md — Clipboard+ desktop app (wayland-whisper-dictation)
 
 Rules for every agent (Claude, Codex, Hermes) working in this repo.
 

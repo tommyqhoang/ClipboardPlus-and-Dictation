@@ -81,7 +81,7 @@ class GnomeHotKey:
         _callback: Callable[[], None],
         command: Path | list[str] | None = None,
         path: str = hotkeys.GNOME_PATH,
-        name: str = hotkeys.APP_NAME,
+        name: str = hotkeys.DICTATION_SHORTCUT_NAME,
     ) -> None:
         self.command = command or desktop.install_prefix(HERE / "tray.py") / "bin/dictate-toggle"
         self.path, self.name = path, name
@@ -295,7 +295,7 @@ class Tray:
             telemetry.event("shortcut_conflict", kind="custom" if conflict.path else "desktop")
             self.notify(
                 f"{self.shortcut.label()} is also used by {conflict.name}, which gets it first. "
-                "Open Clipboard+ and Dictation to fix it."
+                f"Open {hotkeys.APP_NAME} to fix it."
             )
 
     def toggle_login(self) -> None:

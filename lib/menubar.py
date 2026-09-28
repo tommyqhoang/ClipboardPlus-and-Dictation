@@ -408,12 +408,7 @@ class Controller(NSObject):  # type: ignore[misc]
         # Set by the bundle launcher; the Python interpreter is a different bundle.
         bundle = os.environ.get("WHISPER_DICTATION_BUNDLE", "")
         if bundle.endswith(".app"):
-            # The executable itself (not `open`, which returns at once) so launchd
-            # supervises the app and KeepAlive can restart it after a crash.
-            executable = Path(bundle) / "Contents/MacOS/WhisperDictation"
-            hotkeys.set_login_item(
-                enabled, [str(executable)] if executable.is_file() else ["/usr/bin/open", bundle]
-            )
+            hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
 
     def quit_(self, _sender: Any) -> None:
         self.clip.stop()
@@ -748,7 +743,10 @@ def main() -> int:
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "menubar.lock")
     if fd is None:
-        open_app_window()  # Already running: opening it again shows the window.
+        # Already running: opening it again shows the window. A start by launchd (the
+        # login item loaded while the app runs) is not someone opening it.
+        if os.environ.get("XPC_SERVICE_NAME") != hotkeys.AGENT_LABEL:
+            open_app_window()
         return 0
     try:
         (paths.runtime / "menubar-quit").unlink(missing_ok=True)

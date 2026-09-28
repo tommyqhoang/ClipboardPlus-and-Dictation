@@ -227,7 +227,7 @@ def clipboard_command(values: dict[str, Any]) -> list[str]:
 
 
 # Notifications carry the product name (hotkeys.APP_NAME; desktop cannot import it).
-NOTIFY_NAME = "Clipboard+ and Dictation"
+NOTIFY_NAME = "Clipboard+"
 
 
 def notification_command(values: dict[str, Any]) -> list[str]:
@@ -239,7 +239,7 @@ def notification_command(values: dict[str, Any]) -> list[str]:
         return [
             "/usr/bin/osascript",
             "-e",
-            'on run argv\ndisplay notification (item 1 of argv) with title "Clipboard+ and Dictation"\nend run',
+            f'on run argv\ndisplay notification (item 1 of argv) with title "{NOTIFY_NAME}"\nend run',
         ]
     # A short-lived notification-area balloon; the message arrives over stdin.
     return [
@@ -252,7 +252,7 @@ def notification_command(values: dict[str, Any]) -> list[str]:
         "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; "
         "$n=New-Object System.Windows.Forms.NotifyIcon; "
         "$n.Icon=[System.Drawing.SystemIcons]::Information; $n.Visible=$true; "
-        "try {$n.ShowBalloonTip(1000,'Clipboard+ and Dictation',[Console]::In.ReadToEnd(),"
+        f"try {{$n.ShowBalloonTip(1000,'{NOTIFY_NAME}',[Console]::In.ReadToEnd(),"
         "[System.Windows.Forms.ToolTipIcon]::Info); Start-Sleep -Milliseconds 1100} "
         "finally {$n.Dispose()}",
     ]

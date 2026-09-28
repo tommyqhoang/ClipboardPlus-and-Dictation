@@ -1,4 +1,4 @@
-"""Clipboard+ and Dictation window and first-run walkthrough."""
+"""Clipboard+ window and first-run walkthrough."""
 
 from __future__ import annotations
 
@@ -36,19 +36,19 @@ MODES = (
 )
 
 # One palette for every surface; the generated Clipboard+ icon is used everywhere.
-BACKGROUND = "#f3f6f8"
+BACKGROUND = "#f6f4f0"
 SURFACE = "#ffffff"
-BORDER = "#dce3e9"
-TEXT = "#13222d"
-MUTED = "#5a6b78"
-ACCENT = "#0f766e"
-ACCENT_ACTIVE = "#0b5c56"
-ACCENT_SOFT = "#e2f1ee"
+BORDER = "#e5e0d8"
+TEXT = "#1c1a17"
+MUTED = "#6b645a"
+ACCENT = "#b45309"  # The logo's amber, darkened to read on white.
+ACCENT_ACTIVE = "#92400e"
+ACCENT_SOFT = "#fef6e7"
 DANGER = "#c93a2e"
 DANGER_ACTIVE = "#a82e24"
 WARNING = "#c98a12"
-IDLE = "#9aa8b3"
-HOVER = "#eef5f4"  # A list row under the pointer.
+IDLE = "#a39b90"
+HOVER = "#faf5ec"  # A list row under the pointer.
 PAD = 20  # The page's side padding.
 # Past this, a maximized window centers a readable column instead of stretching
 # buttons and fields across the whole screen.
@@ -326,8 +326,8 @@ class App:
         )
         style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
         buttons = {
-            "TButton": (SURFACE, TEXT, "#c9d3db", "#eef2f5", SURFACE),
-            "Primary.TButton": (ACCENT, "white", ACCENT, ACCENT_ACTIVE, "#8db8b3"),
+            "TButton": (SURFACE, TEXT, "#d8d1c6", "#f4efe7", SURFACE),
+            "Primary.TButton": (ACCENT, "white", ACCENT, ACCENT_ACTIVE, "#e3bf95"),
             "Danger.TButton": (DANGER, "white", DANGER, DANGER_ACTIVE, "#e0a39d"),
         }
         for name, (fill, ink, edge, active, muted) in buttons.items():
@@ -350,7 +350,7 @@ class App:
                 lightcolor=[("disabled", muted), ("pressed", active), ("active", active)],
                 darkcolor=[("disabled", muted), ("pressed", active), ("active", active)],
                 bordercolor=[("disabled", BORDER if fill == SURFACE else muted)],
-                foreground=[("disabled", "#9fb0bc" if fill == SURFACE else "white")],
+                foreground=[("disabled", "#b3aa9d" if fill == SURFACE else "white")],
             )
         # Compact buttons for dense lists (clipboard rows, filters).
         # The theme's buttons are at least 11 characters wide; small ones fit their words.
@@ -434,19 +434,19 @@ class App:
         )
         style.configure(
             "Vertical.TScrollbar",
-            background="#cfd8df",
+            background="#d9d2c7",
             troughcolor=BACKGROUND,
             bordercolor=BACKGROUND,
-            lightcolor="#cfd8df",
-            darkcolor="#cfd8df",
+            lightcolor="#d9d2c7",
+            darkcolor="#d9d2c7",
             arrowcolor=MUTED,
             relief="flat",
         )
         style.configure(
             "TProgressbar",
             background=ACCENT,
-            troughcolor="#e4eaee",
-            bordercolor="#e4eaee",
+            troughcolor="#ece7df",
+            bordercolor="#ece7df",
             lightcolor=ACCENT,
             darkcolor=ACCENT,
             thickness=6,
@@ -1011,7 +1011,7 @@ class App:
             prefs.save(open_at_login=enabled)
             bundle = os.environ.get("WHISPER_DICTATION_BUNDLE", "")
             if bundle.endswith(".app"):
-                hotkeys.set_login_item(enabled, ["/usr/bin/open", bundle])
+                hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
             self.saved("Preference saved.")
 
         ttk.Checkbutton(

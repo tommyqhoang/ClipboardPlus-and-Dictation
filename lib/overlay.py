@@ -37,17 +37,17 @@ WINDOW_SAMPLES = 800  # 50 ms of audio per level reading.
 HOLD = {"copied": 1.6, "empty": 2.2, "cancelled": 1.0, "error": 8.0}  # A click dismisses.
 LIFETIME_SECONDS = 1200.0  # A stuck session never leaves the pill up for good.
 
-BACKGROUND = "#13222d"
-EDGE = "#2a3d4a"
-TEXT = "#f3f6f8"
-MUTED = "#9aa8b3"
-ACCENT = "#2dd4bf"
-ACCENT_DIM = "#0f766e"
+BACKGROUND = "#1c1a17"
+EDGE = "#34302a"
+TEXT = "#f7f4ef"
+MUTED = "#a8a095"
+ACCENT = "#f8b142"  # The logo's amber.
+ACCENT_DIM = "#b45309"
 RECORD = "#ef4444"
 SUCCESS = "#34d399"
 DANGER = "#f87171"
-BUTTON = "#1f3240"
-BUTTON_HOVER = "#2c4556"
+BUTTON = "#2a2622"
+BUTTON_HOVER = "#3a352f"
 
 
 def primary_monitor(listing: str) -> tuple[int, int, int, int] | None:

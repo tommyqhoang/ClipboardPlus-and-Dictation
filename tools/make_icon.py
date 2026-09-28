@@ -1,4 +1,4 @@
-"""Render the application icons: a Clipboard+ clipboard with an integrated microphone.
+"""Render the application icons: the Clipboard+ "+" whose crossbar is a sound wave.
 
 Run from the repository root: python3 tools/make_icon.py  (needs Pillow; any OS)
 Writes lib/whisper-dictation.png (runtime window/launcher icon),
@@ -6,10 +6,10 @@ lib/menubar-*.png (macOS menu bar images), lib/tray-recording.png,
 assets/icon-1024.png, assets/icon-recording-1024.png, assets/AppIcon.icns (macOS),
 assets/icon.ico (Windows), and the matching website icons in site/assets/.
 
-The artwork keeps the Clipboard+ orange clipboard, but gives dictation one clear,
-integrated focal point.  A detached circular microphone read like an unread
-notification at small sizes, so the microphone now lives inside the clipboard.
-It turns red while recording.
+One mark for both features: the "+" of Clipboard+, its crossbar drawn as the bars
+of a voice level meter. It stays a plain "+" at 16 px, where detail is lost, and
+reads as "clipboard that listens" at app-icon size. The bars turn red while
+recording.
 """
 
 from __future__ import annotations
@@ -22,94 +22,87 @@ from PIL import Image, ImageDraw  # type: ignore[import-not-found, unused-ignore
 ROOT = Path(__file__).resolve().parents[1]
 SIZE = 1024
 SCALE = 4  # Drawn larger, then reduced, for smooth edges.
-ORANGE = (248, 177, 66, 255)  # The Clipboard+ logo's orange.
+AMBER = (248, 177, 66, 255)  # The Clipboard+ logo's orange.
+TILE_TOP = (46, 42, 37, 255)  # Warm near-black, lighter at the top.
+TILE_BOTTOM = (22, 20, 18, 255)
 INK = (17, 17, 17, 255)
-PAPER = (255, 255, 255, 255)
-RECORDING = (229, 72, 77, 255)
+RECORDING = (239, 68, 68, 255)
+# The crossbar's bars from the stem outwards: half-heights as a share of the stem's
+# half-height. Tallest by the stem, settling to the bar's own thickness, so the
+# outline stays a bold "+" and only the thin gaps show the voice level.
+WAVE = (0.30, 0.24, 0.19)
+GLYPH_WAVE = (0.30, 0.20)  # Fewer bars for the 18 pt menu bar: gaps would blur.
 
 
-def _box(draw: Any, box: tuple[float, float, float, float], radius: float, **style: Any) -> None:
-    draw.rounded_rectangle([v * SCALE for v in box], radius=radius * SCALE, **style)
-
-
-def _circle(draw: Any, cx: float, cy: float, r: float, **style: Any) -> None:
-    draw.ellipse([(cx - r) * SCALE, (cy - r) * SCALE, (cx + r) * SCALE, (cy + r) * SCALE], **style)
-
-
-def _line(
-    draw: Any, a: tuple[float, float], b: tuple[float, float], width: float, fill: Any
-) -> None:
-    draw.line(
-        [a[0] * SCALE, a[1] * SCALE, b[0] * SCALE, b[1] * SCALE],
-        fill=fill,
-        width=int(width * SCALE),
-    )
-    for x, y in (a, b):  # Round caps.
-        _circle(draw, x, y, width / 2, fill=fill)
-
-
-def _microphone(draw: Any, cx: float, cy: float, unit: float, fill: Any) -> None:
-    """A microphone about 3 units wide, centered on (cx, cy)."""
-    _box(
-        draw,
-        (cx - 0.55 * unit, cy - 1.45 * unit, cx + 0.55 * unit, cy + 0.25 * unit),
-        0.55 * unit,
-        fill=fill,
-    )
-    stroke = 0.26 * unit
-    draw.arc(
+def _pill(draw: Any, cx: float, cy: float, width: float, half: float, fill: Any) -> None:
+    """A vertical bar with fully rounded ends, centred on (cx, cy)."""
+    draw.rounded_rectangle(
         [
-            (cx - 1.05 * unit) * SCALE,
-            (cy - 0.85 * unit) * SCALE,
-            (cx + 1.05 * unit) * SCALE,
-            (cy + 0.95 * unit) * SCALE,
+            (cx - width / 2) * SCALE,
+            (cy - half) * SCALE,
+            (cx + width / 2) * SCALE,
+            (cy + half) * SCALE,
         ],
-        start=0,
-        end=180,
+        radius=width / 2 * SCALE,
         fill=fill,
-        width=int(stroke * SCALE),
-    )
-    _line(draw, (cx, cy + 0.95 * unit), (cx, cy + 1.45 * unit), stroke, fill)
-    _line(
-        draw,
-        (cx - 0.55 * unit, cy + 1.45 * unit),
-        (cx + 0.55 * unit, cy + 1.45 * unit),
-        stroke,
-        fill,
     )
 
 
-def render(badge: tuple[int, int, int, int] = INK) -> Any:
-    """The full-color icon on transparency, SIZE x SIZE."""
-    big = SIZE * SCALE
+def _mark(
+    draw: Any,
+    cx: float,
+    cy: float,
+    half: float,
+    stem: tuple[int, int, int, int],
+    wave: tuple[int, int, int, int],
+    levels: tuple[float, ...] = WAVE,
+) -> None:
+    """The "+": a stem `2 * half` tall, and a crossbar of level bars as wide."""
+    stem_width = half * 0.38
+    _pill(draw, cx, cy, stem_width, half, stem)
+    reach = half - stem_width / 2  # Each arm, from the stem's edge to the tip.
+    gap = half * 0.06
+    width = (reach - gap * len(levels)) / len(levels)
+    for index, level in enumerate(levels):
+        offset = stem_width / 2 + gap + index * (width + gap) + width / 2
+        for side in (-1, 1):
+            _pill(draw, cx + side * offset, cy, width, half * level, wave)
+
+
+def _tile(size: int) -> Any:
+    """The app tile: a rounded square on the macOS icon grid, softly lit from above."""
+    big = size * SCALE
+    gradient = Image.new("RGBA", (1, big))
+    for y in range(big):
+        t = y / (big - 1)
+        gradient.putpixel(
+            (0, y), tuple(round(a + (b - a) * t) for a, b in zip(TILE_TOP, TILE_BOTTOM))
+        )
+    gradient = gradient.resize((big, big))
+    mask = Image.new("L", (big, big), 0)
+    inset = 100 / 1024 * big  # Apple's grid: an 824 px tile in a 1024 px canvas.
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [inset, inset, big - inset, big - inset], radius=185 / 1024 * big, fill=255
+    )
     image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    image.paste(gradient, mask=mask)
+    return image
+
+
+def render(recording: bool = False) -> Any:
+    """The full-color icon on transparency, SIZE x SIZE."""
+    image = _tile(SIZE)
     draw = ImageDraw.Draw(image)
-    stroke = 42
-    # The board: black outline, orange face.
-    _box(draw, (214, 196, 750, 900), 86, fill=INK)
-    _box(draw, (214 + stroke, 196 + stroke, 750 - stroke, 900 - stroke), 86 - stroke, fill=ORANGE)
-    # The clip: a ring on top of a bar, white inside.
-    _circle(draw, 482, 150, 74, fill=INK)
-    _circle(draw, 482, 150, 34, fill=PAPER)
-    _circle(draw, 482, 150, 15, fill=INK)
-    _box(draw, (334, 158, 630, 290), 34, fill=INK)
-    _box(draw, (334 + 34, 158 + 34, 630 - 34, 290 - 34), 10, fill=PAPER)
-    # A generous white label makes the microphone readable even at 16 px.  It is
-    # deliberately inset on all sides: a single, unified clipboard mark instead
-    # of a detached lower-corner badge that resembles an unread notification.
-    _box(draw, (306, 384, 658, 752), 58, fill=PAPER)
-    _microphone(draw, 482, 550, 102, badge)
+    _mark(draw, SIZE / 2, SIZE / 2, 285, AMBER, RECORDING if recording else AMBER)
     return image.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
 
 
 def render_glyph(size: int, color: tuple[int, int, int, int]) -> Any:
-    """One-color clipboard-and-microphone silhouette for the macOS menu bar."""
+    """The one-color mark for the macOS menu bar (a template image: macOS tints it)."""
     big = 1024 * SCALE
     image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    _box(draw, (214, 180, 810, 932), 94, outline=color, width=72 * SCALE)
-    _box(draw, (332, 116, 692, 282), 46, fill=color)
-    _microphone(draw, 512, 566, 126, color)
+    _mark(draw, 512, 512, 430, color, color, GLYPH_WAVE)
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
@@ -123,8 +116,8 @@ def main() -> int:
     master.resize((256, 256), Image.Resampling.LANCZOS).save(
         ROOT / "lib/whisper-dictation.png", optimize=True
     )
-    # Windows/Linux tray while recording: the same logo, badge in red.
-    recording = render(RECORDING)
+    # Windows/Linux tray while recording: the same tile, its level bars in red.
+    recording = render(recording=True)
     recording.save(assets / "icon-recording-1024.png", optimize=True)
     recording.resize((256, 256), Image.Resampling.LANCZOS).save(
         ROOT / "lib/tray-recording.png", optimize=True
@@ -139,8 +132,7 @@ def main() -> int:
         assets / "icon.ico",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
-    # The desktop landing page, PWA manifest and native application must show the
-    # same Clipboard+ clipboard-and-microphone mark, never an older microphone-only icon.
+    # The desktop landing page, PWA manifest and native application show one mark.
     for name, size in (
         ("icon-192.png", 192),
         ("icon-512.png", 512),

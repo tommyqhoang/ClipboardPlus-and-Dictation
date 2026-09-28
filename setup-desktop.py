@@ -67,17 +67,18 @@ def windows_shortcut(module: Path, python: Path | None = None, remove: bool = Fa
     payload = {
         "name": hotkeys.APP_NAME + ".lnk",
         "description": "Open " + hotkeys.APP_NAME,
-        "old_names": [
-            "Whisper Dictation.lnk",
-            "Whisper Dictation & Clipboard+.lnk",
-            "Clipboard+ Desktop.lnk",
-        ],
+        "old_names": [name + ".lnk" for name in hotkeys.FORMER_NAMES],
         "python": str(python),
         "arguments": subprocess.list2cmdline([str(module)]),
-        # Earlier versions pointed the shortcut at these modules.
+        # Earlier versions pointed the shortcut at these modules, and installed them
+        # straight into lib rather than lib\whisper-dictation.
         "legacy_arguments": [
-            subprocess.list2cmdline([str(module.with_name(name))])
-            for name in ("app.py", "dictation.py")
+            subprocess.list2cmdline([str(folder / name)])
+            for folder in dict.fromkeys(
+                (module.parent, desktop.install_prefix(module) / LEGACY_LIB)
+            )
+            for name in ("tray.py", "app.py", "dictation.py")
+            if folder / name != module
         ],
         "directory": str(module.parent),
         "icon": str(module.with_name("whisper-dictation.ico")),
@@ -310,7 +311,8 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
         launcher.chmod(0o755)
         # A Finder-friendly launcher for installs opened from the user Applications folder.
         double_click = bindir / f"{hotkeys.APP_NAME}.command"
-        (bindir / "Whisper Dictation.command").unlink(missing_ok=True)
+        for name in hotkeys.FORMER_NAMES:
+            (bindir / f"{name}.command").unlink(missing_ok=True)
         dictation.atomic(
             double_click,
             f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(module.with_name('app.py')))}\n",
@@ -351,6 +353,21 @@ def applications_root(prefix: Path) -> Path:
     return prefix.parent / "Applications"
 
 
+def ours(prefix: Path, bundle: Path) -> bool:
+    """Whether `bundle` is this installation's app bundle (under any name)."""
+    info = bundle / "Contents/Info.plist"
+    launcher = bundle / "Contents/MacOS/WhisperDictation"
+    try:
+        return plistlib.loads(info.read_bytes()).get(
+            "CFBundleIdentifier"
+        ) == "org.whisperdictation.desktop" and any(
+            str(prefix / folder / "menubar.py") in launcher.read_text()
+            for folder in (LIB, LEGACY_LIB)
+        )
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return False
+
+
 def app_bundle(prefix: Path) -> Path:
     return applications_root(prefix) / f"{hotkeys.APP_NAME}.app"
 
@@ -369,36 +386,18 @@ def install_app_launcher(prefix: Path) -> None:
         windows_shortcut(prefix / LIB / "tray.py", python)
     elif desktop.platform_name() == "macos":
         bundle = app_bundle(prefix)
-        # Earlier installs always used ~/Applications; move ours in rather than leave
-        # a stale copy behind when /Applications is writable now.
-        other_root = prefix.parent / "Applications"
-        other_bundle = other_root / f"{hotkeys.APP_NAME}.app"
-        other_info = other_bundle / "Contents/Info.plist"
-        if (
-            not bundle.exists()
-            and other_bundle != bundle
-            and other_info.is_file()
-            and plistlib.loads(other_info.read_bytes()).get("CFBundleIdentifier")
-            == "org.whisperdictation.desktop"
-        ):
-            bundle.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(other_bundle), str(bundle))
-        for old_name in ("Whisper Dictation.app", "Clipboard+ Desktop.app"):
-            legacy = bundle.with_name(old_name)
-            legacy_info = legacy / "Contents/Info.plist"
-            legacy_launcher = legacy / "Contents/MacOS/WhisperDictation"
-            if (
-                not bundle.exists()
-                and legacy_info.is_file()
-                and plistlib.loads(legacy_info.read_bytes()).get("CFBundleIdentifier")
-                == "org.whisperdictation.desktop"
-                and legacy_launcher.is_file()
-                and any(
-                    str(prefix / folder / "menubar.py") in legacy_launcher.read_text()
-                    for folder in (LIB, LEGACY_LIB)
-                )
-            ):
-                legacy.rename(bundle)
+        if not bundle.exists():
+            # Ours under a former name, or in the other Applications folder (earlier
+            # installs always used ~/Applications): moved, rather than left behind.
+            for root in dict.fromkeys((bundle.parent, prefix.parent / "Applications")):
+                for name in (hotkeys.APP_NAME, *hotkeys.FORMER_NAMES):
+                    candidate = root / f"{name}.app"
+                    if candidate != bundle and ours(prefix, candidate):
+                        bundle.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(candidate), str(bundle))
+                        break
+                else:
+                    continue
                 break
         info = bundle / "Contents/Info.plist"
         if bundle.exists() and (
@@ -483,7 +482,10 @@ def launch(prefix: Path) -> None:
                 f"{hotkeys.APP_NAME} was installed, but its macOS app bundle is missing. "
                 "Run the installer again."
             )
-        subprocess.run(["/usr/bin/open", str(bundle)], check=True, timeout=15)
+        # Through the login item when there is one, so launchd restarts it after a
+        # crash from the start, not only after the next login.
+        if not hotkeys.start_login_item():
+            subprocess.run(["/usr/bin/open", str(bundle)], check=True, timeout=15)
     else:
         stop_menubar(dictation.Paths())
         windowed = gui_python(prefix)[1]
@@ -553,8 +555,7 @@ def uninstall(prefix: Path) -> None:
         "share/applications/whisper-dictation.desktop",
         "bin/dictate-toggle",
         "bin/dictate-toggle.cmd",
-        "bin/Whisper Dictation.command",
-        f"bin/{hotkeys.APP_NAME}.command",
+        *(f"bin/{name}.command" for name in (hotkeys.APP_NAME, *hotkeys.FORMER_NAMES)),
     ):
         (prefix / relative).unlink(missing_ok=True)
     if desktop.platform_name() == "linux":
@@ -574,12 +575,15 @@ def uninstall(prefix: Path) -> None:
         shutil.rmtree(venv)
     if desktop.platform_name() == "macos":
         agent = hotkeys.agent_path()
-        # Only remove the login item that launches this installation's bundle.
-        if agent.is_file() and str(app_bundle(prefix)) in plistlib.loads(agent.read_bytes()).get(
-            "ProgramArguments", []
-        ):
-            agent.unlink()
         bundle = app_bundle(prefix)
+        # Only remove the login item that launches this installation's bundle: `open`
+        # on it (older versions) or its executable. Unloaded too, or launchd keeps
+        # trying to start the deleted app.
+        if agent.is_file() and any(
+            argument == str(bundle) or argument.startswith(str(bundle) + "/")
+            for argument in plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])
+        ):
+            hotkeys.set_login_item(False, [])
         info = bundle / "Contents/Info.plist"
         if (
             info.is_file()
@@ -640,7 +644,12 @@ def main() -> int:
             if not os.environ.get("DICTATION_QUICK_INSTALL"):  # It says what happens next.
                 print(f"Installed: {launcher}")
                 print(f"Settings: {dictation.Paths().config}")
-                print(f"Opened {hotkeys.APP_NAME} to finish setup.")
+                # The same marker the window reads: set up before means this was an update.
+                welcome = dictation.Paths().config.parent / "welcome.json"
+                done = dictation.read_json(welcome).get("complete") is True
+                print(
+                    f"Opened {hotkeys.APP_NAME}" + (" (updated)." if done else " to finish setup.")
+                )
         return 0
     except (OSError, dictation.DictationError, subprocess.SubprocessError) as exc:
         print(f"Setup did not complete: {exc}", file=sys.stderr)

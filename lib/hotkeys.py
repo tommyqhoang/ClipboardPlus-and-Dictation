@@ -13,6 +13,7 @@ import shutil
 import string
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -23,7 +24,16 @@ import dictation as d
 # Shown wherever the app names itself. Identifiers, folders and the bundle id keep the
 # original "whisper-dictation" spelling so upgrades keep working.
 # Formerly "Whisper Dictation & Clipboard+"; identifiers below stay stable for upgrades.
-APP_NAME = "Clipboard+ and Dictation"
+APP_NAME = "Clipboard+"
+# Earlier names of the app, newest first: launchers under these are ours to replace.
+FORMER_NAMES = (
+    "Clipboard+ and Dictation",
+    "Clipboard+ Desktop",
+    "Whisper Dictation & Clipboard+",
+    "Whisper Dictation",
+)
+# The dictation shortcut's name in the desktop's keyboard settings.
+DICTATION_SHORTCUT_NAME = f"{APP_NAME}: dictation"
 MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
 MAC_SYMBOLS = {"ctrl": "⌃", "alt": "⌥", "shift": "⇧", "cmd": "⌘"}
 # Carbon (macOS) modifier masks from Events.h.
@@ -365,6 +375,14 @@ def autostart_path(home: Path | None = None) -> Path:
     return (home or Path.home()) / ".config/autostart/whisper-dictation.desktop"
 
 
+def bundle_login_command(bundle: str) -> list[str]:
+    """What the macOS login item runs for the app bundle: its executable itself (not
+    `open`, which returns at once) so launchd supervises the app and KeepAlive can
+    restart it after a crash."""
+    executable = Path(bundle) / "Contents/MacOS/WhisperDictation"
+    return [str(executable)] if executable.is_file() else ["/usr/bin/open", bundle]
+
+
 def set_login_item(
     enabled: bool,
     command: list[str],
@@ -403,7 +421,23 @@ def set_login_item(
             # Come back after a crash or a force quit; a clean Quit stays quit.
             "KeepAlive": {"SuccessfulExit": False},
         }
+        try:
+            loaded = plistlib.loads(path.read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            loaded = None
         d.atomic(path, plistlib.dumps(agent).decode("utf-8"))
+        # launchd keeps a loaded agent's old definition (bootstrap of it is a no-op),
+        # so a changed one is unloaded first: always when it ran `open`, which never
+        # owned the app, otherwise only while the app is not running (it would quit).
+        if (
+            isinstance(loaded, dict)
+            and loaded != agent
+            and (
+                loaded.get("ProgramArguments", [None])[:1] == ["/usr/bin/open"]
+                or _menubar_is_idle()
+            )
+        ):
+            _launchctl("bootout", AGENT_LABEL, run)
         _launchctl("bootstrap", str(path), run)
     else:
         d.atomic(
@@ -412,6 +446,30 @@ def set_login_item(
             f"Exec={shlex.join(command)}\nIcon=whisper-dictation\n"
             "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
         )
+
+
+def start_login_item(run: Any = subprocess.run, sleep: Any = time.sleep) -> bool:
+    """Start the stopped menu bar app through its login item, so launchd supervises it
+    from now on (a plain `open` would not), reloading the agent so launchd runs the
+    definition on disk. False when there is none, or launchd would not take it."""
+    path = agent_path()
+    if not path.is_file():
+        return False
+    _launchctl("bootout", AGENT_LABEL, run)
+    for _ in range(10):  # Booting out finishes in the background.
+        try:
+            result = run(
+                ["launchctl", "bootstrap", f"gui/{desktop.user_id()}", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode == 0:
+            return True
+        sleep(0.2)
+    return False
 
 
 def _launchctl(action: str, argument: str, run: Any) -> None:
@@ -562,7 +620,7 @@ def gnome_shortcut(
     command: Path | list[str],
     run: Any = subprocess.run,
     path: str = GNOME_PATH,
-    name: str = APP_NAME,
+    name: str = DICTATION_SHORTCUT_NAME,
 ) -> bool:
     """Bind the shortcut in GNOME (Wayland apps cannot grab keys themselves).
 

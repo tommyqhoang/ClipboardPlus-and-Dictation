@@ -29,10 +29,10 @@ if TYPE_CHECKING:
 
 API = "https://backend-production-74d4.up.railway.app"
 SITE = "https://clipboardplus.apercallc.com"
-# Opens the account page on its "Create a key for Clipboard+ and Dictation" card.
+# Opens the account page on its desktop app card, where keys for this app are made.
 ACCOUNT_URL = SITE + "/account.html#desktop"
 DASHBOARD_URL = SITE + "/dashboard.html"
-SOURCE = "Clipboard+ and Dictation"
+SOURCE = "Clipboard+ desktop"  # Shown as "Source:" in the extension and website.
 KEY_PREFIX = "cp_live_"
 # The service rejects larger items, so do not upload them.
 MAX_BYTES = 50_000

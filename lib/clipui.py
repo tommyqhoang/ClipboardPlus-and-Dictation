@@ -1057,8 +1057,8 @@ class AccountCard:
             self._label("Not connected", "CardHeading.TLabel")
         if self.mode == "key":
             self._label(
-                "Click Get a key: on your Clipboard+ Account page, choose "
-                "Create a key for Clipboard+ and Dictation, then paste the key here.",
+                "Click Get a key, create a key for the desktop app on your "
+                "Clipboard+ Account page, then paste the key here.",
                 "CardHint.TLabel",
                 pady=(4, 4),
             )

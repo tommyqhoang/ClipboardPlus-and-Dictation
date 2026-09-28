@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import plistlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -212,14 +213,29 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(
             payload["old_names"],
             [
-                "Whisper Dictation.lnk",
-                "Whisper Dictation & Clipboard+.lnk",
+                "Clipboard+ and Dictation.lnk",
                 "Clipboard+ Desktop.lnk",
+                "Whisper Dictation & Clipboard+.lnk",
+                "Whisper Dictation.lnk",
             ],
         )
         script = run.call_args.args[0][-1]
         self.assertIn("$p.name", script)
         self.assertIn("$p.old_names", script)
+
+    def test_windows_shortcut_from_before_the_app_folder_is_still_ours(self):
+        # Older installs pointed it at lib\tray.py; refusing it as "unrelated" failed
+        # every reinstall and uninstall over one.
+        setup = setup_module()
+        prefix = Path(self.id()).resolve()
+        with patch.object(setup.subprocess, "run") as run:
+            setup.windows_shortcut(prefix / setup.LIB / "tray.py", Path("C:/venv/pythonw.exe"))
+        legacy = json.loads(run.call_args.kwargs["input"])["legacy_arguments"]
+        self.assertIn(setup.subprocess.list2cmdline([str(prefix / "lib/tray.py")]), legacy)
+        self.assertIn(setup.subprocess.list2cmdline([str(prefix / setup.LIB / "app.py")]), legacy)
+        self.assertNotIn(
+            setup.subprocess.list2cmdline([str(prefix / setup.LIB / "tray.py")]), legacy
+        )
 
     def test_windows_shortcut_uses_structured_paths(self):
         setup = setup_module()
@@ -345,7 +361,7 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup, "stop_menubar") as stop,
             ):
                 setup.install_app_launcher(prefix)
-                bundle = root / "Applications/Clipboard+ and Dictation.app"
+                bundle = root / "Applications/Clipboard+.app"
                 # The executable itself, so launchd supervises it (KeepAlive).
                 login.assert_called_once_with(
                     True, [str(bundle / "Contents/MacOS/WhisperDictation")]
@@ -361,7 +377,9 @@ class DesktopTests(unittest.TestCase):
                 executable = bundle / "Contents/MacOS/WhisperDictation"
                 self.assertIn("/venv/bin/python", executable.read_text())
                 self.assertIn("menubar.py", executable.read_text())
-                self.assertIn(f"WHISPER_DICTATION_BUNDLE='{bundle}'", executable.read_text())
+                self.assertIn(
+                    f"WHISPER_DICTATION_BUNDLE={shlex.quote(str(bundle))}\n", executable.read_text()
+                )
                 with patch.object(setup.subprocess, "run") as run:
                     setup.launch(prefix)
                     self.assertEqual(run.call_args.args[0][:1], ["/usr/bin/open"])
@@ -380,13 +398,40 @@ class DesktopTests(unittest.TestCase):
 
     def test_macos_upgrade_renames_the_previous_bundle(self):
         setup = setup_module()
+        for name, lib, moved in (
+            ("Clipboard+ Desktop.app", "lib", False),
+            ("Clipboard+ and Dictation.app", setup.LIB, False),
+            # Left in ~/Applications by an earlier install, while /Applications is used now.
+            ("Clipboard+ and Dictation.app", setup.LIB, True),
+        ):
+            with tempfile.TemporaryDirectory() as folder:
+                prefix = Path(folder) / ".local"
+                applications = Path(folder) / ("system/Applications" if moved else "Applications")
+                legacy = prefix.parent / "Applications" / name
+                executable = legacy / "Contents/MacOS/WhisperDictation"
+                executable.parent.mkdir(parents=True)
+                executable.write_text(f"exec python {prefix / lib / 'menubar.py'}")
+                (legacy / "Contents/Info.plist").write_bytes(
+                    plistlib.dumps({"CFBundleIdentifier": "org.whisperdictation.desktop"})
+                )
+                with (
+                    patch.object(setup.desktop, "platform_name", return_value="macos"),
+                    patch.object(setup, "gui_environment", return_value=Path("/venv/bin/python")),
+                    patch.object(setup.hotkeys, "set_login_item"),
+                    patch.object(setup, "applications_root", return_value=applications),
+                ):
+                    setup.install_app_launcher(prefix)
+                self.assertFalse(legacy.exists(), name)
+                self.assertTrue((applications / "Clipboard+.app/Contents/Info.plist").is_file())
+
+    def test_macos_upgrade_leaves_a_bundle_of_another_installation_alone(self):
+        setup = setup_module()
         with tempfile.TemporaryDirectory() as folder:
             prefix = Path(folder) / ".local"
-            bundle = setup.app_bundle(prefix)
-            legacy = bundle.with_name("Clipboard+ Desktop.app")
+            legacy = prefix.parent / "Applications/Clipboard+ and Dictation.app"
             executable = legacy / "Contents/MacOS/WhisperDictation"
             executable.parent.mkdir(parents=True)
-            executable.write_text(f"exec python {prefix / 'lib/menubar.py'}")
+            executable.write_text("exec python /somewhere/else/lib/menubar.py")
             (legacy / "Contents/Info.plist").write_bytes(
                 plistlib.dumps({"CFBundleIdentifier": "org.whisperdictation.desktop"})
             )
@@ -396,8 +441,7 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup.hotkeys, "set_login_item"),
             ):
                 setup.install_app_launcher(prefix)
-            self.assertFalse(legacy.exists())
-            self.assertTrue(bundle.is_dir())
+            self.assertTrue(legacy.exists())
 
     def test_gui_environment_installs_once(self):
         setup = setup_module()
@@ -538,6 +582,34 @@ class DesktopTests(unittest.TestCase):
         sleep.assert_not_called()
         self.assertFalse((paths.runtime / "clip-quit").exists())
         self.assertFalse((paths.runtime / "clip-status.json").exists())
+
+    def test_macos_uninstall_unloads_the_login_item_that_runs_our_executable(self):
+        setup = setup_module()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        prefix = Path(folder.name) / ".local"
+        prefix.mkdir()
+        agent = Path(folder.name) / "agent.plist"
+        bundle = setup.app_bundle(prefix)
+        for program, removed in (
+            ([str(bundle / "Contents/MacOS/WhisperDictation")], True),  # Current versions.
+            (["/usr/bin/open", str(bundle)], True),  # Older versions.
+            (["/usr/bin/open", str(bundle) + " copy.app"], False),  # Someone else's.
+        ):
+            (prefix / ".dictation-install.json").write_text("{}")
+            agent.write_bytes(plistlib.dumps({"ProgramArguments": program}))
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="macos"),
+                patch.object(setup.dictation, "busy", return_value=False),
+                patch.object(setup, "stop_clipboard_service"),
+                patch.object(setup, "stop_menubar"),
+                patch.object(setup.hotkeys, "agent_path", return_value=agent),
+                patch.object(setup.hotkeys, "set_login_item") as login,
+            ):
+                setup.uninstall(prefix)
+            self.assertEqual(login.called, removed, program)
+            if removed:
+                self.assertFalse(login.call_args.args[0])
 
     def test_stop_menubar_requests_quit_and_waits(self):
         setup = setup_module()

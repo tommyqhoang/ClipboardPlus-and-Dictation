@@ -43,7 +43,7 @@ main
             result, leftovers = self.invoke(platform)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(expected, result.stdout)
-            self.assertIn("Clipboard+ and Dictation is open", result.stdout)
+            self.assertIn("Clipboard+ is open", result.stdout)
             self.assertNotIn("--launch-only", result.stdout)
             self.assertNotIn("--setup", result.stdout)
             self.assertEqual(leftovers, [])

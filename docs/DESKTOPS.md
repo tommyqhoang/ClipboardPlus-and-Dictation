@@ -1,8 +1,8 @@
-# Desktop installation and platform notes for Clipboard+ and Dictation
+# Desktop installation and platform notes for Clipboard+
 
 Most users should use the [one-command installer](../README.md#quick-install-no-git-checkout).
 It downloads the application snapshot, installs required runtime dependencies,
-registers a normal desktop launcher, opens Clipboard+ and Dictation automatically, and
+registers a normal desktop launcher, opens Clipboard+ automatically, and
 shows the first-run walkthrough. Users do not need a Git checkout or application
 commands.
 
@@ -11,7 +11,7 @@ commands.
 | Platform | Launcher | Local dependencies |
 | --- | --- | --- |
 | Linux (apt, dnf, pacman, zypper) | Top bar icon (starts at login), application menu, GNOME Super+Shift+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray, Pillow and python-xlib in a private venv |
-| macOS | Menu bar icon from `~/Applications/Clipboard+ and Dictation.app` (starts at login), ⌃⌥⇧D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC and Pillow in a private venv |
+| macOS | Menu bar icon from `/Applications/Clipboard+.app` (starts at login), ⌃⌥⇧D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC and Pillow in a private venv |
 | Windows x64 | System tray icon (starts at login), Start Menu, Win+Shift+D | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp; pystray and Pillow in a private venv |
 
 The Windows bootstrap currently pins whisper.cpp 1.8.7 and verifies the upstream
@@ -79,7 +79,7 @@ repository and has to be deployed and released separately.
 ## Permissions
 
 On macOS, allow microphone access when requested. If it was denied, use System
-Settings → Privacy & Security → Microphone, then reopen Clipboard+ and Dictation.
+Settings → Privacy & Security → Microphone, then reopen Clipboard+.
 
 On Windows, enable microphone access for desktop applications under Privacy &
 security → Microphone. Windows device selection uses the exact DirectShow audio

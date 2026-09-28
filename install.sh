@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="Dictation Toggle"
+APP_NAME="Clipboard+: dictation"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DEST="${HOME}/.local/bin/dictate-toggle"
 MODEL_DIR="${HOME}/.local/share/whisper.cpp/models"
