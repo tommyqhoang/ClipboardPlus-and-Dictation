@@ -1,6 +1,6 @@
 # Clipboard+ for desktop
 
-*Formerly Clipboard+, and before that Whisper Dictation & Clipboard+.* Download page: https://clipboardplus.apercallc.com/desktop.html ·
+*Formerly Clipboard+ and Dictation, and before that Whisper Dictation & Clipboard+.* Download page: https://clipboardplus.apercallc.com/desktop.html ·
 Source: https://github.com/tommyqhoang/ClipboardPlus-and-Dictation
 
 Free desktop app for Linux, macOS, and Windows with two features you can use
@@ -267,7 +267,9 @@ The installer detects your package manager (apt, dnf, pacman or zypper), install
 builds whisper.cpp if necessary, adds Clipboard+ to the application menu,
 and requests the optional GNOME shortcut Super+Shift+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations
-skip GNOME registration. Use `--no-packages` when dependencies are already installed.
+skip GNOME registration, and with no desktop session (over SSH, or in a container)
+the installer says so and the app opens at your next login instead. Use
+`--no-packages` when dependencies are already installed.
 
 For a server-only setup, `./install.sh --http` skips the local model and Whisper
 build. Configure the endpoint before recording. Existing settings are never
