@@ -17,7 +17,11 @@ jobs:
           - os: macos-latest
             spec: packaging/macos/clipboardplus.spec
             wrap: packaging/macos/build-dmg.sh
-            asset: dist/Clipboard+.dmg
+            asset: dist/Clipboard+-macOS-arm64.dmg
+          - os: macos-15-intel
+            spec: packaging/macos/clipboardplus.spec
+            wrap: packaging/macos/build-dmg.sh
+            asset: dist/Clipboard+-macOS-x64.dmg
           - os: windows-latest
             spec: packaging/windows/clipboardplus.spec
             wrap: ""
@@ -141,7 +145,10 @@ jobs:
           bash ${{ matrix.wrap }}
       - name: Wrap (macOS)
         if: runner.os == 'macOS'
-        run: bash ${{ matrix.wrap }}
+        shell: bash
+        run: |
+          bash ${{ matrix.wrap }}
+          mv dist/Clipboard+.dmg "${{ matrix.asset }}"
       - name: Wrap (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
