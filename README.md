@@ -66,7 +66,9 @@ Download the installer for your OS from the
   Installs to your user folder, no admin needed.
 - **Linux**: `Clipboard+-x86_64.AppImage` — `chmod +x` it (or check "Allow
   executing file as program" in your file manager), then double-click. No
-  package manager, no sudo.
+  package manager, no sudo. Needs FUSE to mount itself (present on most
+  desktops already); if it fails to start with a FUSE error, run it with
+  `--appimage-extract-and-run` instead.
 
 No Python, no terminal, no dependencies to install separately — everything
 needed ships inside the download. Prefer a one-line install script instead
