@@ -1,9 +1,14 @@
 ; packaging/windows/clipboardplus.iss
 ; Run after: pyinstaller packaging/windows/clipboardplus.spec
 ; Build with: iscc packaging\windows\clipboardplus.iss
+; CI passes the real version via /DAppVersion=... (see release.yml); this
+; fallback only fires for a manual local build run without that define.
+#ifndef AppVersion
+  #define AppVersion "1.2.1"
+#endif
 [Setup]
 AppName=Clipboard+
-AppVersion=1.2.1
+AppVersion={#AppVersion}
 AppPublisher=Clipboard+
 DefaultDirName={localappdata}\Programs\Clipboard+
 DefaultGroupName=Clipboard+

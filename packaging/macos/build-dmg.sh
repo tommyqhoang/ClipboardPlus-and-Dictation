@@ -5,9 +5,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST="$ROOT/dist/clipboardplus"
 APP="$ROOT/dist/Clipboard+.app"
 
+VERSION="$(python3 -c "import sys; sys.path.insert(0, '$ROOT/lib'); import desktop; print(desktop.APP_VERSION)")"
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
+sed "s/__APP_VERSION__/$VERSION/g" "$ROOT/packaging/macos/Info.plist" > "$APP/Contents/Info.plist"
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp -R "$DIST"/* "$APP/Contents/MacOS/"
 

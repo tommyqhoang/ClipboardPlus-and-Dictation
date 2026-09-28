@@ -82,7 +82,8 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\clipboardplus.iss
+          $version = python -c "import sys; sys.path.insert(0, 'lib'); import desktop; print(desktop.APP_VERSION)"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging\windows\clipboardplus.iss
       - name: Checksum
         shell: bash
         # shasum (not sha256sum) is the one checksum tool present by default on
