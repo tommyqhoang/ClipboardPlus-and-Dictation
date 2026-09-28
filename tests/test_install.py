@@ -32,7 +32,7 @@ class InstallDependencyTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 runtime, build = result.stdout.splitlines()
-                for package in (tk, appindicator, "wl-clipboard", "curl"):
+                for package in (tk, appindicator, "wl-clipboard", "xclip", "curl"):
                     self.assertIn(package, runtime.split())
                 self.assertIn(compiler, build.split())
                 self.assertIn("cmake", build.split())

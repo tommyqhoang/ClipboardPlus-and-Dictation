@@ -71,7 +71,7 @@ select_packages() {
     apt-get)
       RUNTIME_PACKAGES=(alsa-utils ca-certificates curl gir1.2-ayatanaappindicator3-0.1
         gnome-session-canberra libnotify-bin perl python3 python3-gi python3-tk python3-venv
-        util-linux wl-clipboard)
+        util-linux wl-clipboard xclip)
       BUILD_PACKAGES=(build-essential cmake git)
       WHISPER_PACKAGE=whisper.cpp
       OPTIONAL_PACKAGES=(wtype xdotool x11-xserver-utils)
@@ -79,7 +79,7 @@ select_packages() {
       ;;
     dnf)
       RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libayatana-appindicator-gtk3 libnotify
-        perl python3 python3-gobject python3-tkinter util-linux wl-clipboard)
+        perl python3 python3-gobject python3-tkinter util-linux wl-clipboard xclip)
       BUILD_PACKAGES=(cmake gcc-c++ git make)
       # Fedora's whisper-cpp depends on PyTorch and ROCm (8 GiB); build the pinned CPU release.
       WHISPER_PACKAGE=""
@@ -88,7 +88,7 @@ select_packages() {
       ;;
     pacman)
       RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libayatana-appindicator libnotify perl
-        python python-gobject tk util-linux wl-clipboard)
+        python python-gobject tk util-linux wl-clipboard xclip)
       BUILD_PACKAGES=(base-devel cmake git)
       WHISPER_PACKAGE=""
       OPTIONAL_PACKAGES=(wtype xdotool xorg-xrandr)
@@ -96,7 +96,7 @@ select_packages() {
       ;;
     zypper)
       RUNTIME_PACKAGES=(alsa-utils ca-certificates curl libnotify-tools perl python3
-        python3-gobject python3-tk typelib-1_0-AyatanaAppIndicator3-0_1 util-linux wl-clipboard)
+        python3-gobject python3-tk typelib-1_0-AyatanaAppIndicator3-0_1 util-linux wl-clipboard xclip)
       BUILD_PACKAGES=(cmake gcc-c++ git make)
       WHISPER_PACKAGE=""
       OPTIONAL_PACKAGES=(wtype xdotool xrandr)
@@ -158,7 +158,7 @@ PY
 # (and no administrator prompt appears) on a machine that is already ready.
 runtime_missing() {
   local tool
-  for tool in arecord wl-copy notify-send curl; do
+  for tool in arecord wl-copy xclip notify-send curl; do
     need "$tool" || return 0
   done
   find_python || return 0
@@ -173,7 +173,7 @@ No supported package manager found (apt, dnf, pacman or zypper).
 Install these yourself, then re-run with --no-packages:
   - Python 3.10+ with Tk (tkinter), venv and PyGObject (gi)
   - AyatanaAppIndicator3 (libayatana-appindicator) GObject bindings
-  - arecord (alsa-utils), wl-copy (wl-clipboard), notify-send (libnotify), curl
+  - arecord (alsa-utils), wl-copy (wl-clipboard), xclip, notify-send (libnotify), curl
   - whisper-cli (whisper.cpp), or set DICTATION_WHISPER_BIN
 MSG
 }

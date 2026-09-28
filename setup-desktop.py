@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -212,19 +213,36 @@ def gui_environment(prefix: Path) -> Path:
     if python.exists() and subprocess.run(probe, capture_output=True, check=False).returncode == 0:
         return windowed
     print("Installing the menu bar/tray component (one time)...", flush=True)
-    create = [base_python(platform), "-m", "venv", "--clear", str(venv)]
+    # Repair a broken existing environment beside it. A failed pip install must
+    # leave the previous environment intact for an existing desktop launcher.
+    staging = (
+        Path(tempfile.mkdtemp(prefix="venv-update-", dir=venv.parent)) if venv.exists() else None
+    )
+    target = staging / "venv" if staging else venv
+    candidate = target / ("Scripts/python.exe" if platform == "windows" else "bin/python")
+    create = [base_python(platform), "-m", "venv", str(target)]
     if platform == "linux":
         create.insert(3, "--system-site-packages")  # Sees the distribution's GTK bindings.
     requirements = GUI_REQUIREMENTS[platform]
     try:
         subprocess.run(create, check=True)
         subprocess.run(
-            [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--quiet"]
+            [str(candidate), "-m", "pip", "install", "--disable-pip-version-check", "--quiet"]
             + list(requirements),
             check=True,
             timeout=600,
         )
-        subprocess.run(probe, check=True, capture_output=True, text=True)
+        subprocess.run(
+            [str(candidate), "-c", probe_code(platform)], check=True, capture_output=True, text=True
+        )
+        if staging is not None:
+            previous = staging / "previous"
+            venv.rename(previous)
+            try:
+                target.rename(venv)
+            except OSError:
+                previous.rename(venv)
+                raise
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         lines = (getattr(exc, "stderr", None) or "").strip().splitlines()
         detail = f" ({lines[-1]})" if lines else ""
@@ -232,7 +250,39 @@ def gui_environment(prefix: Path) -> Path:
             f"Could not install the menu bar/tray component{detail}. Check your internet "
             f"connection and that your Python includes Tk ({TK_HINT[platform]}), then retry."
         ) from exc
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
     return windowed
+
+
+def legacy_owned(folder: Path) -> bool:
+    """Only migrate/remove the old shared-lib layout when it is recognizably ours."""
+    module = folder / "dictation.py"
+    try:
+        source = module.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    return (folder / "desktop.py").is_file() and (
+        "whisper-dictation" in source or "WhisperDictation" in source
+    )
+
+
+def remove_legacy_files(folder: Path) -> None:
+    """Leave ambiguous names in the shared lib folder for their current owner."""
+    for name in MODULES:
+        module = folder / name
+        try:
+            source = module.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        if "whisper-dictation" not in source and "WhisperDictation" not in source:
+            continue
+        module.unlink()
+        for compiled in (folder / "__pycache__").glob(Path(name).stem + ".*.pyc"):
+            compiled.unlink()
+    for name in ("whisper-dictation.png", "whisper-dictation.ico"):
+        (folder / name).unlink(missing_ok=True)
 
 
 def kill_lock_holder(lock: Path) -> None:
@@ -287,6 +337,11 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
     if dictation.busy(paths):
         raise dictation.DictationError("Finish the current dictation before installing.")
     module = prefix / LIB / "dictation.py"
+    # On an update, keep the running version intact if repairing its GUI
+    # dependencies fails. The launcher would otherwise load new modules with
+    # an old environment that may lack packages they now import.
+    if shortcut and module.is_file():
+        gui_environment(prefix)
     bindir = prefix / "bin"
     # Shared folders (often symlinked by dotfiles): create them, never re-permission
     # them. The files written into them are owner-only.
@@ -298,8 +353,8 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
     for source, name in ICONS:
         if source.is_file():
             shutil.copyfile(source, module.parent / name)
-    if (prefix / LEGACY_LIB / "dictation.py").is_file():
-        remove_app_files(prefix / LEGACY_LIB)  # Moved into the app's own folder.
+    if legacy_owned(prefix / LEGACY_LIB):
+        remove_legacy_files(prefix / LEGACY_LIB)  # Moved into the app's own folder.
     if desktop.platform_name() == "windows":
         launcher = bindir / "dictate-toggle.cmd"
         python = str(Path(sys.executable)).replace("%", "%%")
@@ -334,14 +389,14 @@ def install(prefix: Path, shortcut: bool = True) -> Path:
     previous_shortcut = dictation.read_json(prefix / ".dictation-install.json").get(
         "shortcut", False
     )
+    if shortcut:
+        install_app_launcher(prefix)
     dictation.atomic(
         prefix / ".dictation-install.json",
         json.dumps(
             {"shortcut": previous_shortcut or (shortcut and desktop.platform_name() == "windows")}
         ),
     )
-    if shortcut:
-        install_app_launcher(prefix)
     return launcher
 
 
@@ -557,8 +612,9 @@ def uninstall(prefix: Path) -> None:
         windowed = gui_python(prefix)[1]
         if windowed.exists():
             hotkeys.set_login_item(False, tray_command(prefix, windowed))
-    for folder in (prefix / LIB, prefix / LEGACY_LIB):
-        remove_app_files(folder)
+    remove_app_files(prefix / LIB)
+    if legacy_owned(prefix / LEGACY_LIB):
+        remove_legacy_files(prefix / LEGACY_LIB)
     if (prefix / LIB).is_dir() and not any((prefix / LIB).iterdir()):
         (prefix / LIB).rmdir()
     for relative in (

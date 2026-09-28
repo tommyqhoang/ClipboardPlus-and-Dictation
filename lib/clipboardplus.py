@@ -38,6 +38,9 @@ KEY_PREFIX = "cp_live_"
 MAX_BYTES = 50_000
 BATCH = 100  # Items per /sync request.
 MAX_REPLY = 16 * 1024 * 1024
+# `sync_key` converts service timestamps to a Python datetime. Ignore malformed
+# rows rather than letting a non-finite or out-of-range value stop all sync.
+MAX_CREATED_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 SCOPES = ["clipboard:read", "clipboard:write"]
 GOOGLE_ONLY = (
@@ -359,6 +362,14 @@ def _epoch(stamp: object, fallback: float) -> float:
     return fallback
 
 
+def _created_ms(stamp: object) -> int | None:
+    if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+        return None
+    if not 0 < stamp <= MAX_CREATED_MS:
+        return None
+    return int(stamp)
+
+
 def _cloud_item(raw: object) -> CloudItem | None:
     if not isinstance(raw, dict):
         return None
@@ -369,7 +380,8 @@ def _cloud_item(raw: object) -> CloudItem | None:
         return None
     text = raw.get("content" if kind == "text" else "url")
     stamp = raw.get("ts")
-    if not isinstance(text, str) or not text or not isinstance(stamp, (int, float)) or stamp <= 0:
+    created = _created_ms(stamp)
+    if not isinstance(text, str) or not text or created is None:
         return None
     label, source = raw.get("label"), raw.get("source")
     return CloudItem(
@@ -379,8 +391,8 @@ def _cloud_item(raw: object) -> CloudItem | None:
         label=label if isinstance(label, str) else "",
         favorite=raw.get("isFavorite") is True,
         source=source if isinstance(source, str) else "",
-        created_ms=int(stamp),
-        updated_at=_epoch(raw.get("updatedAt"), stamp / 1000),
+        created_ms=created,
+        updated_at=_epoch(raw.get("updatedAt"), created / 1000),
     )
 
 
@@ -388,9 +400,10 @@ def _removed(raw: object) -> Removed | None:
     if not isinstance(raw, dict) or raw.get("type") not in ("text", "url"):
         return None
     stamp, prefix = raw.get("ts"), raw.get("contentPrefix")
-    if not isinstance(stamp, (int, float)) or stamp <= 0:
+    created = _created_ms(stamp)
+    if created is None:
         return None
-    return Removed(str(raw["type"]), int(stamp), prefix if isinstance(prefix, str) else "")
+    return Removed(str(raw["type"]), created, prefix if isinstance(prefix, str) else "")
 
 
 class Cloud:

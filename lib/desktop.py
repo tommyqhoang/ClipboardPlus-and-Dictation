@@ -196,8 +196,17 @@ def copy_image(values: dict[str, Any], path: Path, run: Any = subprocess.run) ->
     system = platform_name()
     try:
         if system == "macos":
-            script = f'set the clipboard to (read (POSIX file "{path}") as «class PNGf»)'
-            run(["/usr/bin/osascript", "-e", script], timeout=10, check=True, capture_output=True)
+            script = (
+                "on run argv\n"
+                "set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)\n"
+                "end run"
+            )
+            run(
+                ["/usr/bin/osascript", "-e", script, str(path)],
+                timeout=10,
+                check=True,
+                capture_output=True,
+            )
         elif system == "windows":
             command = [
                 str(values["powershell"]),
@@ -209,8 +218,23 @@ def copy_image(values: dict[str, Any], path: Path, run: Any = subprocess.run) ->
             ]
             run(command, timeout=15, check=True, capture_output=True, **process_options())
         else:
-            command = executable(str(values["wl_copy"])) + ["--type", "image/png"]
-            run(command, input=path.read_bytes(), timeout=5, check=True, capture_output=True)
+            backend = str(values.get("clipboard_backend", "auto"))
+            use_wayland = backend == "wayland" or (
+                backend == "auto" and bool(os.environ.get("WAYLAND_DISPLAY"))
+            )
+            command = (
+                executable(str(values["wl_copy"])) + ["--type", "image/png"]
+                if use_wayland
+                else ["xclip", "-selection", "clipboard", "-in", "-t", "image/png"]
+            )
+            # xclip forks to keep ownership of the X11 selection. Its child keeps
+            # inherited pipes open, so capturing output would wait until timeout.
+            output = (
+                {"capture_output": True}
+                if use_wayland
+                else {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            )
+            run(command, input=path.read_bytes(), timeout=5, check=True, **output)
     except subprocess.SubprocessError as exc:
         raise OSError("Could not copy the image to the clipboard.") from exc
 
@@ -218,9 +242,15 @@ def copy_image(values: dict[str, Any], path: Path, run: Any = subprocess.run) ->
 def clipboard_command(values: dict[str, Any]) -> list[str]:
     backend = str(values["clipboard_backend"])
     if backend == "auto":
-        backend = {"linux": "wayland", "macos": "pbcopy", "windows": "powershell"}[platform_name()]
+        backend = {
+            "linux": "wayland" if os.environ.get("WAYLAND_DISPLAY") else "x11",
+            "macos": "pbcopy",
+            "windows": "powershell",
+        }[platform_name()]
     if backend == "wayland":
         return executable(str(values["wl_copy"])) + ["--type", "text/plain;charset=utf-8"]
+    if backend == "x11":
+        return ["xclip", "-selection", "clipboard", "-in", "-t", "UTF8_STRING"]
     if backend == "pbcopy":
         return ["/usr/bin/pbcopy"]
     return [

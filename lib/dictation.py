@@ -172,8 +172,10 @@ class Config:
             raise DictationError("backend must be local or http.")
         if self.s("audio_backend") not in ("auto", "alsa", "avfoundation", "dshow"):
             raise DictationError("audio_backend must be auto, alsa, avfoundation, or dshow.")
-        if self.s("clipboard_backend") not in ("auto", "wayland", "pbcopy", "powershell"):
-            raise DictationError("clipboard_backend must be auto, wayland, pbcopy, or powershell.")
+        if self.s("clipboard_backend") not in ("auto", "wayland", "x11", "pbcopy", "powershell"):
+            raise DictationError(
+                "clipboard_backend must be auto, wayland, x11, pbcopy, or powershell."
+            )
         models = Path.home() / ".local/share/whisper.cpp/models"
         if not self.s("model"):
             selected = models / "dictation-model.bin"
@@ -317,7 +319,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def transcribe(config: Config, pcm: bytes, cache: Path) -> str:
+def transcribe(config: Config, pcm: bytes, cache: Path, *, timeout: int | None = None) -> str:
+    timeout = config.n("timeout") if timeout is None else timeout
     if len(pcm) < 3200 or not any(pcm):
         return ""
     if config.s("backend") == "local":
@@ -325,7 +328,7 @@ def transcribe(config: Config, pcm: bytes, cache: Path) -> str:
 
         # A ready engine (model already in memory) answers far faster than a fresh
         # whisper-cli start; any problem falls back to the usual path below.
-        text = engine.transcribe(config, config.paths, wav_bytes(pcm), config.n("timeout"))
+        text = engine.transcribe(config, config.paths, wav_bytes(pcm), timeout)
         if text is not None:
             return clean_text(text, config.b("voice_commands"))
         with tempfile.TemporaryDirectory(prefix="inference-", dir=cache) as folder:
@@ -351,7 +354,7 @@ def transcribe(config: Config, pcm: bytes, cache: Path) -> str:
                 result = subprocess.run(
                     args,
                     capture_output=True,
-                    timeout=config.n("timeout"),
+                    timeout=timeout,
                     check=False,
                     **desktop.process_options(),
                 )
@@ -392,7 +395,7 @@ def transcribe(config: Config, pcm: bytes, cache: Path) -> str:
         request = urllib.request.Request(config.s("endpoint"), data=bytes(body), headers=headers)
         try:
             with urllib.request.build_opener(NoRedirect()).open(
-                request, timeout=config.n("timeout")
+                request, timeout=timeout
             ) as response:
                 data = response.read(1024 * 1024 + 1)
             if len(data) > 1024 * 1024:
@@ -709,7 +712,11 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                     size = paths.audio.stat().st_size
                     audio.seek(max(0, size - config.n("live_window") * 32000) // 2 * 2)
                     pcm = audio.read(config.n("live_window") * 32000)
-                pending = executor.submit(transcribe, config, pcm, paths.cache)
+                # A preview is optional. Bound it independently so Stop/Cancel cannot
+                # wait for the full final-transcription timeout.
+                pending = executor.submit(
+                    transcribe, config, pcm, paths.cache, timeout=min(5, config.n("timeout"))
+                )
             time.sleep(0.05)
         stop_recorder(recorder)
         loading = (
@@ -858,6 +865,10 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
             while True:
                 current = read_json(paths.state)
                 if current.get("token") == token and current.get("phase") != "starting":
+                    if current.get("phase") in ("error", "interrupted"):
+                        raise DictationError(
+                            str(current.get("message") or "Session worker could not start.")
+                        )
                     break
                 if child.poll() is not None:
                     raise DictationError(

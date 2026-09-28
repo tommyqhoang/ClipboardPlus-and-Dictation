@@ -124,6 +124,22 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(followed, [])
 
 
+class CloudParsingTests(unittest.TestCase):
+    def test_malformed_timestamps_are_skipped_without_stopping_a_pull(self):
+        valid = {
+            "id": "12345678-1234-1234-1234-123456789abc",
+            "type": "text",
+            "content": "safe",
+            "ts": 1_790_424_000_123,
+        }
+        for bad in (True, 0, -1, float("nan"), float("inf"), 10**1000):
+            with self.subTest(timestamp=bad):
+                self.assertIsNone(cp._cloud_item({**valid, "ts": bad}))
+                self.assertIsNone(cp._removed({"type": "text", "ts": bad}))
+        self.assertEqual(cp._cloud_item(valid).created_ms, valid["ts"])
+        self.assertEqual(cp._removed({"type": "text", "ts": valid["ts"]}).created_ms, valid["ts"])
+
+
 class DictationUploadTests(unittest.TestCase):
     """Uploading is the sync engine's job now: dictation only records the transcript."""
 

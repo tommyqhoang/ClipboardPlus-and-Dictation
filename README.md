@@ -25,6 +25,7 @@ is new; there is no signed app bundle or MSI installer yet. See
 | Platform | Installed launcher | Microphone | Clipboard (dictation) | Clipboard history capture |
 | --- | --- | --- | --- | --- |
 | Linux/Wayland | Top bar icon + GNOME shortcut | ALSA/PipeWire via arecord | wl-copy | `wl-paste --watch` where the desktop allows it, otherwise X11 selection events (also under XWayland) |
+| Linux/X11 | Top bar icon + GNOME shortcut | ALSA/PipeWire via arecord | xclip | X11 selection events |
 | macOS | Menu bar (`/Applications/Clipboard+.app`) | FFmpeg AVFoundation | pbcopy | Pasteboard change count, polled twice a second |
 | Windows x64 | System tray + Start Menu | FFmpeg DirectShow | Windows clipboard | Clipboard sequence number, polled four times a second |
 

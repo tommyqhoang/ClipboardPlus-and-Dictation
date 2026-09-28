@@ -264,6 +264,43 @@ class AccountSwitchTests(SyncCase):
         syncer.step(self.now)  # No key at all, and no earlier engine.
         self.assertEqual(self.store.get(item.id).cloud_id, "cloud-old")
 
+    def test_immediate_account_switch_forgets_an_in_flight_rounds_old_ids(self):
+        self.link()
+        syncer = self.syncer(threaded=True)
+        item = self.store.add_text("mine", now=1.0)
+        syncer.step(self.now)
+        syncer.wait(5)
+        old_engine = self.engines[0]
+        entered = threading.Event()
+        release = threading.Event()
+
+        def finish_old_round() -> clipsync.Report:
+            entered.set()
+            release.wait(5)
+            self.store.mark_pushed(item.id, "text|old|mine")
+            self.store.link(item.id, "cloud-old", False)
+            self.store.meta_set(clipstore.META_CURSOR, "5.0")
+            return clipsync.Report()
+
+        old_engine.run_once = finish_old_round  # type: ignore[method-assign]
+        self.now += 61
+        syncer.step(self.now)
+        self.assertTrue(entered.wait(5))
+        # Release the old worker after the window has reset metadata and saved the
+        # replacement key; the service has not yet observed an unlinked interval.
+        self.store.reset_sync()
+        self.link(OTHER_KEY)
+        release.set()
+        syncer.wait(5)
+        self.assertEqual(self.store.get(item.id).cloud_id, "cloud-old")
+        self.now += 1
+        syncer.step(self.now)
+        syncer.wait(5)
+        kept = self.store.get(item.id)
+        self.assertEqual((kept.cloud_id, kept.cloud_key, kept.dirty), ("", "", True))
+        self.assertEqual(self.store.meta_get(clipstore.META_CURSOR), "")
+        self.assertEqual(self.engines[1].key, OTHER_KEY)
+
 
 class ThreadTests(SyncCase):
     def test_a_slow_round_never_blocks_the_caller_and_never_overlaps(self):

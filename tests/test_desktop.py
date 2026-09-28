@@ -323,8 +323,10 @@ class DesktopTests(unittest.TestCase):
             root = Path(folder)
             shared = root / ".local/lib"
             shared.mkdir(parents=True)
-            for name in ("dictation.py", "app.py", "tray-recording.png"):
+            for name in ("dictation.py", "app.py", "tray-recording.png", "desktop.py"):
                 (shared / name).write_text("old")
+            (shared / "dictation.py").write_text("# whisper-dictation old installation")
+            (shared / "desktop.py").write_text("# whisper-dictation old desktop")
             (shared / "someone-elses.py").write_text("keep me")
             with (
                 patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(root / "run")}),
@@ -333,9 +335,86 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup, "install_app_launcher"),
             ):
                 setup.install(root / ".local")
-            self.assertEqual([path.name for path in shared.glob("*.py")], ["someone-elses.py"])
-            self.assertFalse((shared / "tray-recording.png").exists())
+            self.assertEqual(
+                {path.name for path in shared.glob("*.py")}, {"app.py", "someone-elses.py"}
+            )
+            self.assertTrue((shared / "tray-recording.png").exists())
             self.assertTrue((shared / "whisper-dictation/dictation.py").is_file())
+
+    def test_shared_legacy_names_are_kept_when_they_are_not_ours(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            prefix = root / ".local"
+            shared = prefix / "lib"
+            shared.mkdir(parents=True)
+            for name in ("dictation.py", "desktop.py", "app.py"):
+                (shared / name).write_text("someone else's module")
+            with (
+                patch.dict(
+                    os.environ,
+                    {"XDG_RUNTIME_DIR": str(root / "run"), "XDG_CONFIG_HOME": str(root / "config")},
+                ),
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup, "install_app_launcher"),
+            ):
+                setup.install(prefix)
+                setup.uninstall(prefix)
+            self.assertEqual((shared / "app.py").read_text(), "someone else's module")
+            self.assertEqual((shared / "dictation.py").read_text(), "someone else's module")
+
+    def test_non_utf8_legacy_module_is_not_treated_as_ours(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            shared = Path(folder)
+            (shared / "dictation.py").write_bytes(b"\xff\xfe")
+            (shared / "desktop.py").write_text("other app", encoding="utf-8")
+            self.assertFalse(setup.legacy_owned(shared))
+
+    def test_failed_launcher_registration_does_not_write_receipt(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            prefix = root / ".local"
+            with (
+                patch.dict(
+                    os.environ,
+                    {"XDG_RUNTIME_DIR": str(root / "run"), "XDG_CONFIG_HOME": str(root / "config")},
+                ),
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup, "install_app_launcher", side_effect=OSError("launcher failed")),
+                self.assertRaisesRegex(OSError, "launcher failed"),
+            ):
+                setup.install(prefix)
+            self.assertFalse((prefix / ".dictation-install.json").exists())
+
+    def test_failed_gui_repair_keeps_existing_modules_during_update(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            prefix = root / ".local"
+            existing = prefix / setup.LIB / "dictation.py"
+            existing.parent.mkdir(parents=True)
+            existing.write_text("old working module", encoding="utf-8")
+            receipt = prefix / ".dictation-install.json"
+            receipt.write_text('{"shortcut": true}', encoding="utf-8")
+            with (
+                patch.dict(
+                    os.environ,
+                    {"XDG_RUNTIME_DIR": str(root / "run"), "XDG_CONFIG_HOME": str(root / "config")},
+                ),
+                patch.object(
+                    setup,
+                    "gui_environment",
+                    side_effect=dictation.DictationError("dependency failed"),
+                ),
+                patch.object(setup, "install_app_launcher") as launcher,
+                self.assertRaisesRegex(dictation.DictationError, "dependency failed"),
+            ):
+                setup.install(prefix)
+            self.assertEqual(existing.read_text(encoding="utf-8"), "old working module")
+            self.assertEqual(receipt.read_text(encoding="utf-8"), '{"shortcut": true}')
+            launcher.assert_not_called()
 
     def test_notifications_carry_the_product_name(self):
         import hotkeys
@@ -582,6 +661,31 @@ class DesktopTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(dictation.DictationError, "no _tkinter"):
                     setup.gui_environment(Path(folder))
+
+    def test_failed_environment_repair_preserves_the_previous_venv(self):
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder)
+            venv = prefix / "share/whisper-dictation/venv"
+            (venv / "bin").mkdir(parents=True)
+            (venv / "bin/python").write_text("existing interpreter")
+            (venv / "pyvenv.cfg").write_text("existing settings")
+            with (
+                patch.object(setup.desktop, "platform_name", return_value="linux"),
+                patch.object(setup, "base_python", return_value="python3"),
+                patch.object(
+                    setup.subprocess,
+                    "run",
+                    side_effect=[
+                        Mock(returncode=1),
+                        setup.subprocess.CalledProcessError(1, "venv"),
+                    ],
+                ),
+                self.assertRaises(dictation.DictationError),
+            ):
+                setup.gui_environment(prefix)
+            self.assertEqual((venv / "bin/python").read_text(), "existing interpreter")
+            self.assertEqual((venv / "pyvenv.cfg").read_text(), "existing settings")
 
     def clipboard_runtime(self):
         folder = tempfile.TemporaryDirectory()

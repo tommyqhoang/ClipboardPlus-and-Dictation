@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -314,7 +315,9 @@ class DictationTests(unittest.TestCase):
 
     def test_start_failure_and_stale_state(self):
         (self.root / "recorder-fail").touch()
-        self.cli()
+        failed = self.cli(ok=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Microphone could not start", failed.stderr)
         self.wait_phase("error")
         d.atomic(self.paths.state, '{"phase":"recording","token":"old"}')
         self.assertEqual(json.loads(self.cli("--status").stdout)["phase"], "interrupted")
@@ -326,6 +329,153 @@ class DictationTests(unittest.TestCase):
             d.finish(self.config, self.paths)
         self.assertTrue(self.paths.audio.exists())
         self.assertTrue(self.paths.text.exists())
+
+    def test_linux_auto_clipboard_uses_x11_without_wayland(self):
+        self.config.values["clipboard_backend"] = "auto"
+        with (
+            patch.object(d.desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {"DISPLAY": ":7"}, clear=True),
+            patch.object(d.subprocess, "run") as run,
+        ):
+            d.copy_text(self.config, self.paths, "Hello X11")
+            self.assertEqual(
+                run.call_args.args[0],
+                ["xclip", "-selection", "clipboard", "-in", "-t", "UTF8_STRING"],
+            )
+            self.assertEqual(run.call_args.kwargs["input"], b"Hello X11")
+
+    def test_linux_image_copy_uses_x11_without_wayland(self):
+        image = self.root / "saved.png"
+        image.write_bytes(b"PNG fixture")
+        run = Mock()
+        self.config.values["clipboard_backend"] = "auto"
+        with (
+            patch.object(d.desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {"DISPLAY": ":7"}, clear=True),
+        ):
+            d.desktop.copy_image(self.config.values, image, run=run)
+            self.assertEqual(
+                run.call_args.args[0],
+                ["xclip", "-selection", "clipboard", "-in", "-t", "image/png"],
+            )
+            self.assertEqual(run.call_args.kwargs["input"], b"PNG fixture")
+            self.assertEqual(run.call_args.kwargs["stdout"], subprocess.DEVNULL)
+            self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+
+    def test_explicit_x11_image_copy_honors_backend_on_mixed_desktop(self):
+        image = self.root / "saved.png"
+        image.write_bytes(b"PNG fixture")
+        run = Mock()
+        self.config.values["clipboard_backend"] = "x11"
+        with (
+            patch.object(d.desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":7"}),
+        ):
+            d.desktop.copy_image(self.config.values, image, run=run)
+        self.assertEqual(run.call_args.args[0][0], "xclip")
+
+    def test_macos_image_path_is_passed_as_data_to_applescript(self):
+        image = self.root / 'image " quoted.png'
+        run = Mock()
+        with (
+            patch.object(d.desktop, "platform_name", return_value="macos"),
+        ):
+            d.desktop.copy_image(self.config.values, image, run=run)
+            command = run.call_args.args[0]
+            self.assertNotIn(str(image), command[2])
+            self.assertEqual(command[3], str(image))
+
+    def test_live_preview_uses_short_independent_timeout(self):
+        self.config.values.update(backend="http", live=True, live_interval=1, timeout=120)
+        token = "preview-limit"
+        fd = d.lock(self.paths.runtime / "session.lock")
+        self.assertIsNotNone(fd)
+        preview_started = threading.Event()
+        observed = []
+
+        def fake_transcribe(_config, _pcm, _cache, *, timeout=None):
+            observed.append(timeout)
+            preview_started.set()
+            return "draft" if timeout is not None else "final"
+
+        def stop_after_preview():
+            self.assertTrue(preview_started.wait(5))
+            d.atomic(self.paths.control, json.dumps({"token": token, "action": "stop"}))
+
+        stopper = threading.Thread(target=stop_after_preview, daemon=True)
+        stopper.start()
+        previous_term, previous_int = (
+            signal.getsignal(signal.SIGTERM),
+            signal.getsignal(signal.SIGINT),
+        )
+        try:
+            with (
+                patch.object(d, "transcribe", side_effect=fake_transcribe),
+                patch.object(d, "start_overlay", return_value=None),
+                patch.object(d, "notify"),
+                patch.object(d, "copy_text"),
+                patch.object(d, "record_transcript"),
+                patch.object(d, "paste_text", return_value=False),
+            ):
+                d.worker(self.config, self.paths, fd, token)
+        finally:
+            signal.signal(signal.SIGTERM, previous_term)
+            signal.signal(signal.SIGINT, previous_int)
+            stopper.join(timeout=1)
+        self.assertIn(5, observed)
+        self.assertIn(None, observed)
+
+    def test_cancel_does_not_wait_for_full_remote_preview_timeout(self):
+        request_received = threading.Event()
+        release_request = threading.Event()
+
+        class SlowPreview(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                request_received.set()
+                release_request.wait(8)  # Watchdog: the old 120 s behavior fails quickly.
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), SlowPreview)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(release_request.set)
+        self.config.values.update(
+            backend="http",
+            endpoint=f"http://127.0.0.1:{server.server_port}/transcribe",
+            live=True,
+            live_interval=1,
+            timeout=120,
+        )
+        token = "slow-preview"
+        fd = d.lock(self.paths.runtime / "session.lock")
+        self.assertIsNotNone(fd)
+        cancelled_at = []
+
+        def cancel_during_preview():
+            if request_received.wait(5):
+                cancelled_at.append(time.monotonic())
+                d.atomic(self.paths.control, json.dumps({"token": token, "action": "cancel"}))
+
+        stopper = threading.Thread(target=cancel_during_preview, daemon=True)
+        stopper.start()
+        previous_term = signal.getsignal(signal.SIGTERM)
+        previous_int = signal.getsignal(signal.SIGINT)
+        try:
+            with patch.object(d, "start_overlay", return_value=None), patch.object(d, "notify"):
+                d.worker(self.config, self.paths, fd, token)
+        finally:
+            signal.signal(signal.SIGTERM, previous_term)
+            signal.signal(signal.SIGINT, previous_int)
+            release_request.set()
+            stopper.join(timeout=1)
+        self.assertTrue(cancelled_at, "The preview request never started")
+        self.assertLess(time.monotonic() - cancelled_at[0], 7)
+        self.assertEqual(d.read_json(self.paths.state)["result"], "cancelled")
 
     def test_cleaning_preserves_real_words(self):
         self.assertEqual(d.clean_text("music"), "music")

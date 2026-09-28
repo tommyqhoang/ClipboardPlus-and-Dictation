@@ -8,10 +8,17 @@ APP_LIB="${HOME}/.local/lib/whisper-dictation"
 LEGACY_LIB="${HOME}/.local/lib" # Where versions before the app's own folder lived.
 MODULES="telemetry dictation desktop onboarding rewriting workflow app app_service hotkeys menubar tray clipboardplus clipstore clipwatch clipwatch_linux clipwatch_macos clipwatch_windows clipservice clipsync clipcontrol clipui overlay updates engine"
 
+# Old versions used the shared ~/.local/lib folder. Its generic names may now
+# belong to another application, so remove them only when the old layout is ours.
+legacy_owned() {
+  [[ -f "${LEGACY_LIB}/dictation.py" && -f "${LEGACY_LIB}/desktop.py" ]] &&
+    grep -Eq 'whisper-dictation|WhisperDictation' "${LEGACY_LIB}/dictation.py"
+}
+
 # Never signal a PID read from disk; only the session supervisor owns the recorder.
-for library in "$APP_LIB" "$LEGACY_LIB"; do
-  if [[ -f "${library}/dictation.py" ]]; then
-    python3 - "$library" <<'PY'
+library="$APP_LIB"
+if [[ -f "${library}/dictation.py" ]]; then
+  python3 - "$library" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 from dictation import Paths, busy
@@ -29,9 +36,7 @@ python = desktop.install_prefix(library / "app.py") / "share/whisper-dictation/v
 hotkeys.set_login_item(False, [str(python), str(library / "tray.py")])
 hotkeys.gnome_remove(hotkeys.history_command(library, str(python)), path=hotkeys.GNOME_HISTORY_PATH)
 PY
-    break
-  fi
-done
+fi
 if command -v gsettings >/dev/null 2>&1; then
   if current="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null)"; then
     updated="$(printf '%s' "$current" | sed "s#'${KEYBINDING_PATH}', ##g; s#, '${KEYBINDING_PATH}'##g; s#'${KEYBINDING_PATH}'##g")"
@@ -42,10 +47,20 @@ fi
 rm -f "$BIN_DEST" "${HOME}/.config/autostart/whisper-dictation.desktop" "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/bin/Whisper Dictation.command" "${HOME}/.local/.dictation-install.json"
 # Only this app's own files: other tools may share ~/.local/lib.
 for library in "$APP_LIB" "$LEGACY_LIB"; do
+  if [[ "$library" == "$LEGACY_LIB" ]] && ! legacy_owned; then
+    continue
+  fi
   for module in $MODULES; do
+    if [[ "$library" == "$LEGACY_LIB" ]] &&
+      { [[ ! -f "${library}/${module}.py" ]] || ! grep -Eq 'whisper-dictation|WhisperDictation' "${library}/${module}.py"; }; then
+      continue
+    fi
     rm -f "${library}/${module}.py" "${library}/__pycache__/${module}".*.pyc
   done
   for asset in tray-recording.png menubar-icon.png menubar-recording.png whisper-dictation.png whisper-dictation.ico; do
+    if [[ "$library" == "$LEGACY_LIB" && "$asset" != whisper-dictation.* ]]; then
+      continue
+    fi
     rm -f "${library}/${asset}"
   done
   rmdir "${library}/__pycache__" 2>/dev/null || true

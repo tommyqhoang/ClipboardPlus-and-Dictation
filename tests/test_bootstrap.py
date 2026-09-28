@@ -43,7 +43,7 @@ main
             result, leftovers = self.invoke(platform)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(expected, result.stdout)
-            self.assertIn("Clipboard+ is open", result.stdout)
+            self.assertIn("Clipboard+ is installed", result.stdout)
             self.assertNotIn("--launch-only", result.stdout)
             self.assertNotIn("--setup", result.stdout)
             self.assertEqual(leftovers, [])
@@ -76,6 +76,48 @@ main
             script,
         )
         self.assertIn("whisper-1.8.7", script)
+
+    def test_uninstall_keeps_unrelated_modules_in_shared_lib(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            shared = home / ".local/lib"
+            shared.mkdir(parents=True)
+            for name in ("dictation.py", "desktop.py", "app.py"):
+                (shared / name).write_text("unrelated application", encoding="utf-8")
+            script = "gsettings() { return 1; }; source " + shlex.quote(str(ROOT / "uninstall.sh"))
+            result = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                env=os.environ | {"HOME": str(home)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in ("dictation.py", "desktop.py", "app.py"):
+                self.assertEqual(
+                    (shared / name).read_text(encoding="utf-8"), "unrelated application"
+                )
+
+    def test_uninstall_keeps_mixed_ownership_in_shared_lib(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            shared = home / ".local/lib"
+            shared.mkdir(parents=True)
+            (shared / "dictation.py").write_text("# whisper-dictation old app", encoding="utf-8")
+            (shared / "desktop.py").write_text("# whisper-dictation old desktop", encoding="utf-8")
+            (shared / "app.py").write_text("unrelated application", encoding="utf-8")
+            script = "gsettings() { return 1; }; source " + shlex.quote(str(ROOT / "uninstall.sh"))
+            result = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                env=os.environ | {"HOME": str(home)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((shared / "dictation.py").exists())
+            self.assertFalse((shared / "desktop.py").exists())
+            self.assertEqual(
+                (shared / "app.py").read_text(encoding="utf-8"), "unrelated application"
+            )
 
 
 if __name__ == "__main__":

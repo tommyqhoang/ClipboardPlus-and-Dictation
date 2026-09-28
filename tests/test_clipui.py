@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
@@ -58,7 +59,8 @@ class CopyImageTests(unittest.TestCase):
         return calls[0]
 
     def test_linux_pipes_the_png_to_wl_copy(self):
-        (command,), options = self.run_for("linux")
+        with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+            (command,), options = self.run_for("linux")
         self.assertEqual(command[-2:], ["--type", "image/png"])
         self.assertEqual(options["input"], b"PNGDATA")
 
@@ -66,7 +68,8 @@ class CopyImageTests(unittest.TestCase):
         (command,), _ = self.run_for("macos")
         self.assertEqual(command[:2], ["/usr/bin/osascript", "-e"])
         self.assertIn("«class PNGf»", command[2])
-        self.assertIn("a" * 64 + ".png", command[2])
+        self.assertEqual(command[3], "/data/images/" + "a" * 64 + ".png")
+        self.assertNotIn("a" * 64 + ".png", command[2])
 
     def test_windows_uses_a_single_threaded_powershell_and_escapes_quotes(self):
         (command,), _ = self.run_for("windows")

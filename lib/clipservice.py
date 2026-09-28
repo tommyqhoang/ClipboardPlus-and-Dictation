@@ -247,9 +247,10 @@ class Syncer:
             return
         self._stamp = stamp
         key = cp.read_key(self._paths.config.parent) if stamp else ""
-        if not key and self._engine is not None:
-            # Disconnected. A round that was still running may have written the old
-            # account's ids after the app reset them, so forget them again.
+        if self._engine is not None:
+            # A round for the previous key may have written account ids after the
+            # window reset them. Do this after that round finishes, even when a new
+            # key was saved immediately (without an intervening disconnected step).
             self._store.reset_sync()
         self._engine = self._factory(self._store, key) if key else None
         self._crashed = False

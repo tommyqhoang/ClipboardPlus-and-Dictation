@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
@@ -190,10 +190,38 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(updates.UpdateError, "too large"):
             updates.release(too_large)
 
+    def test_update_check_rejects_oversized_and_non_object_responses(self):
+        for body, message in (
+            (b"x" * (1024 * 1024 + 1), "too large"),
+            (b"[]", "not what GitHub usually sends"),
+        ):
+            with self.subTest(message=message):
+                opener = Mock()
+                opener.open.return_value.__enter__ = Mock(return_value=io.BytesIO(body))
+                opener.open.return_value.__exit__ = Mock(return_value=False)
+                with (
+                    patch.object(urllib.request, "build_opener", return_value=opener),
+                    self.assertRaisesRegex(updates.UpdateError, message),
+                ):
+                    updates._github(updates.RELEASES_URL)
+
     # -- downloads --------------------------------------------------------
     def test_only_https_download_addresses_are_allowed(self):
         with self.assertRaises(updates.UpdateError):
             updates._download("http://example.com", self.root / "out.tar.gz")
+
+    def test_download_refuses_a_response_larger_than_the_release_limit(self):
+        opener = Mock()
+        opener.open.return_value.__enter__ = Mock(return_value=io.BytesIO(b"abcd"))
+        opener.open.return_value.__exit__ = Mock(return_value=False)
+        destination = self.root / "out.tar.gz"
+        with (
+            patch.object(urllib.request, "build_opener", return_value=opener),
+            patch.object(updates, "MAX_RELEASE_BYTES", 3),
+            self.assertRaisesRegex(updates.UpdateError, "larger than expected"),
+        ):
+            updates._download("https://github.com/release.tar.gz", destination)
+        self.assertEqual(destination.read_bytes(), b"")
 
     def test_download_refuses_insecure_redirect(self):
         handler = updates.HTTPSRedirect()
@@ -326,6 +354,16 @@ class UpdateTests(unittest.TestCase):
         self.assertNotIn("applied", updates.read_state(self.paths))
         self.assertEqual(updates.read_state(self.paths)["status"], "failed")
         self.assertIn("boom", (self.paths.cache / "update.log").read_text(encoding="utf-8"))
+
+    def test_a_filesystem_failure_records_a_retryable_update_error(self):
+        with patch.object(updates, "_download", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(updates.UpdateError, "disk full"):
+                updates.apply_update(self.paths, "9.9.9", "https://example.com/t.tar.gz")
+        state = updates.read_state(self.paths)
+        self.assertEqual(state["status"], "failed")
+        self.assertIn("re-run the installer", state["error"])
+        self.assertIn("disk full", (self.paths.cache / "update.log").read_text())
+        self.assertNotIn("applied", state)
 
     def test_retry_clears_the_previous_error(self):
         updates.write_state(self.paths, {"status": "failed", "error": "old failure"})

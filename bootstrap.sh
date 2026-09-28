@@ -83,7 +83,7 @@ main() (
     "$python" "$work/app/setup-desktop.py"
   fi
   echo
-  echo "Done. Clipboard+ is open: finish setup in its window."
+  echo "Done. Clipboard+ is installed. If it did not open, launch it from your application menu to finish setup."
 )
 
 # Under `bash -c "$(curl ...)"` BASH_SOURCE is empty, so fall back to $0.
