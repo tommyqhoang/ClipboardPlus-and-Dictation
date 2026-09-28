@@ -31,6 +31,21 @@ the exact commands to reproduce that locally.
     pyinstaller packaging/macos/clipboardplus.spec
     bash packaging/macos/build-dmg.sh   # needs hdiutil (macOS only); produces dist/Clipboard+.dmg
 
+`build-dmg.sh` ad-hoc re-signs every Mach-O in the bundle (innermost first,
+then the `.app`) and verifies with `codesign --verify --deep --strict`. This
+is mandatory even for the "unsigned" build: Apple Silicon refuses to exec
+unsigned or invalidly-signed native code, and the dylibbundler step that
+bundles Homebrew's ffmpeg invalidates ffmpeg's shipped signatures by
+rewriting load paths. Ad-hoc signing is NOT Developer ID signing — the app
+still isn't notarized, so the DMG also ships an `Install Clipboard+.command`
+helper: double-clicking it copies the app to /Applications, strips the
+download-quarantine flag Gatekeeper blocks on ("damaged and can't be
+opened"), and launches the app. (A .command is not an app bundle, so
+Gatekeeper doesn't assess it — Terminal opens it with at most a one-click
+"downloaded from the internet?" confirmation.) True Developer ID
+signing + `notarytool` + `stapler` in `release.yml` is the real fix and a
+tracked follow-up (needs an Apple Developer Program account).
+
 ## Windows
 
     pip install pyinstaller
@@ -43,9 +58,11 @@ the exact commands to reproduce that locally.
 1. Install the artifact (`.dmg` drag, Inno Setup `.exe`, or `.AppImage`
    after `chmod +x`).
 2. Confirm zero terminal windows appear at any point.
-3. Confirm the *only* prompt is the one OS security click (Gatekeeper
-   right-click-Open on macOS, SmartScreen "More info -> Run anyway" on
-   Windows; none at all on Linux beyond the chmod/"allow executing" step).
+3. Confirm the *only* prompt is the one OS security click (macOS: double-click
+   "Install Clipboard+" in the DMG — at most a "downloaded from the internet?"
+   confirmation; the drag route needs the manual `xattr -dr com.apple.quarantine`
+   step. Windows: SmartScreen "More info -> Run anyway"; Linux: none beyond the
+   chmod/"allow executing" step).
 4. Run first-run setup end to end: the model download shows real progress
    (megabytes and a percentage, not a spinner), the GNOME shortcut (Linux)
    or global shortcut registration succeeds, "Open at Login" takes effect
