@@ -32,9 +32,9 @@ jobs:
         if: runner.os == 'Linux'
       - run: ruff check lib tests tools setup-desktop.py && ruff format --check lib tests tools setup-desktop.py
       - run: mypy --strict lib tools setup-desktop.py
-      - run: shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh
+      - run: shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh packaging/linux/build-appimage.sh packaging/linux/AppDir/AppRun packaging/macos/build-dmg.sh
         if: runner.os == 'Linux'
-      - run: shfmt -d -i 2 -ci bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh
+      - run: shfmt -d -i 2 -ci bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh packaging/linux/build-appimage.sh packaging/linux/AppDir/AppRun packaging/macos/build-dmg.sh
         if: runner.os == 'Linux'
       - name: Parse Windows scripts without running them
         if: runner.os == 'Windows'
