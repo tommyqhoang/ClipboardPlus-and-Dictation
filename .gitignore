@@ -12,3 +12,5 @@ htmlcov/
 .venv-*/
 .coverage.*
 .superpowers/
+/build/
+/dist/
