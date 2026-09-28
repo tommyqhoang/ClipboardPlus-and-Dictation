@@ -10,6 +10,13 @@ binary — only ffmpeg and whisper.cpp are bundled, per the design spec's
 scope. Most desktops already have `alsa-utils` installed; this is a known,
 intentional gap, not an oversight.
 
+The commands below produce a bundle with no ffmpeg or whisper.cpp — that
+bundling is a separate step CI runs after `pyinstaller` and before wrapping
+(fetches a static ffmpeg, builds whisper.cpp from the same pinned source
+install.sh uses, and copies both into `dist/clipboardplus/`); see the
+"Bundle ffmpeg + whisper.cpp" steps in `.github/workflows/release.yml` for
+the exact commands to reproduce that locally.
+
 ## Linux
 
     pip install pyinstaller

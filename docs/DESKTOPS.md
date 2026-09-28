@@ -7,6 +7,12 @@ over from there. Users do not need a Git checkout or application commands.
 
 ## What gets installed
 
+The table below describes `install.sh`/`bootstrap.ps1`'s Python-based install —
+see [Build from source](../README.md#build-from-source). The downloadable
+installer bundles its own copy of ffmpeg and whisper.cpp (built by
+`.github/workflows/release.yml`) and needs none of this; ALSA tools remain a
+system dependency for microphone capture even there (see `packaging/README.md`).
+
 | Platform | Launcher | Local dependencies |
 | --- | --- | --- |
 | Linux (apt, dnf, pacman, zypper) | Top bar icon (starts at login), application menu, GNOME Super+Shift+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray, Pillow and python-xlib in a private venv |

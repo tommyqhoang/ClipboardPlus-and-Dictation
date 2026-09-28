@@ -23,6 +23,10 @@ jobs:
             wrap: ""
             asset: dist/Clipboard+-Setup.exe
     runs-on: ${{ matrix.os }}
+    env:
+      # Same pin as install.sh's source-install build — keep them in sync.
+      WHISPER_VERSION: v1.8.7
+      WHISPER_COMMIT: 48f628a84833905ee4a0658ee6d4a5c915ce1997
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -42,6 +46,83 @@ jobs:
         if: runner.os == 'Windows'
         run: python -m pip install "pystray==0.19.5" "Pillow==12.3.0"
       - run: pyinstaller ${{ matrix.spec }}
+      - name: Bundle ffmpeg + whisper.cpp (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          curl -fsSL -o /tmp/ffmpeg-static.tar.xz \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          mkdir -p /tmp/ffmpeg-static
+          tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp/ffmpeg-static --strip-components=1
+          cp /tmp/ffmpeg-static/ffmpeg dist/clipboardplus/ffmpeg
+          chmod +x dist/clipboardplus/ffmpeg
+
+          git clone --depth 1 --branch "$WHISPER_VERSION" \
+            https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp
+          [ "$(git -C /tmp/whisper.cpp rev-parse HEAD)" = "$WHISPER_COMMIT" ]
+          # -DGGML_NATIVE=OFF: a portable AVX2 baseline instead of -march=native,
+          # which tunes for this CI runner's own CPU and can crash (illegal
+          # instruction) on an end user's older one. -DBUILD_SHARED_LIBS=OFF:
+          # ggml/whisper default to shared libs whose RPATH points into this
+          # build tree — dead the moment the .so isn't copied along with it;
+          # static keeps whisper-cli/whisper-server self-contained (verified:
+          # a shared build here only ran because the .so files stayed put next
+          # to it in the same build tree).
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release -DWHISPER_SDL2=OFF \
+            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF
+          cmake --build /tmp/whisper.cpp/build --config Release \
+            --target whisper-cli whisper-server -j"$(nproc)"
+          cp /tmp/whisper.cpp/build/bin/whisper-cli dist/clipboardplus/
+          cp /tmp/whisper.cpp/build/bin/whisper-server dist/clipboardplus/
+      - name: Bundle ffmpeg + whisper.cpp (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          git clone --depth 1 --branch "$WHISPER_VERSION" \
+            https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp
+          [ "$(git -C /tmp/whisper.cpp rev-parse HEAD)" = "$WHISPER_COMMIT" ]
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release -DWHISPER_SDL2=OFF \
+            -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF
+          cmake --build /tmp/whisper.cpp/build --config Release \
+            --target whisper-cli whisper-server -j"$(sysctl -n hw.ncpu)"
+          cp /tmp/whisper.cpp/build/bin/whisper-cli dist/clipboardplus/
+          cp /tmp/whisper.cpp/build/bin/whisper-server dist/clipboardplus/
+
+          # Homebrew's ffmpeg is a native build for this runner's own arch, but
+          # dynamically linked against Homebrew's own dylibs, which don't exist
+          # on an end user's Mac — copy it in and let dylibbundler pull its
+          # dependency tree into a sibling libs/ folder, rewriting load paths
+          # to find it there instead of under /opt/homebrew.
+          brew install ffmpeg dylibbundler
+          cp "$(brew --prefix ffmpeg)/bin/ffmpeg" dist/clipboardplus/ffmpeg
+          dylibbundler -od -b \
+            -x dist/clipboardplus/ffmpeg \
+            -d dist/clipboardplus/libs/ \
+            -p @executable_path/libs/
+      - name: Bundle ffmpeg + whisper.cpp (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
+          $ffmpegExe = Get-ChildItem -Path ffmpeg-extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $ffmpegExe.FullName dist\clipboardplus\ffmpeg.exe
+
+          git clone --depth 1 --branch $env:WHISPER_VERSION https://github.com/ggml-org/whisper.cpp.git whisper.cpp-src
+          if ((git -C whisper.cpp-src rev-parse HEAD) -ne $env:WHISPER_COMMIT) {
+            throw "whisper.cpp did not check out the pinned commit"
+          }
+          cmake -S whisper.cpp-src -B whisper.cpp-src\build -DCMAKE_BUILD_TYPE=Release -DWHISPER_SDL2=OFF -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF
+          cmake --build whisper.cpp-src\build --config Release --target whisper-cli whisper-server
+          $cli = Get-ChildItem -Path whisper.cpp-src\build -Recurse -Filter whisper-cli.exe | Select-Object -First 1
+          $server = Get-ChildItem -Path whisper.cpp-src\build -Recurse -Filter whisper-server.exe | Select-Object -First 1
+          Copy-Item $cli.FullName dist\clipboardplus\whisper-cli.exe
+          Copy-Item $server.FullName dist\clipboardplus\whisper-server.exe
       - name: Smoke-launch every bundled entry point
         shell: bash
         run: |
