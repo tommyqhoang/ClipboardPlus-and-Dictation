@@ -51,13 +51,23 @@ from AppKit import (  # type: ignore[import-not-found]
     NSTableViewUniformColumnAutoresizingStyle,
     NSTextAlignmentCenter,
     NSTextField,
+    NSTrackingActiveAlways,
+    NSTrackingArea,
+    NSTrackingInVisibleRect,
+    NSTrackingMouseEnteredAndExited,
+    NSTrackingMouseMoved,
     NSVariableStatusItemLength,
     NSView,
     NSViewController,
     NSViewHeightSizable,
     NSViewWidthSizable,
 )
-from Foundation import NSIndexSet, NSObject, NSTimer  # type: ignore[import-not-found]
+from Foundation import (  # type: ignore[import-not-found]
+    NSIndexSet,
+    NSMutableIndexSet,
+    NSObject,
+    NSTimer,
+)
 
 HERE = Path(__file__).resolve().parent
 POPOVER_WIDTH = 380.0
@@ -66,6 +76,7 @@ POPOVER_ROWS = 8
 POPOVER_PREVIEW_CHARS = 60
 ROW_HEIGHT = 40.0
 THUMB_SIZE = 28.0
+TOAST_SECONDS = 0.9  # How long "Copied" shows over the list before the popover closes.
 
 
 def fourcc(code: str) -> int:
@@ -178,6 +189,58 @@ def template(name: str, template_image: bool = True) -> Any:
     return image
 
 
+class HoverTableView(NSTableView):  # type: ignore[misc]
+    """An NSTableView that tracks which row is under the mouse.
+
+    Plain NSTableView only highlights the keyboard-selected row; this adds a mouse
+    tracking area so the popover can also highlight and describe whatever the pointer
+    is resting on, independent of the selection.
+    """
+
+    def initWithFrame_(self, frame: Any) -> HoverTableView | None:
+        self = objc.super(HoverTableView, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self.hover_row = -1
+        self.hover_callback = None  # Set by the controller once the table exists.
+        return self
+
+    def updateTrackingAreas(self) -> None:
+        objc.super(HoverTableView, self).updateTrackingAreas()
+        for area in list(self.trackingAreas()):
+            self.removeTrackingArea_(area)
+        self.addTrackingArea_(
+            NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                self.bounds(),
+                NSTrackingMouseMoved
+                | NSTrackingMouseEnteredAndExited
+                | NSTrackingActiveAlways
+                | NSTrackingInVisibleRect,
+                self,
+                None,
+            )
+        )
+
+    def mouseEntered_(self, event: Any) -> None:
+        self._track(event)
+
+    def mouseMoved_(self, event: Any) -> None:
+        self._track(event)
+
+    def mouseExited_(self, _event: Any) -> None:
+        self._hover(-1)
+
+    def _track(self, event: Any) -> None:
+        point = self.convertPoint_fromView_(event.locationInWindow(), None)
+        self._hover(int(self.rowAtPoint_(point)))
+
+    def _hover(self, row: int) -> None:
+        if row != self.hover_row:
+            self.hover_row = row
+            if self.hover_callback is not None:
+                self.hover_callback(row)
+
+
 class Controller(NSObject):  # type: ignore[misc]
     def init(self) -> Controller | None:
         self = objc.super(Controller, self).init()
@@ -198,6 +261,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.store: clipstore.Store | None = None
         self.rows: clipstore.Items = []
         self.selected = 0
+        self.hovered_row = -1  # The row under the mouse, independent of self.selected.
         self.update: dict[str, str] | None = None  # A newer release to offer.
         self.update_checked = False
         self.update_checking = False
@@ -290,7 +354,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self.scroll.setHasVerticalScroller_(True)
         self.scroll.setBorderType_(NSBezelBorder)
-        self.table = NSTableView.alloc().initWithFrame_(self.scroll.bounds())
+        self.table = HoverTableView.alloc().initWithFrame_(self.scroll.bounds())
         self.table.setHeaderView_(None)
         self.table.setRowHeight_(ROW_HEIGHT)
         self.table.setColumnAutoresizingStyle_(NSTableViewUniformColumnAutoresizingStyle)
@@ -303,8 +367,23 @@ class Controller(NSObject):  # type: ignore[misc]
         self.table.setDelegate_(self)
         self.table.setTarget_(self)
         self.table.setAction_("rowActivated:")
+        self.table.hover_callback = self.on_hover_row
         self.scroll.setDocumentView_(self.table)
         root.addSubview_(self.scroll)
+
+        # A transient "Copied" toast, centered over the list; hidden until a click copies.
+        self.toast_label = self.framed(
+            NSTextField.labelWithString_(""), NSMakeRect(8, 174, POPOVER_WIDTH - 16, 32)
+        )
+        self.toast_label.setAlignment_(NSTextAlignmentCenter)
+        self.toast_label.setTextColor_(NSColor.whiteColor())
+        self.toast_label.setWantsLayer_(True)
+        self.toast_label.layer().setCornerRadius_(8.0)
+        self.toast_label.layer().setBackgroundColor_(
+            NSColor.colorWithWhite_alpha_(0.15, 0.85).CGColor()
+        )
+        self.toast_label.setHidden_(True)
+        root.addSubview_(self.toast_label)
 
         self.empty_label = self.framed(
             NSTextField.wrappingLabelWithString_(""), NSMakeRect(24, 160, POPOVER_WIDTH - 48, 60)
@@ -562,6 +641,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.popover.close()
             return
         self.search_field.setStringValue_("")
+        self.toast_label.setHidden_(True)
         self.refresh_popover_layout()
         self.popover.showRelativeToRect_ofView_preferredEdge_(
             self.item.button().bounds(), self.item.button(), NSMaxYEdge
@@ -676,7 +756,42 @@ class Controller(NSObject):  # type: ignore[misc]
     def activate_selected(self) -> None:
         if 0 <= self.selected < len(self.rows):
             if self.copy_item(self.rows[self.selected]):
-                self.popover.close()
+                self.flash_copied()
+
+    @objc.python_method
+    def flash_copied(self) -> None:
+        """Show "Copied" over the list briefly, then close (Maccy-style confirmation)."""
+        self.toast_label.setStringValue_("Copied")
+        self.toast_label.setHidden_(False)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            TOAST_SECONDS, self, "closeAfterToast:", None, False
+        )
+
+    def closeAfterToast_(self, _timer: Any) -> None:
+        self.toast_label.setHidden_(True)
+        self.popover.close()
+
+    @objc.python_method
+    def on_hover_row(self, row: int) -> None:
+        """Repaint only the rows whose hover state actually changed."""
+        previous, self.hovered_row = self.hovered_row, row
+        changed = {r for r in (previous, row) if 0 <= r < len(self.rows)}
+        if not changed:
+            return
+        indexes = NSMutableIndexSet.alloc().init()
+        for r in changed:
+            indexes.addIndex_(r)
+        self.table.reloadDataForRowIndexes_columnIndexes_(indexes, NSIndexSet.indexSetWithIndex_(0))
+
+    @objc.python_method
+    def row_detail(self, item: clipstore.Item) -> str:
+        """What hovering shows: kind, where it came from, and when it was copied."""
+        kind = f"Image {item.width}×{item.height}" if item.kind == "image" else "Text"
+        source = {"desktop": "Desktop", "dictation": "Dictation", "cloud": "Cloud"}.get(
+            item.source, item.source
+        )
+        stamp = time.strftime("%b %d, %Y at %H:%M", time.localtime(item.created_at))
+        return f"{kind} · {source} · {stamp}"
 
     @objc.python_method
     def copy_item(self, item: clipstore.Item) -> bool:
@@ -697,6 +812,13 @@ class Controller(NSObject):  # type: ignore[misc]
         width = column.width()
         view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, ROW_HEIGHT))
         view.setAutoresizingMask_(NSViewWidthSizable)
+        view.setWantsLayer_(True)
+        view.layer().setBackgroundColor_(
+            NSColor.colorWithWhite_alpha_(0.5, 0.12).CGColor()
+            if row == self.hovered_row
+            else NSColor.clearColor().CGColor()
+        )
+        view.setToolTip_(self.row_detail(item))
         text_x = 8.0
         if item.kind == "image":
             thumb_path = self.store.thumb_path(item) if self.store is not None else None
@@ -741,6 +863,10 @@ class Controller(NSObject):  # type: ignore[misc]
             self.activate_selected()
         elif selector == "cancelOperation:":
             self.popover.close()
+        elif selector == "moveToBeginningOfParagraph:":
+            # macOS's default Emacs-style binding for Ctrl+A just moves the caret;
+            # override it to select-all, matching every other platform's Ctrl+A.
+            _text_view.selectAll_(None)
         else:
             return False
         return True
