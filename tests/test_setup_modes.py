@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import support  # noqa: F401 - one Tk root per process on macOS (see there)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import clipstore
 import hotkeys
 from test_app import ServiceCase

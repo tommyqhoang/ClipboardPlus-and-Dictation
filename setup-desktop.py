@@ -588,7 +588,7 @@ def uninstall(prefix: Path) -> None:
         # on it (older versions) or its executable. Unloaded too, or launchd keeps
         # trying to start the deleted app.
         if agent.is_file() and any(
-            argument == str(bundle) or argument.startswith(str(bundle) + "/")
+            Path(argument) == bundle or bundle in Path(argument).parents
             for argument in plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])
         ):
             hotkeys.set_login_item(False, [])

@@ -13,11 +13,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import app_service
 import clipstore
 import desktop
 import dictation as d
 import hotkeys
+import support  # noqa: F401 - one Tk root per process on macOS (see there)
 
 
 class ServiceCase(unittest.TestCase):
@@ -448,7 +450,7 @@ class WindowTests(ServiceCase):
             self.assertGreater(left, 0)
             # The header lines up with the column instead of the far edge of the screen.
             self.assertEqual(
-                int(self.window.header_bar.cget("padding")[0]), self.gui.PAD - 4 + left
+                int(str(self.window.header_bar.cget("padding")[0])), self.gui.PAD - 4 + left
             )
             places = []
             for page in ("clipboard", "dictation", "settings"):
@@ -840,6 +842,8 @@ class WindowTests(ServiceCase):
             # Everything saves as it changes: no Save button to forget.
             self.assertEqual(self.window.bar_actions.winfo_children(), [])
             self.window.language.set("Multilingual / auto-detect")
+            # A named microphone: Windows (rightly) refuses "default" for dictation.
+            self.window.device.set("Mic")
             self.window.save_voice()
             self.assertEqual(d.read_json(self.paths.config)["language"], "auto")
             # The AI choice shows Apply only once it differs from what's in use.

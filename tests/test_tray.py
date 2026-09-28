@@ -356,7 +356,8 @@ class TrayTests(unittest.TestCase):
         with (
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install") as install,
-            patch.dict(sys.modules, {"pystray": fake}),
+            # Neither is installed where only the standard library is (Python 3.10/3.14 CI).
+            patch.dict(sys.modules, {"pystray": fake, "PIL": MagicMock()}),
             patch.object(tray, "Tray") as made,
         ):
             self.assertEqual(tray.main(), 0)

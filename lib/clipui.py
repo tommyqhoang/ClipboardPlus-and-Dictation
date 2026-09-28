@@ -389,7 +389,7 @@ class ClipboardPage:
 
     def _pause_text(self) -> str:
         until = hotkeys.Preferences(self.app.service.paths).clipboard().paused_until
-        if until and until < self._clock() + 86400:
+        if 0 < until < self._clock() + 86400:  # -1: until resumed.
             return f"Capture is paused until {time.strftime('%H:%M', time.localtime(until))}."
         return "Capture is paused until you resume it."
 

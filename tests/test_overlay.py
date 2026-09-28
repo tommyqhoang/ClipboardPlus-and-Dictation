@@ -12,8 +12,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dictation as d
 import overlay
+import support  # noqa: F401 - one Tk root per process on macOS (see there)
 
 TOKEN = "abc123"
 XRANDR = """Monitors: 2

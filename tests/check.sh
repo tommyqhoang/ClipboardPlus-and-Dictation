@@ -84,6 +84,16 @@ tool shellcheck koalaman/shellcheck:stable $SCRIPTS || fail "shellcheck"
 # shellcheck disable=SC2086
 tool shfmt mvdan/shfmt:latest -d -i 2 -ci $SCRIPTS || fail "shfmt"
 
+step "tests with only the standard library (CI's python-compatibility)"
+# -S: no installed packages (no Pillow or coverage), and no display, as on that job.
+stdlib_log="$(mktemp -t clipboardplus-stdlib.XXXXXX)"
+if env -u DISPLAY -u WAYLAND_DISPLAY "$python" -S -m unittest discover -s tests >"$stdlib_log" 2>&1; then
+  tail -n 1 "$stdlib_log"
+else
+  grep -E "^(FAIL|ERROR):|^Ran |^FAILED" "$stdlib_log"
+  fail "tests without optional packages: $stdlib_log"
+fi
+
 step "tests and coverage"
 rm -f .coverage .coverage.*
 tests="$python -m coverage run -m unittest discover -s tests && $python -m coverage combine -q && $python -m coverage report"

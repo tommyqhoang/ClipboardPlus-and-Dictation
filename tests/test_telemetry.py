@@ -101,7 +101,8 @@ class TelemetryTests(unittest.TestCase):
             second = telemetry.client_id()
         self.assertEqual(first, second)
         path = self.root / "telemetry-id"
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":  # Windows files have no POSIX mode bits.
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_scrub_removes_personal_data_before_anything_is_sent(self) -> None:
         home = str(Path.home())

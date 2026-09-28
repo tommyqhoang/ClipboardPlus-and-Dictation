@@ -228,6 +228,8 @@ class DictationTests(unittest.TestCase):
     def test_messages_speak_in_app_terms(self):
         with (
             patch.object(d.desktop, "available", return_value=True),
+            # notify-send takes the message as its last argument (Windows reads stdin).
+            patch.object(d.desktop, "platform_name", return_value="linux"),
             patch.object(d.subprocess, "run") as run,
         ):
             d.notify(None, "Settings unreadable")  # Unreadable settings still notify.

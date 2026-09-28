@@ -6,10 +6,59 @@ import faulthandler
 import os
 import random
 import struct
+import sys
 import zlib
 
 # Inherited by subprocesses, even when a fixture strips DICTATION_* variables.
 os.environ["DO_NOT_TRACK"] = "1"
+
+
+def share_one_tk_root() -> None:
+    """Make every `tkinter.Tk()` in this test process the same root.
+
+    Under macOS's Aqua Tk, a second Tk interpreter in one process never finishes
+    `update()` once the app's window is built in it (its run loop always has more to
+    do), which hung the macOS CI job. The app itself only ever makes one root per
+    process, so this is a test-harness matter: tests share one root, and its
+    `destroy()` empties it for the next test instead of ending the interpreter.
+    """
+    import tkinter
+
+    real_tk = tkinter.Tk
+    shared: list[tkinter.Tk] = []
+
+    def tk(*args: object, **kwargs: object) -> tkinter.Tk:
+        if shared:
+            return shared[0]
+        root = real_tk(*args, **kwargs)  # type: ignore[arg-type]
+        base = set(root.tk.splitlist(root.tk.call("bind", "all")))
+
+        def reset() -> None:
+            for pending in root.tk.splitlist(root.tk.call("after", "info")):
+                root.after_cancel(pending)
+            for child in root.winfo_children():
+                child.destroy()
+            for sequence in root.tk.splitlist(root.tk.call("bind", "all")):
+                if sequence not in base:  # What a test's window added; Tk's own stay.
+                    root.tk.call("bind", "all", sequence, "")
+            for sequence in root.bind():
+                root.unbind(sequence)
+            root.protocol("WM_DELETE_WINDOW", "")
+            root.overrideredirect(False)  # The recording pill's window style.
+            root.attributes("-topmost", False)
+            root.attributes("-alpha", 1.0)
+            root.withdraw()
+
+        root.destroy = reset  # type: ignore[method-assign]
+        shared.append(root)
+        return root
+
+    tkinter.Tk = tk  # type: ignore[misc, assignment]
+
+
+# WWD_SHARED_TK=1 runs the same way elsewhere, to check it before macOS CI does.
+if sys.platform == "darwin" or os.environ.get("WWD_SHARED_TK"):
+    share_one_tk_root()
 
 if os.environ.get("CI"):
     # A hung test (a dialog waiting for a click, a lock never released) would otherwise

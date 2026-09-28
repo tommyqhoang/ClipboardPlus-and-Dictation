@@ -139,7 +139,8 @@ class PageCase(ServiceCase):
         while stack:
             widget = stack.pop(0)
             stack.extend(widget.winfo_children())
-            if widget.winfo_class() == "Label" and widget.cget("wraplength"):
+            # str(): Windows Tk returns an object here, truthy even when it is 0.
+            if widget.winfo_class() == "Label" and int(str(widget.cget("wraplength"))):
                 return widget
         raise AssertionError("no text label")
 
@@ -492,8 +493,10 @@ class PageTests(PageCase):
             self.assertEqual(copy.call_args.args[0], self.page.rows[0].item.id)
             self.page.set_query("")
             label = self.row_text(self.page.rows[0])
-            self.root.update_idletasks()  # New rows are mapped when Tk is idle.
+            # New rows are mapped when Tk is idle; Windows delivers the click only then.
+            self.root.update()
             label.event_generate("<Button-1>")
+            self.assertEqual(copy.call_count, 2)  # The click itself, not the Enter above.
         self.assertEqual(copy.call_args.args[0], newest.id)
 
     def test_clear_history_sits_with_the_filters_not_below_the_list(self):
@@ -510,7 +513,8 @@ class PageTests(PageCase):
     def test_a_paused_capture_is_announced_with_a_way_back(self):
         hotkeys.Preferences(self.paths).save(clipboard=hotkeys.ClipboardSettings(paused_until=-1))
         self.page.reload()
-        self.assertTrue(any("paused" in t.lower() for t in self.texts()))
+        # -1 is "until resumed", not a moment in 1970 (which Windows cannot even format).
+        self.assertIn("Capture is paused until you resume it.", self.texts())
         self.buttons("Resume")[0].invoke()
         self.assertFalse(hotkeys.Preferences(self.paths).clipboard().paused(1e12))
 
