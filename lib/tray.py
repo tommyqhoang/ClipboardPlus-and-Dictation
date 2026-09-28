@@ -445,6 +445,9 @@ class Tray:
 
     def quit(self) -> None:
         self.clip.stop()
+        if self.store is not None:
+            self.store.close()
+            self.store = None
         self.running = False
         self.icon.stop()
 

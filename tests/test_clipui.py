@@ -68,7 +68,7 @@ class CopyImageTests(unittest.TestCase):
         (command,), _ = self.run_for("macos")
         self.assertEqual(command[:2], ["/usr/bin/osascript", "-e"])
         self.assertIn("«class PNGf»", command[2])
-        self.assertEqual(command[3], "/data/images/" + "a" * 64 + ".png")
+        self.assertEqual(command[3], str(Path("/data/images/" + "a" * 64 + ".png")))
         self.assertNotIn("a" * 64 + ".png", command[2])
 
     def test_windows_uses_a_single_threaded_powershell_and_escapes_quotes(self):

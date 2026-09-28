@@ -315,10 +315,10 @@ class DictationTests(unittest.TestCase):
 
     def test_start_failure_and_stale_state(self):
         (self.root / "recorder-fail").touch()
-        failed = self.cli(ok=False)
-        self.assertNotEqual(failed.returncode, 0)
-        self.assertIn("Microphone could not start", failed.stderr)
-        self.wait_phase("error")
+        started = self.cli(ok=False)  # The worker can fail before or after startup returns.
+        if started.returncode:
+            self.assertIn("Microphone could not start", started.stderr)
+        self.assertIn("Microphone could not start", self.wait_phase("error")["message"])
         d.atomic(self.paths.state, '{"phase":"recording","token":"old"}')
         self.assertEqual(json.loads(self.cli("--status").stdout)["phase"], "interrupted")
 
@@ -834,25 +834,26 @@ class WorkerRelaunchFrozenTests(unittest.TestCase):
             check=Mock(),
             b=Mock(return_value=True),
         )
-        paths = Mock(
-            audio=Mock(exists=Mock(return_value=False)),
-            state=Path("/tmp/does-not-matter-state.json"),
-            runtime=Path("/tmp"),
-        )
-        process = Mock()
-        process.poll.return_value = 0  # "exited immediately" — only the argv matters here.
-        with (
-            patch.object(d, "lock", return_value=1),
-            patch.object(d, "read_json", return_value={}),
-            patch.object(d.os, "close"),
-            patch.object(d.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
-            patch.object(d.desktop, "platform_name", return_value="linux"),
-            patch.object(d.subprocess, "Popen", return_value=process) as popen,
-        ):
-            with self.assertRaises(d.DictationError):
-                d.dispatch(config, paths, "start")
+        with tempfile.TemporaryDirectory() as folder:
+            paths = Mock(
+                audio=Mock(exists=Mock(return_value=False)),
+                state=Path(folder) / "does-not-matter-state.json",
+                runtime=Path(folder),
+            )
+            process = Mock()
+            process.poll.return_value = 0  # "exited immediately" — only the argv matters here.
+            with (
+                patch.object(d, "lock", return_value=1),
+                patch.object(d, "read_json", return_value={}),
+                patch.object(d.os, "close"),
+                patch.object(d.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+                patch.object(d.desktop, "platform_name", return_value="linux"),
+                patch.object(d.subprocess, "Popen", return_value=process) as popen,
+            ):
+                with self.assertRaises(d.DictationError):
+                    d.dispatch(config, paths, "start")
         args = popen.call_args.args[0]
-        self.assertEqual(args[0], "/opt/Clipboard+/dictation")
+        self.assertEqual(args[0], str(Path("/opt/Clipboard+") / "dictation"))
         self.assertEqual(args[1], "--worker")
 
 
@@ -907,7 +908,7 @@ class WhisperBinDefaultTests(unittest.TestCase):
             "XDG_RUNTIME_DIR": str(root / "runtime"),
         }
         with (
-            patch.dict(os.environ, env, clear=True),
+            patch.dict(os.environ, env),
             patch.object(d.shutil, "which", return_value=None),
             patch.object(d.desktop, "frozen_root", return_value=root),
             patch.object(d.desktop, "platform_name", return_value="linux"),

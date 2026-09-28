@@ -833,7 +833,7 @@ class RelaunchTests(unittest.TestCase):
         ):
             self.assertEqual(
                 desktop.relaunch("dictation", "--worker", "abc"),
-                ["/opt/Clipboard+/dictation", "--worker", "abc"],
+                [str(Path("/opt/Clipboard+") / "dictation"), "--worker", "abc"],
             )
 
     def test_persistent_relaunch_uses_appimage_not_the_ephemeral_mount(self):
@@ -942,7 +942,7 @@ class MacosBundleTests(unittest.TestCase):
                 return_value=Path("/Applications/Clipboard+.app/Contents/MacOS"),
             ),
         ):
-            self.assertEqual(desktop.macos_bundle(), "/Applications/Clipboard+.app")
+            self.assertEqual(desktop.macos_bundle(), str(Path("/Applications/Clipboard+.app")))
 
     def test_empty_from_source_with_no_env_var(self):
         with (

@@ -124,31 +124,7 @@ jobs:
           Copy-Item $cli.FullName dist\clipboardplus\whisper-cli.exe
           Copy-Item $server.FullName dist\clipboardplus\whisper-server.exe
       - name: Smoke-launch every bundled entry point
-        shell: bash
-        run: |
-          set -e
-          fail=0
-          for exe in dist/clipboardplus/*; do
-            [ -f "$exe" ] && [ -x "$exe" ] || continue
-            name="$(basename "$exe")"
-            log="/tmp/smoke-$name.log"
-            case "$name" in
-              dictation) timeout 5 "$exe" --status >"$log" 2>&1; code=$? ;;
-              *) timeout 5 "$exe" >"$log" 2>&1; code=$? ;;
-            esac
-            # 124 = still running after the timeout (a GUI entry point that
-            # started its run loop) — that's success, not a hang to report.
-            if [ "$code" -ne 0 ] && [ "$code" -ne 124 ] && [ "$code" -ne 2 ]; then
-              if grep -qE "Traceback \(most recent call last\)|ModuleNotFoundError|ImportError" "$log"; then
-                echo "SMOKE TEST FAILED: $name crashed on import (exit $code)"
-                cat "$log"
-                fail=1
-                continue
-              fi
-            fi
-            echo "OK: $name (exit $code)"
-          done
-          [ "$fail" -eq 0 ]
+        run: python packaging/smoke_release.py
       - name: Wrap (Linux)
         if: runner.os == 'Linux'
         run: |

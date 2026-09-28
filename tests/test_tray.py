@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -136,6 +137,7 @@ class TrayTests(unittest.TestCase):
         pystray = SimpleNamespace(MenuItem=Item, Menu=Menu, Icon=Icon)
         image = SimpleNamespace(open=lambda path: Path(path).name)
         self.tray = tray.Tray(pystray, image)
+        self.addCleanup(self.tray.quit)
         self.tray.hotkey = FakeHotKey()
         self.tray.history_key = FakeHotKey()
         popen = patch.object(tray.subprocess, "Popen")
@@ -681,6 +683,14 @@ class TrayTests(unittest.TestCase):
         self.assertTrue(self.visible("Nothing copied yet."))
         self.item("Turn on Clipboard history").action()
         self.assertEqual(self.popen.call_args.args[0][-1], "--settings")
+
+    def test_quit_closes_the_clipboard_store(self):
+        store = self.tray.open_store()
+        self.assertIsNotNone(store)
+        self.tray.quit()
+        self.assertIsNone(self.tray.store)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            store.list(limit=1)
 
     def test_preview_text_is_one_line(self):
         def make(text: str, kind: str = "text", label: str = "") -> clipstore.Item:

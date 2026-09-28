@@ -213,7 +213,7 @@ class EngineTests(unittest.TestCase):
         args = popen.call_args.args[0]
         # No stray __file__ path when frozen — just the sibling binary and the
         # real args, or argparse (with no positional defined) rejects it outright.
-        self.assertEqual(args[0], "/opt/Clipboard+/engine")
+        self.assertEqual(args[0], str(Path("/opt/Clipboard+") / "engine"))
         self.assertEqual(args[1], "--supervise")
         self.assertEqual(args[args.index("--supervise") + 1], "/usr/bin/whisper-server")
 

@@ -367,7 +367,7 @@ class HotkeyTests(unittest.TestCase):
         ):
             self.assertEqual(
                 hotkeys.history_command(PurePosixPath("/lib")),
-                ["/opt/Clipboard+/app", "--clipboard"],
+                [str(Path("/opt/Clipboard+") / "app"), "--clipboard"],
             )
 
     def test_history_command_default_uses_appimage_not_the_ephemeral_mount(self):
