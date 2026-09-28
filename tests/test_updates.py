@@ -98,6 +98,45 @@ class UpdateTests(unittest.TestCase):
         updates.check(self.paths, clock=lambda: 1000.0 + 25 * 3600.0, fetch=fetch)
         self.assertEqual(len(calls), 2)
 
+    def test_a_cached_newer_release_remains_available_after_restart(self):
+        calls: list[str] = []
+
+        def fetch(url: str) -> dict[str, Any]:
+            calls.append(url)
+            return release("v9.9.9")
+
+        first = updates.check(self.paths, clock=lambda: 1000.0, fetch=fetch)
+        cached = updates.check(self.paths, clock=lambda: 2000.0, fetch=fetch)
+        self.assertEqual(cached, first)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_cached_release_at_the_current_version_is_not_offered(self):
+        updates.write_state(
+            self.paths,
+            {
+                "checked": 1000.0,
+                "offered": {
+                    "version": desktop.APP_VERSION,
+                    "tag": "v" + desktop.APP_VERSION,
+                    "url": "https://example.com",
+                },
+            },
+        )
+        self.assertIsNone(updates.check(self.paths, clock=lambda: 2000.0))
+
+    def test_a_check_during_install_keeps_its_progress_visible(self):
+        updates.write_state(
+            self.paths,
+            {"status": "installing", "target": "9.9.9", "started": 900.0},
+        )
+        updates.check(
+            self.paths, force=True, clock=lambda: 1000.0, fetch=lambda _: release("v9.9.9")
+        )
+        state = updates.read_state(self.paths)
+        self.assertEqual(state["status"], "installing")
+        self.assertEqual(state["target"], "9.9.9")
+        self.assertEqual(state["offered"]["version"], "9.9.9")
+
     def test_turning_updates_off_stops_the_daily_check(self):
         hotkeys.Preferences(self.paths).save(auto_updates=False)
         self.assertIsNone(
@@ -251,6 +290,27 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(state.get("applied"), "9.9.9")
         self.assertEqual(state.get("status"), "installed")
 
+    def test_real_archive_runs_its_installer_and_records_the_result(self):
+        source = self.root / "ClipboardPlus-and-Dictation-9.9.9"
+        source.mkdir()
+        installed = self.root / "installed.txt"
+        (source / "setup-desktop.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(installed)!r}).write_text('installed')\n"
+            "print('Installer completed.')\n",
+            encoding="utf-8",
+        )
+
+        def make_archive(_url: str, destination: Path) -> None:
+            with tarfile.open(destination, "w:gz") as tar:
+                tar.add(source, arcname=source.name)
+
+        with patch.object(updates, "_download", make_archive):
+            updates.apply_update(self.paths, "9.9.9", "https://example.com/archive.tar.gz")
+        self.assertEqual(installed.read_text(encoding="utf-8"), "installed")
+        self.assertIn("Installer completed.", (self.paths.cache / "update.log").read_text())
+        self.assertEqual(updates.read_state(self.paths)["status"], "installed")
+
     def test_a_failed_install_reports_and_does_not_apply(self):
         with (
             patch.object(updates, "_download", lambda *a: None),
@@ -266,6 +326,18 @@ class UpdateTests(unittest.TestCase):
         self.assertNotIn("applied", updates.read_state(self.paths))
         self.assertEqual(updates.read_state(self.paths)["status"], "failed")
         self.assertIn("boom", (self.paths.cache / "update.log").read_text(encoding="utf-8"))
+
+    def test_retry_clears_the_previous_error(self):
+        updates.write_state(self.paths, {"status": "failed", "error": "old failure"})
+
+        def interrupted(_url: str, _destination: Path) -> None:
+            self.assertNotIn("error", updates.read_state(self.paths))
+            raise updates.UpdateError("new failure")
+
+        with patch.object(updates, "_download", interrupted):
+            with self.assertRaisesRegex(updates.UpdateError, "new failure"):
+                updates.apply_update(self.paths, "9.9.9", "https://example.com/archive.tar.gz")
+        self.assertEqual(updates.read_state(self.paths)["error"], "new failure")
 
     def _stub_source(self, archive: Path, folder: Path) -> Path:
         source = folder / "ClipboardPlus-9.9.9"

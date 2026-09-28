@@ -149,10 +149,35 @@ def check(
     fetch: Callable[[str], dict[str, Any]] = _github,
 ) -> dict[str, str] | None:
     """A newer release to offer, or None. Remembers the answer for a day."""
-    if not force and (not hotkeys.Preferences(paths).auto_updates() or not due(paths, clock)):
-        return None
+    if not force:
+        if not hotkeys.Preferences(paths).auto_updates():
+            return None
+        if not due(paths, clock):
+            remembered = read_state(paths).get("offered")
+            if (
+                isinstance(remembered, dict)
+                and isinstance(remembered.get("version"), str)
+                and isinstance(remembered.get("tag"), str)
+                and isinstance(remembered.get("url"), str)
+                and newer(remembered["version"], desktop.APP_VERSION)
+            ):
+                return {
+                    "version": remembered["version"],
+                    "tag": remembered["tag"],
+                    "url": remembered["url"],
+                }
+            return None
     found = release(fetch)
-    write_state(paths, {"checked": clock(), "offered": found or {}, "published": found is not None})
+    previous = read_state(paths)
+    progress = (
+        {key: previous[key] for key in ("status", "target", "started") if key in previous}
+        if previous.get("status") == "installing"
+        else {}
+    )
+    write_state(
+        paths,
+        {**progress, "checked": clock(), "offered": found or {}, "published": found is not None},
+    )
     if found is not None and newer(found["version"], desktop.APP_VERSION):
         return found
     return None
@@ -229,14 +254,10 @@ def apply_update(paths: d.Paths, version: str, url: str) -> None:
     log = paths.cache / "update.log"
     try:
         d.private_dir(paths.cache)
+        state = read_state(paths)
+        state.pop("error", None)  # A new attempt supersedes an earlier failure.
         write_state(
-            paths,
-            {
-                **read_state(paths),
-                "status": "installing",
-                "target": version,
-                "started": time.time(),
-            },
+            paths, {**state, "status": "installing", "target": version, "started": time.time()}
         )
         with tempfile.TemporaryDirectory(prefix="update-", dir=paths.cache) as work:
             archive = Path(work) / "release.tar.gz"

@@ -18,7 +18,7 @@ else:
 
 
 # Shown in crash reports and statistics; raise it with every release.
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 
 def platform_name() -> str:
@@ -236,13 +236,23 @@ def clipboard_command(values: dict[str, Any]) -> list[str]:
 
 # Notifications carry the product name (hotkeys.APP_NAME; desktop cannot import it).
 NOTIFY_NAME = "Clipboard+"
+DESKTOP_ENTRY_ID = "whisper-dictation"
 
 
 def notification_command(values: dict[str, Any]) -> list[str]:
     if values["notify"]:
         return executable(str(values["notify"])) + ["-a", NOTIFY_NAME, "-t", "4000", NOTIFY_NAME]
     if platform_name() == "linux":
-        return ["notify-send", "-a", NOTIFY_NAME, "-t", "4000", NOTIFY_NAME]
+        return [
+            "notify-send",
+            "-a",
+            NOTIFY_NAME,
+            "-h",
+            f"string:desktop-entry:{DESKTOP_ENTRY_ID}",
+            "-t",
+            "4000",
+            NOTIFY_NAME,
+        ]
     if platform_name() == "macos":
         return [
             "/usr/bin/osascript",

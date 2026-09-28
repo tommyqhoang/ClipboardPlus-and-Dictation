@@ -450,7 +450,7 @@ def install_app_launcher(prefix: Path) -> None:
         # supervises the app and KeepAlive can restart it after a crash.
         hotkeys.set_login_item(preferences.open_at_login(), [str(executable)])
     else:
-        entry = prefix / "share/applications/whisper-dictation.desktop"
+        entry = prefix / f"share/applications/{desktop.DESKTOP_ENTRY_ID}.desktop"
         entry.parent.mkdir(parents=True, exist_ok=True)
 
         def quote(value: str) -> str:
@@ -466,7 +466,7 @@ def install_app_launcher(prefix: Path) -> None:
 
         dictation.atomic(
             entry,
-            f"[Desktop Entry]\nType=Application\nName={hotkeys.APP_NAME}\nComment=Dictate anywhere and keep your clipboard history\nExec={quote(str(python))} {quote(str(prefix / LIB / 'tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\n",
+            f"[Desktop Entry]\nType=Application\nName={hotkeys.APP_NAME}\nComment=Dictate anywhere and keep your clipboard history\nExec={quote(str(python))} {quote(str(prefix / LIB / 'tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\nX-GNOME-UsesNotifications=true\n",
         )
 
 

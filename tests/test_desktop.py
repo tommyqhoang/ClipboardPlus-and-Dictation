@@ -344,6 +344,7 @@ class DesktopTests(unittest.TestCase):
         with patch.object(desktop, "platform_name", return_value="linux"):
             command = desktop.notification_command({"notify": ""})
         self.assertEqual(command[:3], ["notify-send", "-a", hotkeys.APP_NAME])
+        self.assertIn(f"string:desktop-entry:{desktop.DESKTOP_ENTRY_ID}", command)
 
     def test_application_launchers_and_launch(self):
         setup = setup_module()
@@ -368,6 +369,8 @@ class DesktopTests(unittest.TestCase):
                 self.assertIn('Exec="/venv/bin/python"', entry)
                 self.assertIn("tray.py", entry)
                 self.assertIn("Terminal=false", entry)
+                self.assertIn("X-GNOME-UsesNotifications=true", entry)
+                self.assertEqual(desktop.DESKTOP_ENTRY_ID, "whisper-dictation")
                 self.assertIn(
                     f"Icon={prefix / 'lib/whisper-dictation/whisper-dictation.png'}", entry
                 )

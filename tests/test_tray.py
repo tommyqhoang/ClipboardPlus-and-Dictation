@@ -615,6 +615,18 @@ class TrayTests(unittest.TestCase):
         self.assertEqual(copy.call_args.args[0].id, first.id)
         self.assertIn("Copied", self.tray.icon.notifications[-1])
 
+    def test_recent_copies_in_the_menu_are_capped_at_eight(self):
+        store = clipstore.Store(self.paths.clipboard)
+        for index in range(12):
+            store.add_text(f"copy {index}", now=float(index + 1))
+        store.close()
+        self.use_features(False, True)
+        self.tray.tick()
+        self.assertEqual(len(self.tray.rows), tray.MENU_ROWS)
+        self.assertEqual(tray.MENU_ROWS, 8)
+        self.assertEqual(self.tray.row_text(0), "copy 11")
+        self.assertEqual(self.tray.row_text(7), "copy 4")
+
     def test_recent_copies_hidden_until_clipboard_is_on(self):
         self.assertFalse(self.visible("Nothing copied yet."))
         self.assertTrue(self.visible("Turn on Clipboard history"))
