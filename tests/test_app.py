@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import dataclasses
 import gc
 import io
 import os
@@ -46,6 +47,19 @@ class ServiceCase(unittest.TestCase):
 
 
 class ServiceTests(ServiceCase):
+    def test_missing_image_copy_keeps_the_clipboard_unchanged(self):
+        store = clipstore.Store(self.paths.clipboard)
+        self.addCleanup(store.close)
+        item = dataclasses.replace(store.add_text("previous item"), kind="image", text="")
+        with (
+            patch.object(desktop, "copy_image") as copy_image,
+            patch.object(d, "copy_text") as copy_text,
+            self.assertRaisesRegex(d.DictationError, "no longer on this computer"),
+        ):
+            self.service.copy_item(item, store)
+        copy_image.assert_not_called()
+        copy_text.assert_not_called()
+
     def test_setup_model_save_and_completion(self):
         self.assertFalse(self.service.completed())
         model = self.folder / "model.bin"
@@ -625,6 +639,38 @@ class WindowTests(ServiceCase):
             self.window.prepare()
             self.finish()
         self.assertEqual(prepare.call_args.args[1], "plughw:X")
+
+    def test_failed_update_check_restores_the_button_and_explains_failure(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(False, True))
+        self.window.settings()
+        with patch.object(
+            self.gui.updates,
+            "check",
+            side_effect=self.gui.updates.UpdateError("Offline. Try again."),
+        ):
+            self.window.check_update()
+            self.finish()
+        self.assertEqual(self.window.update_status.get(), "Offline. Try again.")
+        self.assertEqual(self.window.update_button.cget("text"), "Check Now")
+        self.assertNotIn("disabled", self.window.update_button.state())
+        self.gui.updates.write_state(self.paths, {"published": False})
+        self.window.show_update(None)
+        self.assertEqual(self.window.update_status.get(), "No published update is available yet.")
+
+    def test_detached_update_failure_is_shown_in_open_settings(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(False, True))
+        self.window.settings()
+        offered = {"version": "9.9.9", "url": "https://api.github.com/release.tar.gz"}
+        with patch.object(self.gui.updates, "start_updater"):
+            self.window.install_update(offered)
+        self.assertIn("disabled", self.window.update_button.state())
+        self.gui.updates.write_state(
+            self.paths,
+            {"target": "9.9.9", "status": "failed", "error": "Install failed. Try again."},
+        )
+        self.window.refresh_update_result()
+        self.assertEqual(self.window.update_status.get(), "Install failed. Try again.")
+        self.assertNotIn("disabled", self.window.update_button.state())
 
     def test_testing_the_microphone_shows_a_meter_then_a_verdict(self):
         with patch.object(self.service, "microphones", return_value=["default"]):

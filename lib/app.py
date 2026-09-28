@@ -1090,7 +1090,8 @@ class App:
         self.update_button.pack_forget()
         self.update_button.pack(anchor="w", pady=(6, 0))
         # What the last check found, without touching the network to build this page.
-        remembered = updates.read_state(self.service.paths).get("offered")
+        update_state = updates.read_state(self.service.paths)
+        remembered = update_state.get("offered")
         if isinstance(remembered, dict) and remembered.get("version"):
             self.show_update(
                 {
@@ -1101,21 +1102,41 @@ class App:
                 if updates.newer(str(remembered["version"]), desktop.APP_VERSION)
                 else None
             )
+        if update_state.get("status") == "failed":
+            self.update_status.set(str(update_state.get("error") or "The update did not complete."))
+        elif update_state.get("status") == "installed":
+            self.update_status.set("Update installed. Restart Clipboard+ to use it.")
 
     def check_update(self) -> None:
         """Look for a newer version now (the once-a-day limit does not apply)."""
         self.update_button.state(["disabled"])
         self.update_status.set("Checking…")
+
+        def check() -> dict[str, str] | updates.UpdateError | None:
+            try:
+                return updates.check(self.service.paths, force=True)
+            except updates.UpdateError as exc:
+                return exc
+
         self.submit(
-            lambda: updates.check(self.service.paths, force=True),
+            check,
             self.show_update,
             "",
         )
 
-    def show_update(self, found: dict[str, str] | None) -> None:
+    def show_update(self, found: dict[str, str] | updates.UpdateError | None) -> None:
         self.update_button.state(["!disabled"])
+        if isinstance(found, updates.UpdateError):
+            self.update_button.configure(text="Check Now", command=self.check_update)
+            self.update_status.set(str(found))
+            return
         if found is None:
-            self.update_status.set(f"Clipboard+ {desktop.APP_VERSION} is up to date.")
+            self.update_button.configure(text="Check Now", command=self.check_update)
+            self.update_status.set(
+                "No published update is available yet."
+                if updates.read_state(self.service.paths).get("published") is False
+                else f"Clipboard+ {desktop.APP_VERSION} is up to date."
+            )
             return
         self.update_status.set(f"Version {found['version']} is available.")
         self.update_button.configure(text=f"Update to {found['version']}")
@@ -1123,16 +1144,34 @@ class App:
 
     def install_update(self, found: dict[str, str]) -> None:
         self.update_button.state(["disabled"])
+        self.update_target = found["version"]
         self.update_status.set(
             f"Downloading version {found['version']}… This window can be closed."
         )
         try:
             updates.start_updater(found["version"], found["url"])
         except OSError:
+            self.update_target = ""
             self.update_button.state(["!disabled"])
             self.update_status.set(
                 "The update could not start. Try again, or re-run the installer."
             )
+
+    def refresh_update_result(self) -> None:
+        """Show the detached updater's outcome in an open Settings window."""
+        target = getattr(self, "update_target", "")
+        if not target or not self.update_button.winfo_exists():
+            return
+        state = updates.read_state(self.service.paths)
+        if state.get("target") != target:
+            return
+        if state.get("status") == "failed":
+            self.update_status.set(str(state.get("error") or "The update did not complete."))
+            self.update_button.state(["!disabled"])
+            self.update_target = ""
+        elif state.get("status") == "installed":
+            self.update_status.set("Update installed. Restart Clipboard+ to use it.")
+            self.update_target = ""
 
     def save_clipboard_options(self, keep_items: int, keep_days: int, images: bool) -> bool:
         prefs = hotkeys.Preferences(self.service.paths)
@@ -2318,6 +2357,7 @@ class App:
                 self.polls = getattr(self, "polls", 0) + 1
                 if self.polls % 5 == 0:  # About once a second.
                     self.clipboard_page.refresh()
+            self.refresh_update_result()
         except (d.DictationError, OSError, ValueError, subprocess.SubprocessError) as exc:
             if not isinstance(exc, d.DictationError):  # Those are explained on screen.
                 telemetry.capture(exc, page=self.page)

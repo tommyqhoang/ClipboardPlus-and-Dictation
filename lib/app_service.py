@@ -281,7 +281,10 @@ class Service:
         config = d.Config(self.paths)
         try:
             if item.kind == "image":
-                desktop.copy_image(config.values, store.image_path(item))
+                path = store.image_path(item)
+                if not path.is_file():
+                    raise d.DictationError("That image is no longer on this computer.")
+                desktop.copy_image(config.values, path)
             else:
                 d.copy_text(config, self.paths, item.text)
         except OSError as exc:

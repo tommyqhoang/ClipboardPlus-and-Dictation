@@ -199,11 +199,13 @@ class Win32Clipboard:
     def has(self, kind: int | str) -> bool:
         return bool(self._user32.IsClipboardFormatAvailable(self._id(kind)))
 
-    def _bytes(self, kind: int | str) -> bytes | None:
+    def _bytes(self, kind: int | str, limit: int) -> bytes | None:
         handle = self._user32.GetClipboardData(self._id(kind))
         if not handle:
             return None
         size = int(self._kernel32.GlobalSize(handle))
+        if size <= 0 or size > limit:
+            return None  # Do not copy an unbounded native block into Python memory.
         pointer = self._kernel32.GlobalLock(handle)
         if not pointer:
             return None
@@ -215,19 +217,22 @@ class Win32Clipboard:
     def text(self) -> str | None:
         if not self.has(CF_UNICODETEXT):
             return None
-        raw = self._bytes(CF_UNICODETEXT)
+        raw = self._bytes(CF_UNICODETEXT, 2 * clipstore.MAX_TEXT_BYTES + 2)
         if raw is None:
             return None
         # A block may be larger than the string in it: stop at the terminator.
         return raw.decode("utf-16-le", "replace").split("\x00", 1)[0]
 
     def data(self, kind: int | str) -> bytes | None:
-        return self._bytes(kind) if self.has(kind) else None
+        limit = (
+            DIB_FACTOR * clipstore.MAX_IMAGE_BYTES if kind == CF_DIB else clipstore.MAX_IMAGE_BYTES
+        )
+        return self._bytes(kind, limit) if self.has(kind) else None
 
     def dword(self, kind: str) -> int | None:
         if not self.has(kind):
             return None
-        raw = self._bytes(kind)
+        raw = self._bytes(kind, 4)
         return int.from_bytes(raw[:4], "little") if raw and len(raw) >= 4 else None
 
 

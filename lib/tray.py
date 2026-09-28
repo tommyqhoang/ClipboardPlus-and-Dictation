@@ -118,6 +118,9 @@ class Tray:
         self.state: tuple[str, int] = ("", 0)
         self.update: dict[str, str] | None = None  # A newer release to offer.
         self.update_checked = False
+        self.update_checking = False
+        self.update_done = False
+        self.update_manual = False
         self.store: clipstore.Store | None = None
         self.rows: clipstore.Items = []
         self.rows_stamp: tuple[int, float] | None = None  # What the menu rows show now.
@@ -215,7 +218,6 @@ class Tray:
                 item(
                     lambda _: self.update_text(),
                     self.update_now,
-                    visible=lambda _: self.update is not None,
                 ),
                 item("Settings…", lambda: self.open_window("--settings")),
                 item(
@@ -345,39 +347,64 @@ class Tray:
 
     # -- updates ----------------------------------------------------------
     def update_text(self) -> str:
-        return f"Update to {self.update['version']}…" if self.update else "Check for Updates…"
+        if self.update is not None:
+            return f"Update to {self.update['version']}…"
+        return "Checking for Updates…" if self.update_checking else "Check for Updates…"
 
-    def start_update_check(self) -> None:
-        """Look for a newer release off the tray's thread, once per run."""
-        if self.update_checked:
+    def start_update_check(self, force: bool = False) -> None:
+        """Look for a newer release off the tray's thread; clicks always check."""
+        if self.update_checking or (self.update_checked and not force):
             return
         self.update_checked = True
-        self.update_result: dict[str, str] | None = None
+        self.update_checking = True
+        self.update_done = False
+        self.update_manual = force
+        self.update_result: dict[str, str] | updates.UpdateError | None = None
+        if force:
+            self.icon.update_menu()
 
         def look() -> None:
             try:
-                found = updates.check(self.paths)
+                found: dict[str, str] | updates.UpdateError | None = updates.check(
+                    self.paths, force=force
+                )
+            except updates.UpdateError as exc:
+                found = exc
             except Exception:  # noqa: BLE001 - a failed check must never touch the tray.
-                found = None
+                found = updates.UpdateError("Couldn’t check for updates. Try again shortly.")
             self.update_result = found  # Picked up by tick(), on the tray's thread.
+            self.update_done = True
 
         threading.Thread(target=look, daemon=True).start()
 
     def collect_update(self) -> None:
         """Adopt a finished update check (called from tick, never a worker thread)."""
-        if not self.update_checked or not hasattr(self, "update_result"):
+        if not self.update_done:
             return
         found, self.update_result = self.update_result, None
+        manual = self.update_manual
+        self.update_checking = self.update_done = self.update_manual = False
+        if isinstance(found, updates.UpdateError):
+            if manual:
+                self.notify(str(found))
+        elif found is None:
+            if manual:
+                self.notify(
+                    "No published update is available yet."
+                    if updates.read_state(self.paths).get("published") is False
+                    else f"Clipboard+ {desktop.APP_VERSION} is up to date."
+                )
         if found is not None and self.update is None:
-            self.update = found
-            self.notify(f"Version {found['version']} is available. See the tray menu.")
-            self.icon.update_menu()
+            if isinstance(found, dict):
+                self.update = found
+                self.notify(f"Version {found['version']} is available. See the tray menu.")
+        self.icon.update_menu()
 
     def update_now(self) -> None:
         """Install the offered release; the updater process reports how it went."""
         found = self.update
         if found is None:
-            self.start_update_check()
+            self.start_update_check(force=True)
             return
         self.update = None
         self.icon.update_menu()

@@ -79,7 +79,7 @@ class DictationTests(unittest.TestCase):
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,  # --full runs distro installs beside this suite.
         )
         if ok:
             self.assertEqual(result.returncode, 0, result.stderr)

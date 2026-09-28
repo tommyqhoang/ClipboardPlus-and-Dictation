@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -108,11 +109,47 @@ class UpdateTests(unittest.TestCase):
             self.paths,
             force=True,
             clock=lambda: 1000.0,
-            fetch=lambda _: release("v9.9.9", tarball_url="https://example.com/t.tar.gz"),
+            fetch=lambda _: release("v9.9.9", tarball_url="https://api.github.com/t.tar.gz"),
         )
         offered = updates.read_state(self.paths).get("offered")
         assert isinstance(offered, dict)
         self.assertEqual(offered["version"], "9.9.9")
+
+    def test_failed_check_does_not_claim_current_or_delay_the_next_try(self):
+        before = updates.read_state(self.paths)
+        with self.assertRaisesRegex(updates.UpdateError, "Couldn’t check"):
+            updates.check(
+                self.paths,
+                force=True,
+                fetch=lambda _: (_ for _ in ()).throw(OSError("offline")),
+            )
+        self.assertEqual(updates.read_state(self.paths), before)
+        self.assertTrue(updates.due(self.paths))
+
+    def test_no_published_release_is_distinct_from_a_failed_check(self):
+        def no_release(url: str) -> dict[str, Any]:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        self.assertIsNone(updates.check(self.paths, force=True, fetch=no_release))
+        state = updates.read_state(self.paths)
+        self.assertIs(state["published"], False)
+        self.assertIn("checked", state)
+
+    def test_release_rejects_unexpected_version_and_download_host(self):
+        for response in (
+            release("v9.9.9", tarball_url="http://api.github.com/release.tar.gz"),
+            release("v9.9.9", tarball_url="https://example.com/release.tar.gz"),
+            release("../9.9.9"),
+        ):
+            with self.subTest(response=response), self.assertRaises(updates.UpdateError):
+                updates.release(lambda _: response)
+
+    def test_release_preserves_a_specific_response_error(self):
+        def too_large(_url: str) -> dict[str, Any]:
+            raise updates.UpdateError("The update check response was too large.")
+
+        with self.assertRaisesRegex(updates.UpdateError, "too large"):
+            updates.release(too_large)
 
     # -- downloads --------------------------------------------------------
     def test_only_https_download_addresses_are_allowed(self):
@@ -212,6 +249,7 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(run.called)
         state = updates.read_state(self.paths)
         self.assertEqual(state.get("applied"), "9.9.9")
+        self.assertEqual(state.get("status"), "installed")
 
     def test_a_failed_install_reports_and_does_not_apply(self):
         with (
@@ -226,6 +264,7 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(updates.UpdateError):
                 updates.apply_update(self.paths, "9.9.9", "https://example.com/t.tar.gz")
         self.assertNotIn("applied", updates.read_state(self.paths))
+        self.assertEqual(updates.read_state(self.paths)["status"], "failed")
         self.assertIn("boom", (self.paths.cache / "update.log").read_text(encoding="utf-8"))
 
     def _stub_source(self, archive: Path, folder: Path) -> Path:

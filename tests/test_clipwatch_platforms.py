@@ -11,10 +11,12 @@ import contextlib
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import clipstore
 import clipwatch
 import clipwatch_macos as mac
 import clipwatch_windows as windows
@@ -325,6 +327,21 @@ class WindowsTests(unittest.TestCase):
         self.assertIsNone(watcher.next_change(1))
         self.win32.copy({windows.PNG_FORMAT: b"x" * 51})
         self.assertIsNone(watcher.next_change(1))
+
+    def test_native_oversize_block_is_rejected_before_global_lock(self):
+        native = object.__new__(windows.Win32Clipboard)
+        native._registered = {windows.PNG_FORMAT: 100}
+        native._user32 = SimpleNamespace(
+            IsClipboardFormatAvailable=Mock(return_value=True),
+            GetClipboardData=Mock(return_value=42),
+        )
+        lock = Mock()
+        native._kernel32 = SimpleNamespace(
+            GlobalSize=Mock(return_value=clipstore.MAX_IMAGE_BYTES + 1),
+            GlobalLock=lock,
+        )
+        self.assertIsNone(native.data(windows.PNG_FORMAT))
+        lock.assert_not_called()
 
     def test_a_change_during_the_read_is_read_again(self):
         watcher = self.watcher()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -38,8 +39,6 @@ from AppKit import (  # type: ignore[import-not-found]
     NSMakeRect,
     NSMakeSize,
     NSMaxYEdge,
-    NSPasteboard,
-    NSPasteboardTypeString,
     NSPopover,
     NSPopoverBehaviorTransient,
     NSScrollView,
@@ -592,7 +591,11 @@ class Controller(NSObject):  # type: ignore[misc]
     @objc.python_method
     def run_query(self, query: str) -> None:
         store = self.open_store()
-        self.rows = store.list(query=query, limit=POPOVER_ROWS) if store is not None else []
+        try:
+            self.rows = store.list(query=query, limit=POPOVER_ROWS) if store is not None else []
+        except (sqlite3.Error, OSError):
+            self.rows = []
+            store = None
         self.table.reloadData()
         self.selected = 0
         if self.rows:
@@ -628,20 +631,19 @@ class Controller(NSObject):  # type: ignore[misc]
     @objc.python_method
     def activate_selected(self) -> None:
         if 0 <= self.selected < len(self.rows):
-            self.copy_item(self.rows[self.selected])
-        self.popover.close()
+            if self.copy_item(self.rows[self.selected]):
+                self.popover.close()
 
     @objc.python_method
-    def copy_item(self, item: clipstore.Item) -> None:
-        pasteboard = NSPasteboard.generalPasteboard()
-        pasteboard.clearContents()
-        if item.kind == "image" and self.store is not None:
-            path = self.store.image_path(item)
-            image = NSImage.alloc().initWithContentsOfFile_(str(path)) if path.is_file() else None
-            if image is not None:
-                pasteboard.writeObjects_([image])
-                return
-        pasteboard.setString_forType_(item.text, NSPasteboardTypeString)
+    def copy_item(self, item: clipstore.Item) -> bool:
+        if self.store is None:
+            return False
+        try:
+            self.service.copy_item(item, self.store)
+        except d.DictationError as exc:
+            self.warn("Couldn’t copy that item", str(exc))
+            return False
+        return True
 
     def numberOfRowsInTableView_(self, _table_view: Any) -> int:
         return len(self.rows)
@@ -710,8 +712,12 @@ class Controller(NSObject):  # type: ignore[misc]
         alert.addButtonWithTitle_("Cancel")
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         if alert.runModal() == NSAlertFirstButtonReturn:
-            store.clear(keep_favorites=True)
-            self.run_query(self.search_field.stringValue())
+            try:
+                self.service.clear_clipboard(store, everywhere=False, keep_favorites=True)
+                self.run_query(self.search_field.stringValue())
+            except (sqlite3.Error, OSError) as exc:
+                telemetry.capture(exc, level="warning", stage="popover_clear")
+                self.warn("Couldn’t clear history", "The clipboard history is busy. Try again.")
 
     def openFullHistory_(self, _sender: Any) -> None:
         self.popover.close()

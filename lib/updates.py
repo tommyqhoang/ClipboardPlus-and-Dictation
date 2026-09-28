@@ -41,7 +41,7 @@ MAX_ARCHIVE_MEMBERS = 10_000
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
-class UpdateError(Exception):
+class UpdateError(d.DictationError):
     """A download or installation step failed; messages are safe to show."""
 
 
@@ -84,14 +84,39 @@ def _github(url: str) -> dict[str, Any]:
 
 
 def release(fetch: Callable[[str], dict[str, Any]] = _github) -> dict[str, str] | None:
-    """The newest published release, or None when there is none (or no network)."""
+    """The newest release, or None when the repository has no published release."""
     try:
         info = fetch(RELEASES_URL)
-        tag = str(info.get("tag_name", ""))
-        url = str(info.get("tarball_url", "")) or TARBALL_URL.format(tag=tag)
-        return {"version": tag.lstrip("v"), "tag": tag, "url": url} if tag else None
-    except (OSError, ValueError, urllib.error.URLError):
-        return None  # Offline or rate-limited: try again tomorrow.
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        if exc.code == 404:
+            return None
+        raise UpdateError("Couldn’t check for updates. Try again when you’re online.") from exc
+    except UpdateError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise UpdateError("Couldn’t check for updates. Try again when you’re online.") from exc
+    if not isinstance(info, dict):
+        raise UpdateError("The update service returned an unexpected response.")
+    tag = info.get("tag_name")
+    if not isinstance(tag, str) or not re.fullmatch(r"v?\d+\.\d+\.\d+", tag):
+        raise UpdateError("The update service returned an unrecognized version.")
+    url = info.get("tarball_url") or TARBALL_URL.format(tag=tag)
+    if not isinstance(url, str):
+        raise UpdateError("The update service returned an invalid download address.")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError as exc:
+        raise UpdateError("The update service returned an invalid download address.") from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"api.github.com", "github.com", "codeload.github.com"}
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        raise UpdateError("The update service returned an invalid download address.")
+    return {"version": tag.lstrip("v"), "tag": tag, "url": url}
 
 
 def state_file(paths: d.Paths) -> Path:
@@ -127,7 +152,7 @@ def check(
     if not force and (not hotkeys.Preferences(paths).auto_updates() or not due(paths, clock)):
         return None
     found = release(fetch)
-    write_state(paths, {"checked": clock(), "offered": found or {}})
+    write_state(paths, {"checked": clock(), "offered": found or {}, "published": found is not None})
     if found is not None and newer(found["version"], desktop.APP_VERSION):
         return found
     return None
@@ -204,6 +229,15 @@ def apply_update(paths: d.Paths, version: str, url: str) -> None:
     log = paths.cache / "update.log"
     try:
         d.private_dir(paths.cache)
+        write_state(
+            paths,
+            {
+                **read_state(paths),
+                "status": "installing",
+                "target": version,
+                "started": time.time(),
+            },
+        )
         with tempfile.TemporaryDirectory(prefix="update-", dir=paths.cache) as work:
             archive = Path(work) / "release.tar.gz"
             _download(url, archive)
@@ -218,11 +252,27 @@ def apply_update(paths: d.Paths, version: str, url: str) -> None:
             log.write_text(setup.stdout + setup.stderr, encoding="utf-8", errors="replace")
             if setup.returncode:
                 raise UpdateError("The update was downloaded but could not be installed.")
-        write_state(paths, {**read_state(paths), "applied": version, "at": time.time()})
+        write_state(
+            paths,
+            {**read_state(paths), "status": "installed", "applied": version, "at": time.time()},
+        )
+    except UpdateError as exc:
+        with contextlib.suppress(OSError):
+            write_state(paths, {**read_state(paths), "status": "failed", "error": str(exc)})
+        raise
     except (OSError, subprocess.SubprocessError) as exc:
         with contextlib.suppress(OSError):
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text(str(exc), encoding="utf-8", errors="replace")
+        with contextlib.suppress(OSError):
+            write_state(
+                paths,
+                {
+                    **read_state(paths),
+                    "status": "failed",
+                    "error": "The update did not complete. Try again, or re-run the installer.",
+                },
+            )
         raise UpdateError(f"The update did not complete: {exc}") from exc
     finally:
         os.close(lock)
