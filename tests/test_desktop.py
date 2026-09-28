@@ -853,7 +853,12 @@ class RelaunchTests(unittest.TestCase):
         ):
             self.assertEqual(
                 desktop.persistent_relaunch("dictation", "--worker", "abc"),
-                ["/home/user/Applications/Clipboard+-x86_64.AppImage", "dictation", "--worker", "abc"],
+                [
+                    "/home/user/Applications/Clipboard+-x86_64.AppImage",
+                    "dictation",
+                    "--worker",
+                    "abc",
+                ],
             )
 
     def test_persistent_relaunch_falls_back_to_relaunch_outside_an_appimage(self):

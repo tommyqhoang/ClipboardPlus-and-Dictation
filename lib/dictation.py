@@ -184,9 +184,13 @@ class Config:
             )
         if not self.s("whisper_bin"):
             bundled = desktop.bundled_binary("whisper-cli")
-            self.values["whisper_bin"] = str(bundled) if bundled is not None else (
-                shutil.which("whisper-cli")
-                or str(Path.home() / ".local/opt/whisper.cpp-v1.8.7/build/bin/whisper-cli")
+            self.values["whisper_bin"] = (
+                str(bundled)
+                if bundled is not None
+                else (
+                    shutil.which("whisper-cli")
+                    or str(Path.home() / ".local/opt/whisper.cpp-v1.8.7/build/bin/whisper-cli")
+                )
             )
 
     def s(self, key: str) -> str:
