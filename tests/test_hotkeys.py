@@ -347,6 +347,26 @@ class HotkeyTests(unittest.TestCase):
         # Cleared, then set: GNOME grabs the keys again even if the value is unchanged.
         self.assertEqual([call[-1] for call in calls[-2:]], ["", "<Shift><Super>f"])
 
+    def test_history_command_default_matches_relaunch_when_frozen(self):
+        with (
+            patch.object(hotkeys.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+            patch.object(hotkeys.desktop, "platform_name", return_value="linux"),
+        ):
+            self.assertEqual(
+                hotkeys.history_command(PurePosixPath("/lib")),
+                ["/opt/Clipboard+/app", "--clipboard"],
+            )
+
+    def test_history_command_default_ignores_frozen_state_when_python_is_given(self):
+        # setup-desktop.py:636 passes an explicit python for a *different* install
+        # prefix than the one currently running; it must never be redirected to
+        # this process's own frozen sibling binary.
+        with patch.object(hotkeys.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")):
+            self.assertEqual(
+                hotkeys.history_command(PurePosixPath("/lib"), "/other/prefix/venv/python"),
+                ["/other/prefix/venv/python", "/lib/app.py", "--clipboard"],
+            )
+
     def test_gnome_shortcut_pauses_and_removes_only_its_own_binding(self):
         calls = []
         state = {"command": "'/bin/toggle'", "list": f"['/other/', {hotkeys.GNOME_PATH!r}]"}
@@ -483,6 +503,9 @@ class HotkeyTests(unittest.TestCase):
             hotkeys.open_link()
         browser.assert_called_once_with("https://clipboardplus.apercallc.com")
         self.assertTrue(Path(hotkeys.python_for_gui()).name.startswith("python"))
+
+    def test_python_for_gui_is_the_desktop_implementation(self):
+        self.assertIs(hotkeys.python_for_gui, hotkeys.desktop.python_for_gui)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@ import shlex
 import shutil
 import string
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -663,8 +662,17 @@ def _gnome_command(command: Path | list[str]) -> str:
 
 
 def history_command(lib: Path, python: str | None = None) -> list[str]:
-    """What the clipboard history shortcut runs: the window, opened on its Clipboard tab."""
-    return [python or python_for_gui(), str(lib / "app.py"), "--clipboard"]
+    """What the clipboard history shortcut runs: the window, opened on its Clipboard tab.
+
+    `python` is an explicit override for a *different* install prefix than the one
+    currently running (setup-desktop.py installing/updating another location) — when
+    given, it always wins and this process's own frozen state is irrelevant.
+    """
+    if python is None:
+        root = desktop.frozen_root()
+        if root is not None:
+            return desktop.relaunch("app", "--clipboard")
+    return [python or desktop.overlay_python(), str(lib / "app.py"), "--clipboard"]
 
 
 def gnome_shortcut(
@@ -761,8 +769,4 @@ def open_link(url: str = CLIPBOARD_PLUS) -> None:
     webbrowser.open(url)
 
 
-def python_for_gui() -> str:
-    """pythonw on Windows so no console window flashes."""
-    python = Path(sys.executable)
-    windowed = python.with_name("pythonw.exe")
-    return str(windowed if windowed.exists() else python)
+python_for_gui = desktop.python_for_gui
