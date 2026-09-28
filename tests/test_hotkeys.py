@@ -370,6 +370,19 @@ class HotkeyTests(unittest.TestCase):
                 ["/opt/Clipboard+/app", "--clipboard"],
             )
 
+    def test_history_command_default_uses_appimage_not_the_ephemeral_mount(self):
+        # A GNOME custom keybinding is persisted to disk; the AppImage mount that
+        # frozen_root() would otherwise point at disappears once every running
+        # instance exits, so this must go through the stable $APPIMAGE path.
+        with (
+            patch.object(hotkeys.desktop, "frozen_root", return_value=Path("/tmp/.mount_Abc123")),
+            patch.dict(os.environ, {"APPIMAGE": "/home/user/Clipboard+.AppImage"}),
+        ):
+            self.assertEqual(
+                hotkeys.history_command(PurePosixPath("/lib")),
+                ["/home/user/Clipboard+.AppImage", "app", "--clipboard"],
+            )
+
     def test_history_command_default_ignores_frozen_state_when_python_is_given(self):
         # setup-desktop.py:636 passes an explicit python for a *different* install
         # prefix than the one currently running; it must never be redirected to

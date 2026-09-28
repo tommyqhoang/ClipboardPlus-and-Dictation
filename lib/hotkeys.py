@@ -679,7 +679,9 @@ def history_command(lib: Path, python: str | None = None) -> list[str]:
     if python is None:
         root = desktop.frozen_root()
         if root is not None:
-            return desktop.relaunch("app", "--clipboard")
+            # Persisted as a GNOME custom keybinding's Exec= — must stay runnable
+            # after an AppImage's mount point disappears, unlike a same-session relaunch().
+            return desktop.persistent_relaunch("app", "--clipboard")
     return [python or desktop.overlay_python(), str(lib / "app.py"), "--clipboard"]
 
 

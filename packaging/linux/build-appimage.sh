@@ -16,7 +16,12 @@ cp "$ROOT/assets/icon-1024.png" \
   "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/clipboardplus.png"
 ln -sf usr/share/applications/clipboardplus.desktop "$APPDIR/clipboardplus.desktop"
 ln -sf usr/share/icons/hicolor/1024x1024/apps/clipboardplus.png "$APPDIR/clipboardplus.png"
-ln -sf usr/bin/tray "$APPDIR/AppRun"
+# A dispatcher, not a plain symlink to tray: a persisted command (GNOME shortcut,
+# autostart entry) invokes $APPIMAGE with an entry name as its first argument
+# (desktop.persistent_relaunch()), since the mounted usr/bin path it would
+# otherwise point at disappears once every running instance of this AppImage exits.
+cp "$ROOT/packaging/linux/AppDir/AppRun" "$APPDIR/AppRun"
+chmod +x "$APPDIR/AppRun"
 
 appimagetool "$APPDIR" "$ROOT/dist/Clipboard+-x86_64.AppImage"
 

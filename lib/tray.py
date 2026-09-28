@@ -88,7 +88,15 @@ class GnomeHotKey:
         path: str = hotkeys.GNOME_PATH,
         name: str = hotkeys.DICTATION_SHORTCUT_NAME,
     ) -> None:
-        self.command = command or desktop.install_prefix(HERE / "tray.py") / "bin/dictate-toggle"
+        # bin/dictate-toggle only exists for a source install; a packaged build has
+        # no such script, so its default goes through the bundled "dictation" entry
+        # instead — persistent_relaunch() so it stays runnable after an AppImage's
+        # mount point disappears.
+        self.command = command or (
+            desktop.persistent_relaunch("dictation")
+            if desktop.frozen_root() is not None
+            else desktop.install_prefix(HERE / "tray.py") / "bin/dictate-toggle"
+        )
         self.path, self.name = path, name
         self.conflict: hotkeys.Conflict | None = None  # Who else has these keys.
 
@@ -361,7 +369,9 @@ class Tray:
         self.icon.update_menu()
 
     def sync_login(self) -> None:
-        hotkeys.set_login_item(self.preferences.open_at_login(), desktop.relaunch("tray"))
+        hotkeys.set_login_item(
+            self.preferences.open_at_login(), desktop.persistent_relaunch("tray")
+        )
 
     # -- updates ----------------------------------------------------------
     def update_text(self) -> str:

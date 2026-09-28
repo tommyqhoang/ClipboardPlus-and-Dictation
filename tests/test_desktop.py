@@ -836,6 +836,38 @@ class RelaunchTests(unittest.TestCase):
                 ["/opt/Clipboard+/dictation", "--worker", "abc"],
             )
 
+    def test_persistent_relaunch_uses_appimage_not_the_ephemeral_mount(self):
+        # $APPDIR (frozen_root's usual source) is a temp mount that disappears once
+        # every running instance of this AppImage exits — dead for a command saved
+        # to disk (a GNOME shortcut, an autostart entry) to run later. $APPIMAGE is
+        # the stable file path; AppRun dispatches on the entry-name argument.
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.dict(
+                os.environ,
+                {
+                    "APPDIR": "/tmp/.mount_ClipboardAbc123",
+                    "APPIMAGE": "/home/user/Applications/Clipboard+-x86_64.AppImage",
+                },
+            ),
+        ):
+            self.assertEqual(
+                desktop.persistent_relaunch("dictation", "--worker", "abc"),
+                ["/home/user/Applications/Clipboard+-x86_64.AppImage", "dictation", "--worker", "abc"],
+            )
+
+    def test_persistent_relaunch_falls_back_to_relaunch_outside_an_appimage(self):
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", "/opt/Clipboard+/tray"),
+            patch.object(desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            self.assertEqual(
+                desktop.persistent_relaunch("dictation", "--worker", "abc"),
+                desktop.relaunch("dictation", "--worker", "abc"),
+            )
+
     def test_relaunch_when_frozen_appends_exe_on_windows(self):
         with (
             patch.object(sys, "frozen", True, create=True),

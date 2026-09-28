@@ -91,6 +91,21 @@ def relaunch(entry: str, *args: str) -> list[str]:
     return [overlay_python(), str(lib / f"{entry}.py"), *args]
 
 
+def persistent_relaunch(entry: str, *args: str) -> list[str]:
+    """Like relaunch(), but safe to write to disk for a later, separate process to
+    run — a GNOME custom keybinding, a Linux autostart entry. Inside an AppImage,
+    frozen_root() points into a mount that disappears once every running instance
+    of it exits, so a persisted command built from relaunch() would go dead; this
+    re-invokes the stable $APPIMAGE file with `entry` as its first argument
+    instead, which AppRun dispatches to the matching sibling binary. Everywhere
+    else (a normal frozen install, or running from source) relaunch()'s own path
+    is already stable, so this is identical to it."""
+    appimage = os.environ.get("APPIMAGE")
+    if appimage:
+        return [appimage, entry, *args]
+    return relaunch(entry, *args)
+
+
 def bundled_binary(name: str) -> Path | None:
     """A native binary this build ships (ffmpeg, whisper.cpp's server), or None to
     fall back to the system PATH (source installs, which rely on brew/apt/winget)."""

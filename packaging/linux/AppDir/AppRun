@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Dispatches to one of this build's sibling executables. With no arguments, or a
+# first argument that doesn't name one, runs the default entry (tray) and passes
+# argv straight through — a normal launch (double-click, desktop entry, "Exec=").
+# With a first argument matching a bundled entry's name, execs that one instead
+# and forwards the rest — how a persisted command (a GNOME custom keybinding, a
+# Linux autostart entry) started via $APPIMAGE stays runnable after this
+# AppImage's mount point disappears; see desktop.persistent_relaunch().
+set -e
+HERE="${APPDIR:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)}"
+BIN="$HERE/usr/bin"
+ENTRIES="tray app dictation engine overlay updates clipservice"
+
+entry="tray"
+if [ "$#" -gt 0 ]; then
+  for candidate in $ENTRIES; do
+    if [ "$1" = "$candidate" ]; then
+      entry="$candidate"
+      shift
+      break
+    fi
+  done
+fi
+
+exec "$BIN/$entry" "$@"

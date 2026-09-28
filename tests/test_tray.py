@@ -216,15 +216,18 @@ class TrayTests(unittest.TestCase):
             self.tray.run_engine()
         self.assertEqual(self.popen.call_args.args[0], ["/opt/Clipboard+/dictation"])
 
-    def test_sync_login_uses_relaunch_for_the_tray_entry(self):
+    def test_sync_login_uses_persistent_relaunch_for_the_tray_entry(self):
+        # Persisted as an autostart entry / registry Run value — must stay
+        # runnable after an AppImage's mount point disappears, unlike a
+        # same-session relaunch().
         with (
             patch.object(
-                tray.desktop, "relaunch", return_value=["/opt/Clipboard+/tray"]
-            ) as relaunch,
+                tray.desktop, "persistent_relaunch", return_value=["/opt/Clipboard+/tray"]
+            ) as persistent_relaunch,
             patch.object(tray.hotkeys, "set_login_item") as set_login_item,
         ):
             self.tray.sync_login()
-        relaunch.assert_called_once_with("tray")
+        persistent_relaunch.assert_called_once_with("tray")
         set_login_item.assert_called_once_with(
             self.tray.preferences.open_at_login(), ["/opt/Clipboard+/tray"]
         )
@@ -342,6 +345,20 @@ class TrayTests(unittest.TestCase):
             self.assertTrue(gnome.register(None))
             self.assertIsNone(gnome.conflict)
         self.assertEqual(bind.call_args.args[1].name, "dictate-toggle")
+
+    def test_gnome_hotkey_defaults_to_persistent_relaunch_when_frozen(self):
+        # bin/dictate-toggle only exists for a source install; a packaged build
+        # (including an AppImage, where the default must survive its mount
+        # point disappearing) has no such script.
+        with (
+            patch.object(tray.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+            patch.object(
+                tray.desktop, "persistent_relaunch", return_value=["/opt/Clipboard+/dictation"]
+            ) as persistent_relaunch,
+        ):
+            gnome = tray.GnomeHotKey(lambda: None)
+        persistent_relaunch.assert_called_once_with("dictation")
+        self.assertEqual(gnome.command, ["/opt/Clipboard+/dictation"])
 
     def test_a_conflict_is_recorded_and_announced_once(self):
         taken = hotkeys.Conflict("Old dictation", hotkeys.GNOME_LIST_PREFIX + "custom0/")
