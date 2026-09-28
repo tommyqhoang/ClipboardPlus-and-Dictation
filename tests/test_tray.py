@@ -138,6 +138,10 @@ class TrayTests(unittest.TestCase):
         image = SimpleNamespace(open=lambda path: Path(path).name)
         self.tray = tray.Tray(pystray, image)
         self.addCleanup(self.tray.quit)
+        # Menu tests control update results explicitly. A live background check
+        # can update the menu or write into this test's temp dir during cleanup.
+        self.real_start_update_check = self.tray.start_update_check
+        self.tray.start_update_check = Mock()
         self.tray.hotkey = FakeHotKey()
         self.tray.history_key = FakeHotKey()
         popen = patch.object(tray.subprocess, "Popen")
@@ -743,9 +747,12 @@ class TrayTests(unittest.TestCase):
         self.assertEqual(self.tray.icon.notifications, [])
 
     def test_manual_update_check_forces_a_new_request_and_reports_failure(self):
-        with patch.object(
-            tray.updates, "check", side_effect=tray.updates.UpdateError("Offline.")
-        ) as check:
+        with (
+            patch.object(self.tray, "start_update_check", self.real_start_update_check),
+            patch.object(
+                tray.updates, "check", side_effect=tray.updates.UpdateError("Offline.")
+            ) as check,
+        ):
             self.item("Check for Updates").action()
             deadline = time.monotonic() + 2
             while not self.tray.update_done and time.monotonic() < deadline:
