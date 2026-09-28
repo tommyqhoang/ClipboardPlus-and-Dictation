@@ -211,6 +211,29 @@ class TrayTests(unittest.TestCase):
         self.item("Settings").action()
         self.assertEqual(self.popen.call_args.args[0][-1], "--settings")
 
+    def test_run_engine_uses_a_sibling_binary_when_frozen(self):
+        with patch.object(tray.desktop, "relaunch", return_value=["/opt/Clipboard+/dictation"]):
+            self.tray.run_engine()
+        self.assertEqual(self.popen.call_args.args[0], ["/opt/Clipboard+/dictation"])
+
+    def test_sync_login_uses_relaunch_for_the_tray_entry(self):
+        with (
+            patch.object(
+                tray.desktop, "relaunch", return_value=["/opt/Clipboard+/tray"]
+            ) as relaunch,
+            patch.object(tray.hotkeys, "set_login_item") as set_login_item,
+        ):
+            self.tray.sync_login()
+        relaunch.assert_called_once_with("tray")
+        set_login_item.assert_called_once_with(
+            self.tray.preferences.open_at_login(), ["/opt/Clipboard+/tray"]
+        )
+
+    def test_open_app_window_uses_a_sibling_binary_when_frozen(self):
+        with patch.object(tray.desktop, "relaunch", return_value=["/opt/Clipboard+/app"]):
+            tray.open_app_window("--clipboard")
+        self.assertEqual(self.popen.call_args.args[0], ["/opt/Clipboard+/app"])
+
     def test_presets_and_taken_shortcuts(self):
         preset = hotkeys.PRESETS[1]
         self.item(preset.label()).action()

@@ -291,7 +291,7 @@ class Tray:
 
     def run_engine(self, *flags: str) -> None:
         subprocess.Popen(
-            [hotkeys.python_for_gui(), str(HERE / "dictation.py"), *flags],
+            desktop.relaunch("dictation", *flags),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -361,8 +361,7 @@ class Tray:
         self.icon.update_menu()
 
     def sync_login(self) -> None:
-        command = [hotkeys.python_for_gui(), str(Path(__file__).resolve())]
-        hotkeys.set_login_item(self.preferences.open_at_login(), command)
+        hotkeys.set_login_item(self.preferences.open_at_login(), desktop.relaunch("tray"))
 
     # -- updates ----------------------------------------------------------
     def update_text(self) -> str:
@@ -655,7 +654,7 @@ class Tray:
 def open_app_window(page: str = "") -> None:
     """Start the window; a running window is asked to show itself instead."""
     subprocess.Popen(
-        [hotkeys.python_for_gui(), str(HERE / "app.py"), *([page] if page else [])],
+        desktop.relaunch("app", *([page] if page else [])),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
