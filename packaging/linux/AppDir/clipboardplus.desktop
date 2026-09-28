@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Clipboard+
+Comment=Dictation and clipboard history
+Exec=tray
+Icon=clipboardplus
+Categories=Utility;
+Terminal=false
