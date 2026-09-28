@@ -11,7 +11,6 @@ import ctypes
 import os
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -434,7 +433,7 @@ class Controller(NSObject):  # type: ignore[misc]
     def run_engine(self, *flags: str) -> None:
         # The engine owns locking, recording, notifications and the clipboard.
         subprocess.Popen(
-            [sys.executable, str(HERE / "dictation.py"), *flags],
+            desktop.relaunch("dictation", *flags),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -895,7 +894,7 @@ class Controller(NSObject):  # type: ignore[misc]
 def open_app_window(page: str = "") -> None:
     """Start the window; a running window is asked to show itself instead."""
     subprocess.Popen(
-        [sys.executable, str(HERE / "app.py"), *([page] if page else [])],
+        desktop.relaunch("app", *([page] if page else [])),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
