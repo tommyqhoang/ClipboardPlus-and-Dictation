@@ -14,7 +14,6 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -23,7 +22,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -247,32 +245,6 @@ def _extract(archive: Path, folder: Path) -> Path:
     return top[0]
 
 
-def _extract_frozen_release(url: str, work: Path) -> Path:
-    """Download this OS's release asset (a zipped onedir build) and extract it."""
-    archive = work / "release.zip"
-    _download(url, archive)
-    try:
-        with zipfile.ZipFile(archive) as zf:
-            zf.extractall(work)
-    except (zipfile.BadZipFile, OSError) as exc:
-        raise UpdateError("The downloaded update could not be unpacked.") from exc
-    top = [entry for entry in work.iterdir() if entry.is_dir()]
-    if len(top) != 1:
-        raise UpdateError("The downloaded update did not contain a single install folder.")
-    return top[0]
-
-
-def _swap_install(current: Path, new: Path) -> None:
-    """Replace `current`'s contents with `new`'s, without deleting the running
-    executable while it's still running (Windows can't overwrite an open file)."""
-    old = current.parent / f"{current.name}-old"
-    if old.exists():
-        shutil.rmtree(old, ignore_errors=True)
-    current.rename(old)
-    new.rename(current)
-    shutil.rmtree(old, ignore_errors=True)
-
-
 def apply_update(paths: d.Paths, version: str, url: str) -> None:
     """Download and install a release, then leave the restart to its launcher.
 
@@ -291,17 +263,17 @@ def apply_update(paths: d.Paths, version: str, url: str) -> None:
         write_state(
             paths, {**state, "status": "installing", "target": version, "started": time.time()}
         )
-        root = desktop.frozen_root()
-        if root is not None:
-            # AppImage's frozen_root() points at usr/bin inside the mount; the
-            # install directory to swap is the AppImage's own top-level folder.
-            install = root if root.name != "usr" else root.parents[1]
-            with tempfile.TemporaryDirectory(prefix="update-", dir=paths.cache) as work:
-                extracted = _extract_frozen_release(url, Path(work))
-                _swap_install(install, extracted)
-            subprocess.Popen(
-                desktop.relaunch(Path(sys.executable).stem),
-                **desktop.process_options(detached=True),
+        if desktop.frozen_root() is not None:
+            # In-app updates for packaged installs aren't implemented yet — the
+            # asset a release actually needs (a zipped onedir build), permission-
+            # preserving extraction, and a safe per-OS directory swap (the AppImage
+            # mount is read-only; Windows can't overwrite its own running exe) are
+            # all still open work. Fail clearly rather than attempt a swap that
+            # would corrupt the install. See docs/superpowers/specs/
+            # 2026-09-28-packaged-installers-design.md §3.6 for the real design.
+            raise UpdateError(
+                "In-app updates aren't available for this build yet. Download the "
+                "latest installer from the Releases page instead."
             )
         else:
             with tempfile.TemporaryDirectory(prefix="update-", dir=paths.cache) as work:

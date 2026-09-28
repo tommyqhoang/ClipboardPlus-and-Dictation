@@ -13,7 +13,6 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
-import zipfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -486,27 +485,20 @@ class FrozenUpdateTests(unittest.TestCase):
         d.private_dir(self.paths.config.parent)
         updates.write_state(self.paths, {})
 
-    def test_frozen_install_swaps_the_directory_instead_of_running_setup(self):
+    def test_frozen_install_fails_clearly_instead_of_attempting_an_unsafe_swap(self):
         install = self.root / "Clipboard+"
         install.mkdir()
-        (install / "tray").write_text("old")
-
-        def fake_download(_url: str, destination: Path) -> None:
-            with zipfile.ZipFile(destination, "w") as zf:
-                zf.writestr("clipboardplus/tray", "new")
-
         with (
             patch.object(updates.desktop, "frozen_root", return_value=install),
-            patch.object(updates, "_download", fake_download),
-            patch.object(updates.desktop, "relaunch", return_value=[str(install / "tray")]),
+            patch.object(updates, "_download") as download,
             patch.object(updates.subprocess, "Popen") as popen,
         ):
-            updates.apply_update(self.paths, "9.9.9", "https://example.invalid/release.zip")
-        self.assertEqual(popen.call_args.args[0], [str(install / "tray")])
-        self.assertEqual((install / "tray").read_text(), "new")
+            with self.assertRaisesRegex(updates.UpdateError, "aren't available for this build"):
+                updates.apply_update(self.paths, "9.9.9", "https://example.invalid/release.zip")
+        download.assert_not_called()
+        popen.assert_not_called()
         state = updates.read_state(self.paths)
-        self.assertEqual(state.get("applied"), "9.9.9")
-        self.assertEqual(state.get("status"), "installed")
+        self.assertEqual(state.get("status"), "failed")
 
 
 if __name__ == "__main__":
