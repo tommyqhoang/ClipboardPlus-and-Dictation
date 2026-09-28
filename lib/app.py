@@ -25,6 +25,7 @@ import desktop
 import dictation as d
 import hotkeys
 import telemetry
+import updates
 import workflow
 from app_service import PROVIDERS, MicrophoneTest, Remote, Service
 
@@ -1061,6 +1062,78 @@ class App:
                 style="CardHint.TLabel",
             ).pack(anchor="w", pady=(6, 0))
 
+    def update_card(self) -> None:
+        card = self.card(
+            "Software Update",
+            f"Clipboard+ checks once a day whether a new version is available. "
+            f"You are on version {desktop.APP_VERSION}.",
+        )
+        prefs = hotkeys.Preferences(self.service.paths)
+        self.auto_updates = tk.BooleanVar(master=self.root, value=prefs.auto_updates())
+        self.update_status = tk.StringVar(value="")
+
+        def save() -> None:
+            prefs.save(auto_updates=self.auto_updates.get())
+            self.saved("Update preference saved.")
+
+        ttk.Checkbutton(
+            card,
+            text="Check for updates automatically",
+            variable=self.auto_updates,
+            command=save,
+            style="Card.TCheckbutton",
+        ).pack(anchor="w", pady=(6, 0))
+        self.update_label = ttk.Label(card, textvariable=self.update_status, style="Card.TLabel")
+        self.update_label.pack(anchor="w", pady=(6, 0))
+        self.update_button = self.button("Check Now", self.check_update, parent=card)
+        self.update_button.configure(style="TButton")
+        self.update_button.pack_forget()
+        self.update_button.pack(anchor="w", pady=(6, 0))
+        # What the last check found, without touching the network to build this page.
+        remembered = updates.read_state(self.service.paths).get("offered")
+        if isinstance(remembered, dict) and remembered.get("version"):
+            self.show_update(
+                {
+                    "version": str(remembered["version"]),
+                    "tag": str(remembered.get("tag", "")),
+                    "url": str(remembered.get("url", "")),
+                }
+                if updates.newer(str(remembered["version"]), desktop.APP_VERSION)
+                else None
+            )
+
+    def check_update(self) -> None:
+        """Look for a newer version now (the once-a-day limit does not apply)."""
+        self.update_button.state(["disabled"])
+        self.update_status.set("Checking…")
+        self.submit(
+            lambda: updates.check(self.service.paths, force=True),
+            self.show_update,
+            "",
+        )
+
+    def show_update(self, found: dict[str, str] | None) -> None:
+        self.update_button.state(["!disabled"])
+        if found is None:
+            self.update_status.set(f"Clipboard+ {desktop.APP_VERSION} is up to date.")
+            return
+        self.update_status.set(f"Version {found['version']} is available.")
+        self.update_button.configure(text=f"Update to {found['version']}")
+        self.update_button.configure(command=lambda: self.install_update(found))
+
+    def install_update(self, found: dict[str, str]) -> None:
+        self.update_button.state(["disabled"])
+        self.update_status.set(
+            f"Downloading version {found['version']}… This window can be closed."
+        )
+        try:
+            updates.start_updater(found["version"], found["url"])
+        except OSError:
+            self.update_button.state(["!disabled"])
+            self.update_status.set(
+                "The update could not start. Try again, or re-run the installer."
+            )
+
     def save_clipboard_options(self, keep_items: int, keep_days: int, images: bool) -> bool:
         prefs = hotkeys.Preferences(self.service.paths)
         previous = prefs.clipboard()
@@ -1247,6 +1320,7 @@ class App:
         self.clipboard_options_card()
         self.clipboard_plus_card()
         self.privacy_card()
+        self.update_card()
         self.button("Done", self.leave, True, self.actions(), "right")
 
     def tutorial_clipboard(self) -> None:
@@ -1456,6 +1530,7 @@ class App:
         self.clipboard_plus_card()
         if not setup:
             self.privacy_card()
+            self.update_card()
         if setup:
             self.button("Continue", self.prepare, True, self.actions(), "right")
             self.button("Back", self.choose_features, parent=self.actions(), side="left")
@@ -2255,7 +2330,10 @@ class App:
             telemetry.capture(exc, page=self.page)
             self.status.set("Something went wrong. Please try again.")
         if self.page != "closed":
-            self.timer = self.root.after(200, self.poll)
+            # Half a second is plenty when idle; recording screens update their own
+            # state file in the meantime, and account/clipboard refresh still lands
+            # within about a second.
+            self.timer = self.root.after(500 if self.pending is None else 200, self.poll)
 
     def close(self) -> None:
         """Close the window. A recording runs on its own and is not touched."""

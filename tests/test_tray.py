@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 import tempfile
@@ -11,6 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import clipcontrol
+import clipstore
 import dictation as d
 import hotkeys
 import tray
@@ -88,6 +91,28 @@ class FakeHotKey:
     def register(self, shortcut):
         self.registered.append(shortcut)
         return shortcut not in self.refuse
+
+
+ITEM = clipstore.Item(
+    id=1,
+    kind="text",
+    text="",
+    image_file="",
+    thumb_file="",
+    width=0,
+    height=0,
+    bytes=0,
+    created_at=0.0,
+    updated_at=0.0,
+    favorite=False,
+    label="",
+    source="desktop",
+    cloud_id="",
+    cloud_key="",
+    cloud_favorite=False,
+    dirty=False,
+    sync_skip=False,
+)
 
 
 class TrayTests(unittest.TestCase):
@@ -541,6 +566,48 @@ class TrayTests(unittest.TestCase):
         self.tray.apply(hotkeys.PRESETS[2])
         self.assertTrue(hotkeys.shortcut_working(self.paths))
 
+    def test_recent_copies_are_listed_and_copy_from_the_menu(self):
+        store = clipstore.Store(self.paths.clipboard)
+        first = store.add_text("first copy", now=100.0)
+        store.add_text("second copy", now=200.0)
+        store.close()
+        self.use_features(True, True)
+        self.tray.tick()
+        self.assertEqual(
+            [self.tray.row_text(i) for i in range(len(self.tray.rows))],
+            ["second copy", "first copy"],
+        )
+        self.assertTrue(self.visible("second copy"))
+        self.assertFalse(self.visible("Nothing copied yet."))
+        self.assertFalse(self.visible("Turn on Clipboard history"))
+        updates = self.tray.icon.updates
+        self.tray.tick()  # Nothing changed: the menu is not rebuilt.
+        self.assertEqual(self.tray.icon.updates, updates)
+        with patch.object(self.tray.service, "copy_item") as copy:
+            self.item("first copy").action()
+        self.assertEqual(copy.call_args.args[0].id, first.id)
+        self.assertIn("Copied", self.tray.icon.notifications[-1])
+
+    def test_recent_copies_hidden_until_clipboard_is_on(self):
+        self.assertFalse(self.visible("Nothing copied yet."))
+        self.assertTrue(self.visible("Turn on Clipboard history"))
+        self.use_features(True, True)
+        self.tray.tick()
+        self.assertTrue(self.visible("Nothing copied yet."))
+        self.item("Turn on Clipboard history").action()
+        self.assertEqual(self.popen.call_args.args[0][-1], "--settings")
+
+    def test_preview_text_is_one_line(self):
+        def make(text: str, kind: str = "text", label: str = "") -> clipstore.Item:
+            return dataclasses.replace(
+                ITEM, kind=kind, text=text, label=label, width=640, height=480
+            )
+
+        self.assertEqual(clipcontrol.preview_text(make("  hello   world  ")), "hello world")
+        self.assertEqual(clipcontrol.preview_text(make("x" * 80)), "x" * 60 + "…")
+        self.assertEqual(clipcontrol.preview_text(make("", kind="image")), "Image (640×480)")
+        self.assertEqual(clipcontrol.preview_text(make("raw", label=" My Label ")), "My Label")
+
     def test_second_launch_shows_the_running_apps_window(self):
         # Clicking the launcher while the tray runs must surface the window, not do nothing.
         held = tray.desktop.lock(self.paths.runtime / "menubar.lock")
@@ -550,6 +617,33 @@ class TrayTests(unittest.TestCase):
         self.assertEqual(
             self.popen.call_args.args[0][1], str(Path(tray.__file__).with_name("app.py"))
         )
+
+    def test_a_newer_release_appears_in_the_menu_and_updates_when_clicked(self):
+        # The offer arrives from the background check; tick() adopts it.
+        self.tray.start_update_check()
+        self.tray.update_result = {"version": "9.9.9", "tag": "v9.9.9", "url": "https://x/t.gz"}
+        self.tray.collect_update()
+        entry = self.item("Update to 9.9.9")
+        self.assertEqual(entry.options["visible"](None), True)
+        with patch.object(tray.updates, "start_updater") as start:
+            entry.action()
+        start.assert_called_once_with("9.9.9", "https://x/t.gz")
+        # Once started, the offer leaves the menu (the updater reports progress).
+        with self.assertRaises(AssertionError):
+            self.item("Update to")
+
+    def test_without_an_update_the_menu_just_stays_clean(self):
+        self.tray.start_update_check()
+        self.tray.update_result = None
+        self.tray.collect_update()
+        with self.assertRaises(AssertionError):
+            self.item("Update to")
+
+    def test_a_failed_update_check_is_quiet(self):
+        self.tray.start_update_check()
+        self.tray.update_result = None  # The worker thread's except clause ran.
+        self.tray.collect_update()
+        self.assertEqual(self.tray.icon.notifications, [])
 
 
 if __name__ == "__main__":

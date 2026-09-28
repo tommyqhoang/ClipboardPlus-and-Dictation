@@ -610,13 +610,7 @@ class Controller(NSObject):  # type: ignore[misc]
 
     @objc.python_method
     def row_text(self, item: clipstore.Item) -> str:
-        text = (
-            item.label
-            or item.text
-            or (f"Image ({item.width}×{item.height})" if item.kind == "image" else "")
-        )
-        flat = " ".join(text.split())
-        return flat if len(flat) <= POPOVER_PREVIEW_CHARS else flat[:POPOVER_PREVIEW_CHARS] + "…"
+        return clipcontrol.preview_text(item, POPOVER_PREVIEW_CHARS)
 
     @objc.python_method
     def select_row(self, row: int) -> None:

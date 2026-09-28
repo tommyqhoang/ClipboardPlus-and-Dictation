@@ -276,6 +276,14 @@ class Store:
         with self._lock:
             return int(self._db.execute("SELECT COUNT(*) FROM items").fetchone()[0])
 
+    def stamp(self) -> tuple[int, float]:
+        """A cheap change signal for the visible history: row count plus newest update."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COUNT(*), COALESCE(MAX(updated_at), 0) FROM items"
+            ).fetchone()
+        return int(row[0]), float(row[1])
+
     def list(
         self,
         *,

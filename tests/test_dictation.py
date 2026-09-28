@@ -319,7 +319,7 @@ class DictationTests(unittest.TestCase):
         self.assertEqual(d.clean_text("new line", False), "new line")
 
     def test_config_validation_and_explicit_model(self):
-        for invalid in ({"threads": 0}, {"live": "yes"}, {"unknown": 1}, {"backend": "other"}):
+        for invalid in ({"threads": -1}, {"live": "yes"}, {"unknown": 1}, {"backend": "other"}):
             d.private_dir(self.paths.config.parent)
             d.atomic(self.paths.config, json.dumps(invalid))
             with self.assertRaises(d.DictationError):
@@ -328,6 +328,14 @@ class DictationTests(unittest.TestCase):
         self.config.values["model"] = "/missing/model"
         with self.assertRaises(d.DictationError):
             self.config.check()
+
+    def test_zero_threads_means_automatic(self):
+        # 0 picks half the cores, bounded: small machines get one, huge ones eight.
+        d.private_dir(self.paths.config.parent)
+        d.atomic(self.paths.config, json.dumps({"threads": 0}))
+        config = d.Config(self.paths)
+        self.assertTrue(1 <= config.n("threads") <= 8)
+        self.assertLessEqual(config.n("threads"), max(1, (os.cpu_count() or 4) // 2))
 
     def test_remote_requires_opt_in(self):
         self.config.values.update(backend="http", endpoint="https://example.org/transcribe")

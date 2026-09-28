@@ -122,6 +122,8 @@ MODULES = (
     "clipcontrol.py",
     "clipui.py",
     "overlay.py",
+    "updates.py",
+    "engine.py",
 )
 # The app's own folder, so its generically named modules (app.py, tray.py…) never
 # mix with other tools' files in the shared ~/.local/lib. Older versions used it.

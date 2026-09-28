@@ -6,7 +6,7 @@ KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybindin
 
 APP_LIB="${HOME}/.local/lib/whisper-dictation"
 LEGACY_LIB="${HOME}/.local/lib" # Where versions before the app's own folder lived.
-MODULES="telemetry dictation desktop onboarding rewriting workflow app app_service hotkeys menubar tray clipboardplus clipstore clipwatch clipwatch_linux clipwatch_macos clipwatch_windows clipservice clipsync clipcontrol clipui overlay"
+MODULES="telemetry dictation desktop onboarding rewriting workflow app app_service hotkeys menubar tray clipboardplus clipstore clipwatch clipwatch_linux clipwatch_macos clipwatch_windows clipservice clipsync clipcontrol clipui overlay updates engine"
 
 # Never signal a PID read from disk; only the session supervisor owns the recorder.
 for library in "$APP_LIB" "$LEGACY_LIB"; do

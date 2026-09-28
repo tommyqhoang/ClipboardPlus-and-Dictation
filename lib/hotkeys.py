@@ -333,6 +333,10 @@ class Preferences:
         (nothing is sent before setup, where this switch is shown)."""
         return self.read().get("share_usage", True) is not False
 
+    def auto_updates(self) -> bool:
+        """Checking for app updates: on unless turned off in Settings."""
+        return self.read().get("auto_updates", True) is not False
+
     def save(
         self,
         shortcut: Shortcut | None = None,
@@ -341,9 +345,12 @@ class Preferences:
         clipboard: ClipboardSettings | None = None,
         history_shortcut: Shortcut | Literal[False] | None = None,
         share_usage: bool | None = None,
+        auto_updates: bool | None = None,
     ) -> None:
         """Change the given preferences. `history_shortcut=False` switches it off."""
         values = self.read()
+        if auto_updates is not None:
+            values["auto_updates"] = auto_updates
         if share_usage is not None:
             values["share_usage"] = share_usage
         if history_shortcut is not None:

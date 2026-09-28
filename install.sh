@@ -291,9 +291,9 @@ install_whisper_from_source() {
     fi
   fi
 
-  echo "Building whisper-cli from source"
+  echo "Building whisper-cli and whisper-server from source"
   cmake -S "$src_dir" -B "$src_dir/build" -DCMAKE_BUILD_TYPE=Release -DWHISPER_SDL2=OFF || return 1
-  cmake --build "$src_dir/build" --config Release --target whisper-cli -j"$(nproc)" || return 1
+  cmake --build "$src_dir/build" --config Release --target whisper-cli whisper-server -j"$(nproc)" || return 1
 
   if [[ ! -x "$bin_path" ]]; then
     echo "Build finished, but whisper-cli was not found at $bin_path." >&2

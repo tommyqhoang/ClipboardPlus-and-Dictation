@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import clipservice
+import clipstore
 import desktop
 import dictation as d
 import hotkeys
@@ -23,6 +24,18 @@ RESTART_SECONDS = 5.0  # Least time between starts.
 BACKOFF_SECONDS = 60.0  # After CRASH_LIMIT starts within CRASH_WINDOW.
 CRASH_WINDOW = 60.0
 CRASH_LIMIT = 3
+PREVIEW_CHARS = 60  # One line of a clip in the menu bar popover or the tray menu.
+
+
+def preview_text(item: clipstore.Item, width: int = PREVIEW_CHARS) -> str:
+    """One line for a clip in a menu: its label, text or image size, kept to `width`."""
+    text = (
+        item.label
+        or item.text
+        or (f"Image ({item.width}×{item.height})" if item.kind == "image" else "")
+    )
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else flat[:width] + "…"
 
 
 class ClipboardControl:

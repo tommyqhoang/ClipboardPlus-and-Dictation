@@ -103,7 +103,8 @@ DEFAULTS: dict[str, Any] = {
     "clipboard_backend": "auto",
     "ffmpeg": "ffmpeg",
     "powershell": "powershell.exe",
-    "threads": 4,
+    # 0 means automatic: half the cores, capped, so small and large machines both fit.
+    "threads": 0,
     "prompt": "",
     "endpoint": "",
     "api_model": "",
@@ -159,7 +160,7 @@ class Config:
             if type(self.values[key]) is not type(default):
                 raise DictationError(f"Invalid type for configuration key: {key}")
         for key, low, high in (
-            ("threads", 1, 128),
+            ("threads", 0, 128),  # 0: chosen from the machine's core count.
             ("max_seconds", 1, 600),
             ("timeout", 1, 600),
             ("live_interval", 1, 60),
@@ -188,6 +189,12 @@ class Config:
         return str(self.values[key])
 
     def n(self, key: str) -> int:
+        if key == "threads" and not self.values[key]:
+            # Automatic: half the cores (whisper also parallelises encode/decode),
+            # always at least one and never more than eight, leaving the machine
+            # responsive while a recording is transcribed.
+            cores = os.cpu_count() or 4
+            return max(1, min(8, cores // 2))
         return int(self.values[key])
 
     def b(self, key: str) -> bool:
@@ -314,6 +321,13 @@ def transcribe(config: Config, pcm: bytes, cache: Path) -> str:
     if len(pcm) < 3200 or not any(pcm):
         return ""
     if config.s("backend") == "local":
+        import engine
+
+        # A ready engine (model already in memory) answers far faster than a fresh
+        # whisper-cli start; any problem falls back to the usual path below.
+        text = engine.transcribe(config, config.paths, wav_bytes(pcm), config.n("timeout"))
+        if text is not None:
+            return clean_text(text, config.b("voice_commands"))
         with tempfile.TemporaryDirectory(prefix="inference-", dir=cache) as folder:
             audio = Path(folder) / "audio.wav"
             audio.write_bytes(wav_bytes(pcm))
@@ -612,12 +626,16 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                     return
                 except subprocess.TimeoutExpired:
                     pass
-            recorder.terminate()
+            # A recorder can exit between poll and terminate when its device goes away.
+            with contextlib.suppress(OSError):
+                recorder.terminate()
             try:
                 recorder.wait(timeout=1)
             except subprocess.TimeoutExpired:
-                recorder.kill()
-                recorder.wait()
+                with contextlib.suppress(OSError):
+                    recorder.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    recorder.wait(timeout=2)
 
     try:
         paths.preview.unlink(missing_ok=True)
@@ -635,6 +653,11 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
             )
         # The pill adds to the notifications (a notification is never missed).
         start_overlay(config, token)  # Starts up while the microphone does.
+        if config.s("backend") == "local":
+            import engine
+
+            if engine.read_info(paths) is None:
+                engine.start(paths, config)  # Loads the model while the user speaks.
         time.sleep(0.08)
         if recorder.poll() is not None:
             raise DictationError(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -17,15 +18,18 @@ from pathlib import Path
 from typing import Any
 
 import clipcontrol
+import clipstore
 import desktop
 import dictation as d
 import hotkeys
 import telemetry
+import updates
 import workflow
 from app_service import Service
 
 HERE = Path(__file__).resolve().parent
 WM_HOTKEY, WM_APP = 0x0312, 0x8000
+MENU_ROWS = 8  # Recent copies listed in the menu, like the macOS popover.
 
 
 class WindowsHotKey:
@@ -112,6 +116,11 @@ class Tray:
         self.running = False
         self.phase = "idle"
         self.state: tuple[str, int] = ("", 0)
+        self.update: dict[str, str] | None = None  # A newer release to offer.
+        self.update_checked = False
+        self.store: clipstore.Store | None = None
+        self.rows: clipstore.Items = []
+        self.rows_stamp: tuple[int, float] | None = None  # What the menu rows show now.
         self.images = {
             "idle": image.open(HERE / "whisper-dictation.png"),
             "recording": image.open(HERE / "tray-recording.png"),
@@ -121,6 +130,15 @@ class Tray:
 
         def dictation_on(_: Any) -> bool:
             return self.clip.features().dictation
+
+        recent = [
+            item(
+                lambda _, index=index: self.row_text(index),
+                lambda index=index: self.copy_row(index),
+                visible=lambda _, index=index: index < len(self.rows),
+            )
+            for index in range(MENU_ROWS)
+        ]
 
         presets = [
             item(
@@ -138,6 +156,19 @@ class Tray:
             # Kept short: everyday actions on top, rarely changed options under More.
             menu(
                 item(lambda _: self.status_text(), None, enabled=False),
+                menu.SEPARATOR,
+                *recent,
+                item(
+                    "Nothing copied yet.",
+                    None,
+                    enabled=False,
+                    visible=lambda _: self.clip.features().clipboard and not self.rows,
+                ),
+                item(
+                    "Turn on Clipboard history in Settings to see recent copies here.",
+                    lambda: self.open_window("--settings"),
+                    visible=lambda _: not self.clip.features().clipboard,
+                ),
                 menu.SEPARATOR,
                 item(
                     lambda _: self.toggle_text(),
@@ -181,6 +212,11 @@ class Tray:
                     visible=lambda _: self.clip.features().clipboard and self.clip.paused(),
                 ),
                 menu.SEPARATOR,
+                item(
+                    lambda _: self.update_text(),
+                    self.update_now,
+                    visible=lambda _: self.update is not None,
+                ),
                 item("Settings…", lambda: self.open_window("--settings")),
                 item(
                     "More",
@@ -307,6 +343,51 @@ class Tray:
         command = [hotkeys.python_for_gui(), str(Path(__file__).resolve())]
         hotkeys.set_login_item(self.preferences.open_at_login(), command)
 
+    # -- updates ----------------------------------------------------------
+    def update_text(self) -> str:
+        return f"Update to {self.update['version']}…" if self.update else "Check for Updates…"
+
+    def start_update_check(self) -> None:
+        """Look for a newer release off the tray's thread, once per run."""
+        if self.update_checked:
+            return
+        self.update_checked = True
+        self.update_result: dict[str, str] | None = None
+
+        def look() -> None:
+            try:
+                found = updates.check(self.paths)
+            except Exception:  # noqa: BLE001 - a failed check must never touch the tray.
+                found = None
+            self.update_result = found  # Picked up by tick(), on the tray's thread.
+
+        threading.Thread(target=look, daemon=True).start()
+
+    def collect_update(self) -> None:
+        """Adopt a finished update check (called from tick, never a worker thread)."""
+        if not self.update_checked or not hasattr(self, "update_result"):
+            return
+        found, self.update_result = self.update_result, None
+        if found is not None and self.update is None:
+            self.update = found
+            self.notify(f"Version {found['version']} is available. See the tray menu.")
+            self.icon.update_menu()
+
+    def update_now(self) -> None:
+        """Install the offered release; the updater process reports how it went."""
+        found = self.update
+        if found is None:
+            self.start_update_check()
+            return
+        self.update = None
+        self.icon.update_menu()
+        self.notify(f"Updating to {found['version']}… Clipboard+ stays usable while it downloads.")
+        try:
+            updates.start_updater(found["version"], found["url"])
+        except OSError:
+            self.update = found
+            self.notify("The update could not start. Try again, or re-run the installer.")
+
     def quit(self) -> None:
         self.clip.stop()
         self.running = False
@@ -317,6 +398,54 @@ class Tray:
             self.icon.notify(message, hotkeys.APP_NAME)
         except (NotImplementedError, OSError):
             pass
+
+    # -- recent copies -----------------------------------------------------
+    def open_store(self) -> clipstore.Store | None:
+        if self.store is None:
+            try:
+                self.store = clipstore.Store(self.paths.clipboard)
+            except (clipstore.StoreError, OSError) as exc:
+                telemetry.capture(exc, level="warning", stage="tray_store")
+        return self.store
+
+    def refresh_rows(self) -> bool:
+        """List the newest clips when the history changed; False when it did not.
+
+        A cheap stamp (row count plus newest update) keeps the GTK menu from being
+        rebuilt on every half-second tick, which would flicker the top bar.
+        """
+        if not self.clip.features().clipboard:
+            if self.rows:
+                self.rows, self.rows_stamp = [], None
+                return True
+            return False
+        store = self.open_store()
+        if store is None:
+            return False
+        try:
+            stamp = store.stamp()
+            if stamp == self.rows_stamp:
+                return False
+            self.rows = store.list(limit=MENU_ROWS)
+            self.rows_stamp = stamp
+            return True
+        except sqlite3.Error:
+            return False  # A busy or briefly missing database is not worth a crash.
+
+    def row_text(self, index: int) -> str:
+        return clipcontrol.preview_text(self.rows[index]) if index < len(self.rows) else ""
+
+    def copy_row(self, index: int) -> None:
+        if index >= len(self.rows) or self.store is None:
+            return
+        clip = self.rows[index]
+        try:
+            self.service.copy_item(clip, self.store)
+        except d.DictationError as exc:
+            self.notify(str(exc))
+            return
+        telemetry.event("clipboard_copy", kind=clip.kind, favorite=clip.favorite)
+        self.notify("Copied. Paste it anywhere.")
 
     # -- state ------------------------------------------------------------
     def history_text(self) -> str:
@@ -367,6 +496,7 @@ class Tray:
         )
         self.sync_history_shortcut()
         self.sync_login()
+        self.start_update_check()
         features = self.clip.features()
         telemetry.event(
             "tray_start",
@@ -412,9 +542,13 @@ class Tray:
 
     def tick(self) -> None:
         self.clip.supervise()
+        self.start_update_check()
+        self.collect_update()
         if self.clip.changed():
             self.sync_dictation_shortcut()
             self.sync_history_shortcut()
+            self.icon.update_menu()
+        if self.refresh_rows():
             self.icon.update_menu()
         if (self.paths.runtime / "menubar-quit").exists():
             (self.paths.runtime / "menubar-quit").unlink(missing_ok=True)
