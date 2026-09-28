@@ -318,7 +318,10 @@ class DictationTests(unittest.TestCase):
         started = self.cli(ok=False)  # The worker can fail before or after startup returns.
         if started.returncode:
             self.assertIn("Microphone could not start", started.stderr)
-        self.assertIn("Microphone could not start", self.wait_phase("error")["message"])
+        self.assertRegex(
+            self.wait_phase("error")["message"],
+            "Microphone could not start|The microphone stopped",
+        )
         d.atomic(self.paths.state, '{"phase":"recording","token":"old"}')
         self.assertEqual(json.loads(self.cli("--status").stdout)["phase"], "interrupted")
 
