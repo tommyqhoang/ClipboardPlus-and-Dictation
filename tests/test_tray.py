@@ -525,7 +525,13 @@ class TrayTests(unittest.TestCase):
     def test_the_menu_is_rebuilt_only_when_something_changed(self):
         self.use_features(True, True)
         self.tray.clip._popen = Mock(return_value=Mock(poll=Mock(return_value=None)))
-        with patch.object(self.tray.service, "ready", return_value=True):
+        # A background update result may arrive between ticks; keep this test
+        # focused on an otherwise unchanged menu.
+        with (
+            patch.object(self.tray.service, "ready", return_value=True),
+            patch.object(self.tray, "start_update_check"),
+            patch.object(self.tray, "collect_update"),
+        ):
             self.tray.tick()
             baseline = self.tray.icon.updates
             for _ in range(5):
