@@ -306,15 +306,34 @@ class DeleteAndRetentionTests(StoreCase):
         second = self.store.add_image(make_png(30, 30, (4, 5, 6)), now=2.0)
         starred = self.store.add_image(make_png(30, 30, (7, 8, 9)), now=0.5)
         self.store.set_favorite(starred.id, True)
-        limit_mb = (second.bytes + starred.bytes + 10) / 1_000_000
+        # The cap budgets only non-favorite bytes; a favorites collection must not
+        # eat into it (nor the other way around — see the favorites cap test below).
+        limit_mb = (second.bytes + 10) / 1_000_000
         self.store.prune(keep_items=1000, keep_days=3650, image_cache_mb=limit_mb, now=10.0)
         self.assertIsNone(self.store.get(first.id))
         self.assertIsNotNone(self.store.get(second.id))
         self.assertIsNotNone(self.store.get(starred.id))
-        # Favorites are never evicted even when they alone exceed the cap.
+        # Favorites are exempt from the *regular* image cache cap.
         self.store.prune(keep_items=1000, keep_days=3650, image_cache_mb=0.0, now=10.0)
         self.assertIsNone(self.store.get(second.id))
         self.assertIsNotNone(self.store.get(starred.id))
+
+    def test_prune_evicts_the_oldest_favorite_images_once_their_own_cap_is_exceeded(self):
+        old_star = self.store.add_image(make_png(30, 30, (1, 2, 3)), now=1.0)
+        new_star = self.store.add_image(make_png(30, 30, (4, 5, 6)), now=2.0)
+        self.store.set_favorite(old_star.id, True)
+        self.store.set_favorite(new_star.id, True)
+        # A regular-history cap of 0 must not touch favorites; only their own cap does.
+        limit_mb = (new_star.bytes + 10) / 1_000_000
+        self.store.prune(
+            keep_items=1000,
+            keep_days=3650,
+            image_cache_mb=0.0,
+            favorite_cache_mb=limit_mb,
+            now=10.0,
+        )
+        self.assertIsNone(self.store.get(old_star.id))
+        self.assertIsNotNone(self.store.get(new_star.id))
 
     def test_prune_removes_stray_image_files_but_not_ones_being_written(self):
         item = self.store.add_image(make_png())

@@ -120,6 +120,8 @@ class Overlay:
         self._last_state = 0.0
         self.closed = False
         self._next: str | None = None  # The one scheduled frame.
+        self._drawn_mode = ""  # What the canvas currently shows (see tick's use of _settled).
+        self._drawn_settled = False
         shortcut = hotkeys.Preferences(paths).shortcut()
         self.hint = f"{shortcut.label()} to stop"
         family = str(font.nametofont("TkDefaultFont").actual()["family"])
@@ -311,11 +313,28 @@ class Overlay:
             speed = 0.6 if target > self.heights[i] else 0.18
             self.heights[i] += (target - self.heights[i]) * speed
         self._alpha(now)
-        self.draw(now)
+        settled = self._settled(now)
+        # Keep drawing every frame while animating; once settled, draw exactly one more
+        # time (to land on the final frame, e.g. the grown checkmark) and then stop.
+        if not settled or self.mode != self._drawn_mode or not self._drawn_settled:
+            self.draw(now)
+            self._drawn_mode, self._drawn_settled = self.mode, settled
         if self._finished(now):
             self.close()
             return
         self._next = self.root.after(FRAME_MS, self.tick)
+
+    def _settled(self, now: float) -> bool:
+        """Whether another frame would draw the canvas byte-for-byte the same.
+
+        Only alpha (the fade, applied to the window, not the canvas) still moves once
+        settled, so tick() can stop paying for a full delete-and-redraw every 33ms.
+        """
+        if self.mode not in HOLD:
+            return False  # recording/transcribing/starting always animate.
+        if self.mode == "copied":
+            return self.ended_at is not None and now - self.ended_at >= 0.2
+        return True  # empty/cancelled/error draw the same frame from the start.
 
     def _finished(self, now: float) -> bool:
         if now - self.born > LIFETIME_SECONDS:

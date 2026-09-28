@@ -178,6 +178,39 @@ class OverlayWindowTests(unittest.TestCase):
         self.frames(overlay.HOLD["copied"] + 1)
         self.assertTrue(self.pill.closed)
 
+    def test_settled_tracks_the_checkmarks_growin_and_the_static_holds(self):
+        self.pill.mode, self.pill.ended_at = "recording", None
+        self.assertFalse(self.pill._settled(self.now))
+        self.pill.mode, self.pill.ended_at = "copied", self.now
+        self.assertFalse(self.pill._settled(self.now))  # Still growing in.
+        self.assertTrue(self.pill._settled(self.now + 0.2))
+        self.pill.mode = "cancelled"
+        self.assertTrue(self.pill._settled(self.now))  # No grow-in for this one.
+
+    def test_a_settled_hold_state_stops_redrawing_the_canvas(self):
+        self.pill.mode, self.pill.ended_at = "cancelled", self.now
+        with patch.object(self.pill, "_read_state"):
+            self.pill.tick()
+            before = self.pill.canvas.find_all()
+            self.now += 0.5
+            self.pill.tick()
+        self.assertEqual(self.pill.canvas.find_all(), before)
+
+    def test_the_copied_checkmark_animates_in_before_it_settles(self):
+        self.pill.mode, self.pill.ended_at = "copied", self.now
+        with patch.object(self.pill, "_read_state"):
+            self.pill.tick()
+            mid = self.pill.canvas.find_all()
+            self.now += 0.05
+            self.pill.tick()
+            self.assertNotEqual(self.pill.canvas.find_all(), mid)  # Grow-in still moving.
+            self.now += 0.3  # Past the 0.2s grow-in: settled now.
+            self.pill.tick()
+            settled = self.pill.canvas.find_all()
+            self.now += 0.5
+            self.pill.tick()
+        self.assertEqual(self.pill.canvas.find_all(), settled)
+
     def test_an_auto_pasted_transcript_says_pasted(self):
         self.frames(0.2)
         self.state("idle", result="copied", message=d.PASTED)

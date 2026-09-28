@@ -476,9 +476,16 @@ class Store:
         keep_items: int,
         keep_days: int,
         image_cache_mb: float = 500.0,
+        favorite_cache_mb: float = 2000.0,
         now: float | None = None,
     ) -> int:
-        """Apply the retention settings. Favorites are exempt; the account is left alone."""
+        """Apply the retention settings.
+
+        Favorites are exempt from the item-count and age caps (they were starred on
+        purpose), but their images still sit under their own, much larger disk cap —
+        oldest favorited images first — so years of favoriting screenshots cannot grow
+        the cache without bound. The account is left alone either way.
+        """
         stamp = time.time() if now is None else now
         doomed = set(
             self._ids("WHERE favorite = 0 AND created_at < ?", (stamp - keep_days * 86400.0,))
@@ -495,18 +502,32 @@ class Store:
                 "SELECT id, bytes, favorite FROM items WHERE kind = 'image' "
                 "ORDER BY created_at ASC, id ASC"
             ).fetchall()
-        total = sum(int(row["bytes"]) for row in images if int(row["id"]) not in doomed)
-        cap = int(image_cache_mb * 1_000_000)
-        for row in images:
-            if total <= cap:
-                break
-            if int(row["id"]) in doomed or row["favorite"]:
-                continue
-            doomed.add(int(row["id"]))
-            total -= int(row["bytes"])
+        self._evict_over_cap(images, doomed, favorite=False, cap_mb=image_cache_mb)
+        self._evict_over_cap(images, doomed, favorite=True, cap_mb=favorite_cache_mb)
         self._remove(sorted(doomed), tombstones=False)
         self._remove_stray_files(stamp)
         return len(doomed)
+
+    @staticmethod
+    def _evict_over_cap(
+        images: Sequence[sqlite3.Row], doomed: set[int], *, favorite: bool, cap_mb: float
+    ) -> None:
+        """Add the oldest images of one favorite-ness to `doomed` until their own total
+        bytes fits `cap_mb`. Kept separate from the other group so a large favorites
+        collection cannot eat into the regular history's own budget, or vice versa."""
+        cap = int(cap_mb * 1_000_000)
+        total = sum(
+            int(row["bytes"])
+            for row in images
+            if int(row["id"]) not in doomed and bool(row["favorite"]) == favorite
+        )
+        for row in images:
+            if total <= cap:
+                break
+            if int(row["id"]) in doomed or bool(row["favorite"]) != favorite:
+                continue
+            doomed.add(int(row["id"]))
+            total -= int(row["bytes"])
 
     def _ids(self, where: str, args: Sequence[object]) -> Ids:
         with self._lock:
