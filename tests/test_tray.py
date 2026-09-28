@@ -334,12 +334,14 @@ class TrayTests(unittest.TestCase):
 
         unreachable = type("DisplayConnectionError", (Exception,), {})("no X server")
         with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),  # macOS: menubar.py.
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install"),
             patch("builtins.__import__", importing(unreachable)),
         ):
             self.assertEqual(tray.main(), 1)
         with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),  # macOS: menubar.py.
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install"),
             patch("builtins.__import__", importing(ImportError("pystray missing"))),
@@ -354,6 +356,7 @@ class TrayTests(unittest.TestCase):
         fake = MagicMock()
         (self.paths.runtime / "menubar-quit").write_text("quit")  # Left by the last quit.
         with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),  # macOS: menubar.py.
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install") as install,
             # Neither is installed where only the standard library is (Python 3.10/3.14 CI).

@@ -60,6 +60,9 @@ class DesktopTests(unittest.TestCase):
             (prefix / setup.LIB).mkdir(parents=True)
             (prefix / setup.LIB / "app.py").touch()
             with (
+                patch.object(
+                    desktop, "platform_name", return_value="linux"
+                ),  # A tray, not a bundle.
                 patch.object(desktop, "has_display", return_value=False),
                 patch.object(setup.subprocess, "Popen") as process,
                 patch.object(setup, "stop_menubar") as stop,
