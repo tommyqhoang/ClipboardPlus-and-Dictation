@@ -51,7 +51,7 @@ class ControlCase(unittest.TestCase):
         return clipcontrol.ClipboardControl(
             self.paths,
             self.prefs,
-            python="/venv/python",
+            command=["/venv/python", str(clipcontrol.HERE / "clipservice.py")],
             popen=self.popen,
             clock=lambda: self.now,
             wall=lambda: self.wall,
@@ -87,6 +87,21 @@ class SupervisionTests(ControlCase):
         self.assertEqual(len(self.started), 1)
         self.assertEqual(self.started[0][0], "/venv/python")
         self.assertTrue(self.started[0][1].endswith("clipservice.py"))
+
+    def test_default_command_comes_from_desktop_relaunch(self):
+        self.enable()
+        with patch.object(
+            clipcontrol.desktop, "relaunch", return_value=["/opt/Clipboard+/clipservice"]
+        ):
+            control = clipcontrol.ClipboardControl(
+                self.paths,
+                self.prefs,
+                popen=self.popen,
+                clock=lambda: self.now,
+                wall=lambda: self.wall,
+            )
+            control.supervise()
+        self.assertEqual(self.started[0], ["/opt/Clipboard+/clipservice"])
 
     def test_it_is_never_started_while_the_feature_is_off(self):
         self.enable(clipboard=False)

@@ -44,14 +44,14 @@ class ClipboardControl:
         paths: d.Paths,
         prefs: hotkeys.Preferences,
         *,
-        python: str | None = None,
+        command: list[str] | None = None,
         popen: Callable[..., Any] = subprocess.Popen,
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
     ) -> None:
         self._paths = paths
         self._prefs = prefs
-        self._python = python or hotkeys.python_for_gui()
+        self._command = command or desktop.relaunch("clipservice")
         self._popen = popen
         self._clock = clock
         self._wall = wall
@@ -119,7 +119,7 @@ class ClipboardControl:
         if now < self._not_before or clipservice.running(self._paths):
             return
         self._process = self._popen(
-            [self._python, str(HERE / "clipservice.py")],
+            self._command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

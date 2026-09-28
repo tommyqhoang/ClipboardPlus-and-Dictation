@@ -249,9 +249,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.paths = d.Paths()
         self.service = Service(self.paths)
         self.preferences = hotkeys.Preferences(self.paths)
-        self.clip = clipcontrol.ClipboardControl(
-            self.paths, self.preferences, python=sys.executable
-        )
+        self.clip = clipcontrol.ClipboardControl(self.paths, self.preferences)
         self.dictation_registered = False
         self.history: hotkeys.Shortcut | None = None  # The history shortcut registered now.
         self.capturing = False  # The window is recording a new dictation shortcut.
