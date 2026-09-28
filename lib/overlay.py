@@ -19,7 +19,6 @@ import time
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from tkinter import font
 from typing import Any
 
@@ -212,8 +211,7 @@ class Overlay:
             return
         name = self._under(event.x, event.y)
         if name:
-            engine = str(Path(__file__).resolve().with_name("dictation.py"))
-            self._launch([sys.executable, engine, *(["--cancel"] if name == "cancel" else [])])
+            self._launch(desktop.relaunch("dictation", *(["--cancel"] if name == "cancel" else [])))
             if name == "stop":
                 self.recorded = self._since_start(self._clock())
             self.mode = "transcribing" if name == "stop" else "cancelled"
