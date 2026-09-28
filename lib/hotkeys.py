@@ -94,8 +94,16 @@ TK_MODIFIERS = {
     "Command_R": "cmd",
 }
 CLIPBOARD_PLUS = "https://clipboardplus.apercallc.com"
-AGENT_LABEL = "org.whisperdictation.menubar"
+# The macOS bundle identity; setup-desktop.py's Info.plist CFBundleIdentifier stays
+# the same value (kept here so both files migrate it together).
+BUNDLE_ID = "com.apercallc.clipboardplusdesktop"
+FORMER_BUNDLE_IDS = ("org.whisperdictation.desktop",)
+AGENT_LABEL = f"{BUNDLE_ID}.menubar"
+FORMER_AGENT_LABELS = ("org.whisperdictation.menubar",)
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_VALUE_NAME = "ClipboardPlus"
+FORMER_RUN_VALUE_NAMES = ("WhisperDictation",)
+AUTOSTART_DIR = ".config/autostart"
 GNOME_LIST_PREFIX = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/"
 GNOME_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
 GNOME_HISTORY_PATH = (
@@ -381,7 +389,14 @@ def agent_path(home: Path | None = None) -> Path:
 
 
 def autostart_path(home: Path | None = None) -> Path:
-    return (home or Path.home()) / ".config/autostart/whisper-dictation.desktop"
+    return (home or Path.home()) / f"{AUTOSTART_DIR}/{desktop.DESKTOP_ENTRY_ID}.desktop"
+
+
+def former_autostart_paths(home: Path | None = None) -> tuple[Path, ...]:
+    return tuple(
+        (home or Path.home()) / f"{AUTOSTART_DIR}/{former}.desktop"
+        for former in desktop.FORMER_DESKTOP_ENTRY_IDS
+    )
 
 
 def bundle_login_command(bundle: str) -> list[str]:
@@ -405,20 +420,31 @@ def set_login_item(
     if platform == "windows":
         winreg = registry or __import__("winreg")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            # A name from a former release is never left behind alongside the new one.
+            for former in FORMER_RUN_VALUE_NAMES:
+                try:
+                    winreg.DeleteValue(key, former)
+                except FileNotFoundError:
+                    pass
             if enabled:
                 value = subprocess.list2cmdline(command)
-                winreg.SetValueEx(key, "WhisperDictation", 0, winreg.REG_SZ, value)
+                winreg.SetValueEx(key, RUN_VALUE_NAME, 0, winreg.REG_SZ, value)
             else:
                 try:
-                    winreg.DeleteValue(key, "WhisperDictation")
+                    winreg.DeleteValue(key, RUN_VALUE_NAME)
                 except FileNotFoundError:
                     pass
         return
+    if platform == "macos":
+        _migrate_former_agents(home, run)
     path = agent_path(home) if platform == "macos" else autostart_path(home)
     if not enabled:
         if platform == "macos" and _menubar_is_idle():
             _launchctl("bootout", AGENT_LABEL, run)
         path.unlink(missing_ok=True)
+        if platform != "macos":
+            for former_path in former_autostart_paths(home):
+                former_path.unlink(missing_ok=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     if platform == "macos":
@@ -449,10 +475,12 @@ def set_login_item(
             _launchctl("bootout", AGENT_LABEL, run)
         _launchctl("bootstrap", str(path), run)
     else:
+        for former_path in former_autostart_paths(home):
+            former_path.unlink(missing_ok=True)
         d.atomic(
             path,
             f"[Desktop Entry]\nType=Application\nName={APP_NAME}\n"
-            f"Exec={shlex.join(command)}\nIcon=whisper-dictation\n"
+            f"Exec={shlex.join(command)}\nIcon={desktop.DESKTOP_ENTRY_ID}\n"
             "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
         )
 
@@ -508,6 +536,21 @@ def _menubar_is_idle() -> bool:
         return False
     os.close(fd)
     return True
+
+
+def _migrate_former_agents(home: Path | None, run: Any) -> None:
+    """Retire a LaunchAgent left by a former release under its old label.
+
+    Only while the menu bar is not currently running under it: unloading a running
+    agent would quit the app out from under the user with no warning. If it is
+    running, this simply runs again next time (the next tick's set_login_item call,
+    or the next login) once it is not.
+    """
+    if not _menubar_is_idle():
+        return
+    for label in FORMER_AGENT_LABELS:
+        _launchctl("bootout", label, run)
+        ((home or Path.home()) / f"Library/LaunchAgents/{label}.plist").unlink(missing_ok=True)
 
 
 HISTORY_STATUS = "history-shortcut-status"

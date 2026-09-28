@@ -38,6 +38,8 @@ prefix = desktop.install_prefix(library / "app.py")
 python = prefix / "share/whisper-dictation/venv/bin/python"
 hotkeys.set_login_item(False, [str(python), str(library / "tray.py")])
 hotkeys.gnome_remove(hotkeys.history_command(library, str(python)), path=hotkeys.GNOME_HISTORY_PATH)
+for entry_id in (desktop.DESKTOP_ENTRY_ID, *desktop.FORMER_DESKTOP_ENTRY_IDS):
+    (prefix / f"share/applications/{entry_id}.desktop").unlink(missing_ok=True)
 if desktop.platform_name() == "macos":
     # Mirrors setup-desktop.py's uninstall(): the .app bundle install() creates
     # isn't under `library`, so it needs its own cleanup here too.
@@ -48,17 +50,26 @@ if desktop.platform_name() == "macos":
         else prefix.parent / "Applications"
     )
     bundle = apps_root / f"{hotkeys.APP_NAME}.app"
-    agent = hotkeys.agent_path()
-    if agent.is_file() and any(
-        Path(argument) == bundle or bundle in Path(argument).parents
-        for argument in plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])
+    agents = (
+        hotkeys.agent_path(),
+        *(
+            Path.home() / f"Library/LaunchAgents/{label}.plist"
+            for label in hotkeys.FORMER_AGENT_LABELS
+        ),
+    )
+    if any(
+        agent.is_file()
+        and any(
+            Path(argument) == bundle or bundle in Path(argument).parents
+            for argument in plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])
+        )
+        for agent in agents
     ):
         hotkeys.set_login_item(False, [])
     info = bundle / "Contents/Info.plist"
-    if (
-        info.is_file()
-        and plistlib.loads(info.read_bytes()).get("CFBundleIdentifier")
-        == "org.whisperdictation.desktop"
+    if info.is_file() and plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") in (
+        hotkeys.BUNDLE_ID,
+        *hotkeys.FORMER_BUNDLE_IDS,
     ):
         (bundle / "Contents/MacOS/WhisperDictation").unlink(missing_ok=True)
         (bundle / "Contents/Resources/AppIcon.icns").unlink(missing_ok=True)
@@ -80,7 +91,10 @@ if command -v gsettings >/dev/null 2>&1; then
     gsettings reset-recursively "$KEYBINDING_SCHEMA"
   fi
 fi
-rm -f "$BIN_DEST" "${HOME}/.config/autostart/whisper-dictation.desktop" "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/bin/Whisper Dictation.command" "${HOME}/.local/.dictation-install.json"
+rm -f "$BIN_DEST" \
+  "${HOME}/.config/autostart/whisper-dictation.desktop" "${HOME}/.config/autostart/clipboardplus.desktop" \
+  "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/share/applications/clipboardplus.desktop" \
+  "${HOME}/.local/bin/Whisper Dictation.command" "${HOME}/.local/.dictation-install.json"
 # Only this app's own files: other tools may share ~/.local/lib.
 for library in "$APP_LIB" "$LEGACY_LIB"; do
   if [[ "$library" == "$LEGACY_LIB" ]] && ! legacy_owned; then

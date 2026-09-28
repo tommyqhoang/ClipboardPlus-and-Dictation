@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import dictation as d
@@ -167,6 +167,25 @@ class HotkeyTests(unittest.TestCase):
             self.assertTrue(hotkeys._menubar_is_idle())
         close.assert_called_once_with(7)
 
+    def test_a_former_labeled_agent_is_retired_only_while_idle(self):
+        former = self.folder / "Library/LaunchAgents/org.whisperdictation.menubar.plist"
+        former.parent.mkdir(parents=True)
+        former.write_text("x")
+        calls = []
+
+        def run(args, **_):
+            calls.append(args[:2])
+            return Mock(returncode=0, stdout="", stderr="")
+
+        with patch.object(hotkeys, "_menubar_is_idle", return_value=False):
+            hotkeys._migrate_former_agents(self.folder, run)
+        self.assertTrue(former.exists())  # Running under the old label: left alone.
+        self.assertEqual(calls, [])
+        with patch.object(hotkeys, "_menubar_is_idle", return_value=True):
+            hotkeys._migrate_former_agents(self.folder, run)
+        self.assertFalse(former.exists())
+        self.assertEqual(calls, [["launchctl", "bootout"]])
+
     def test_bundle_login_command_runs_the_executable_so_launchd_supervises_it(self):
         bundle = self.folder / "Clipboard+ and Dictation.app"
         # No executable yet (e.g. a half-written bundle): fall back to `open`.
@@ -197,11 +216,24 @@ class HotkeyTests(unittest.TestCase):
             True, ["C:/py/pythonw.exe", "C:/a b/tray.py"], None, "windows", registry
         )
         registry.SetValueEx.assert_called_once_with(
-            key, "WhisperDictation", 0, registry.REG_SZ, 'C:/py/pythonw.exe "C:/a b/tray.py"'
+            key, hotkeys.RUN_VALUE_NAME, 0, registry.REG_SZ, 'C:/py/pythonw.exe "C:/a b/tray.py"'
         )
+        # A former release's value name is always cleaned up alongside the new one.
+        self.assertIn(call(key, "WhisperDictation"), registry.DeleteValue.call_args_list)
+        registry.DeleteValue.reset_mock(side_effect=True)
         registry.DeleteValue.side_effect = FileNotFoundError
         hotkeys.set_login_item(False, [], None, "windows", registry)
-        registry.DeleteValue.assert_called_once_with(key, "WhisperDictation")
+        registry.DeleteValue.assert_any_call(key, hotkeys.RUN_VALUE_NAME)
+        registry.DeleteValue.assert_any_call(key, "WhisperDictation")
+
+    def test_a_former_named_autostart_entry_is_removed_when_the_new_one_is_written(self):
+        for former in hotkeys.former_autostart_paths(self.folder):
+            former.parent.mkdir(parents=True, exist_ok=True)
+            former.write_text("x")
+        hotkeys.set_login_item(True, ["/x/python", "/x/tray.py"], self.folder, "linux")
+        self.assertTrue(hotkeys.autostart_path(self.folder).exists())
+        for former in hotkeys.former_autostart_paths(self.folder):
+            self.assertFalse(former.exists())
 
     def test_gnome_shortcut_binds_command(self):
         calls = []
@@ -392,7 +424,7 @@ class HotkeyTests(unittest.TestCase):
             any(call[-2:] == ["name", hotkeys.DICTATION_SHORTCUT_NAME] for call in calls)
         )
         hotkeys.set_login_item(True, ["/x/python", "/x/tray.py"], self.folder, "linux")
-        entry = (self.folder / ".config/autostart/whisper-dictation.desktop").read_text()
+        entry = hotkeys.autostart_path(self.folder).read_text()
         self.assertIn(f"Name={hotkeys.APP_NAME}\n", entry)
 
     def test_features_keep_clipboard_off_until_setup_and_round_trip(self):

@@ -443,13 +443,16 @@ class DesktopTests(unittest.TestCase):
                 login.assert_called_once_with(
                     True, [str(venv), str(prefix / "lib/whisper-dictation/tray.py")]
                 )
-                entry = (prefix / "share/applications/whisper-dictation.desktop").read_text()
+                entry = (
+                    prefix / f"share/applications/{desktop.DESKTOP_ENTRY_ID}.desktop"
+                ).read_text()
                 self.assertIn(f"Name={setup.hotkeys.APP_NAME}\n", entry)
                 self.assertIn('Exec="/venv/bin/python"', entry)
                 self.assertIn("tray.py", entry)
                 self.assertIn("Terminal=false", entry)
                 self.assertIn("X-GNOME-UsesNotifications=true", entry)
-                self.assertEqual(desktop.DESKTOP_ENTRY_ID, "whisper-dictation")
+                self.assertEqual(desktop.DESKTOP_ENTRY_ID, "clipboardplus")
+                self.assertEqual(desktop.FORMER_DESKTOP_ENTRY_IDS, ("whisper-dictation",))
                 self.assertIn(
                     f"Icon={prefix / 'lib/whisper-dictation/whisper-dictation.png'}", entry
                 )
@@ -489,7 +492,7 @@ class DesktopTests(unittest.TestCase):
                     True, [str(bundle / "Contents/MacOS/WhisperDictation")]
                 )
                 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
-                self.assertEqual(info["CFBundleIdentifier"], "org.whisperdictation.desktop")
+                self.assertEqual(info["CFBundleIdentifier"], setup.hotkeys.BUNDLE_ID)
                 self.assertIn("Record speech only", info["NSMicrophoneUsageDescription"])
                 self.assertEqual(info["CFBundleIconFile"], "AppIcon")
                 self.assertEqual(info["CFBundleDisplayName"], setup.hotkeys.APP_NAME)
@@ -502,6 +505,9 @@ class DesktopTests(unittest.TestCase):
                 self.assertIn(
                     f"WHISPER_DICTATION_BUNDLE={shlex.quote(str(bundle))}\n", executable.read_text()
                 )
+                # argv[0] is renamed so Activity Monitor/Login Items show the app's name,
+                # not the interpreter's.
+                self.assertIn(f"exec -a {setup.hotkeys.APP_NAME}", executable.read_text())
                 with patch.object(setup.subprocess, "run") as run:
                     setup.launch(prefix)
                     self.assertEqual(run.call_args.args[0][:1], ["/usr/bin/open"])
@@ -534,7 +540,7 @@ class DesktopTests(unittest.TestCase):
                 executable.parent.mkdir(parents=True)
                 executable.write_text(f"exec python {prefix / lib / 'menubar.py'}")
                 (legacy / "Contents/Info.plist").write_bytes(
-                    plistlib.dumps({"CFBundleIdentifier": "org.whisperdictation.desktop"})
+                    plistlib.dumps({"CFBundleIdentifier": setup.hotkeys.FORMER_BUNDLE_IDS[0]})
                 )
                 with (
                     patch.object(setup.desktop, "platform_name", return_value="macos"),
@@ -544,7 +550,13 @@ class DesktopTests(unittest.TestCase):
                 ):
                     setup.install_app_launcher(prefix)
                 self.assertFalse(legacy.exists(), name)
-                self.assertTrue((applications / "Clipboard+.app/Contents/Info.plist").is_file())
+                new_info = applications / "Clipboard+.app/Contents/Info.plist"
+                self.assertTrue(new_info.is_file())
+                # The old bundle id is upgraded along with everything else, not just moved.
+                self.assertEqual(
+                    plistlib.loads(new_info.read_bytes())["CFBundleIdentifier"],
+                    setup.hotkeys.BUNDLE_ID,
+                )
 
     def test_macos_upgrade_leaves_a_bundle_of_another_installation_alone(self):
         setup = setup_module()
@@ -555,7 +567,7 @@ class DesktopTests(unittest.TestCase):
             executable.parent.mkdir(parents=True)
             executable.write_text("exec python /somewhere/else/lib/menubar.py")
             (legacy / "Contents/Info.plist").write_bytes(
-                plistlib.dumps({"CFBundleIdentifier": "org.whisperdictation.desktop"})
+                plistlib.dumps({"CFBundleIdentifier": setup.hotkeys.FORMER_BUNDLE_IDS[0]})
             )
             with (
                 patch.object(setup.desktop, "platform_name", return_value="macos"),

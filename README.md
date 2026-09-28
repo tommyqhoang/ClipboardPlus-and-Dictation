@@ -132,15 +132,15 @@ Platform details:
 - **macOS**: menu bar only (no Dock icon). The shortcut is a system hotkey, so no
   Accessibility permission is needed; macOS asks for microphone access on the
   first recording. Open at login is the LaunchAgent
-  `~/Library/LaunchAgents/org.whisperdictation.menubar.plist`.
+  `~/Library/LaunchAgents/com.apercallc.clipboardplusdesktop.menubar.plist`.
 - **Windows**: system tray; the shortcut is registered with `RegisterHotKey`.
-  Open at login is the `WhisperDictation` value under
+  Open at login is the `ClipboardPlus` value under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - **Linux**: Wayland does not let apps capture global keys, so the shortcut is a
   GNOME custom keybinding that runs `~/.local/bin/dictate-toggle`; changing it
   from the menu updates GNOME. On other desktops, bind that command yourself.
   The top bar icon needs AppIndicator support (built into Ubuntu; an extension
-  on stock GNOME). Open at login is `~/.config/autostart/whisper-dictation.desktop`.
+  on stock GNOME). Open at login is `~/.config/autostart/clipboardplus.desktop`.
 
 The menu bar/tray component (PyObjC and Pillow on macOS; pystray, Pillow and, on Linux, python-xlib elsewhere) is
 installed into `~/.local/share/whisper-dictation/venv` (Windows: under the app

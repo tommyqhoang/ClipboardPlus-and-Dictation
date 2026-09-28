@@ -412,13 +412,14 @@ def applications_root(prefix: Path) -> Path:
 
 
 def ours(prefix: Path, bundle: Path) -> bool:
-    """Whether `bundle` is this installation's app bundle (under any name)."""
+    """Whether `bundle` is this installation's app bundle (under any name or bundle id)."""
     info = bundle / "Contents/Info.plist"
     launcher = bundle / "Contents/MacOS/WhisperDictation"
     try:
-        return plistlib.loads(info.read_bytes()).get(
-            "CFBundleIdentifier"
-        ) == "org.whisperdictation.desktop" and any(
+        return plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") in (
+            hotkeys.BUNDLE_ID,
+            *hotkeys.FORMER_BUNDLE_IDS,
+        ) and any(
             str(prefix / folder / "menubar.py") in launcher.read_text()
             for folder in (LIB, LEGACY_LIB)
         )
@@ -461,7 +462,7 @@ def install_app_launcher(prefix: Path) -> None:
         if bundle.exists() and (
             not info.exists()
             or plistlib.loads(info.read_bytes()).get("CFBundleIdentifier")
-            != "org.whisperdictation.desktop"
+            not in (hotkeys.BUNDLE_ID, *hotkeys.FORMER_BUNDLE_IDS)
         ):
             raise dictation.DictationError(
                 f"An unrelated app already uses the name of {hotkeys.APP_NAME}'s app bundle."
@@ -473,7 +474,7 @@ def install_app_launcher(prefix: Path) -> None:
             info,
             plistlib.dumps(
                 {
-                    "CFBundleIdentifier": "org.whisperdictation.desktop",
+                    "CFBundleIdentifier": hotkeys.BUNDLE_ID,
                     "CFBundleName": hotkeys.APP_NAME,
                     "CFBundleDisplayName": hotkeys.APP_NAME,
                     "CFBundleExecutable": "WhisperDictation",
@@ -488,9 +489,12 @@ def install_app_launcher(prefix: Path) -> None:
         )
         dictation.atomic(
             executable,
-            # The interpreter lives in another bundle, so name ours explicitly.
+            # The interpreter lives in another bundle, so name ours explicitly. `exec -a`
+            # (macOS's /bin/sh is bash, which supports it) also renames the running
+            # process itself, so Activity Monitor and Login Items show the app's name
+            # instead of the interpreter's (e.g. "python3.14").
             f"#!/bin/sh\nexport WHISPER_DICTATION_BUNDLE={shlex.quote(str(bundle))}\n"
-            f"exec {shlex.quote(str(python))} "
+            f"exec -a {shlex.quote(hotkeys.APP_NAME)} {shlex.quote(str(python))} "
             f"{shlex.quote(str(module.with_name('menubar.py')))}\n",
         )
         executable.chmod(0o755)
@@ -521,7 +525,7 @@ def install_app_launcher(prefix: Path) -> None:
 
         dictation.atomic(
             entry,
-            f"[Desktop Entry]\nType=Application\nName={hotkeys.APP_NAME}\nComment=Dictate anywhere and keep your clipboard history\nExec={quote(str(python))} {quote(str(prefix / LIB / 'tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=WhisperDictation\nX-GNOME-UsesNotifications=true\n",
+            f"[Desktop Entry]\nType=Application\nName={hotkeys.APP_NAME}\nComment=Dictate anywhere and keep your clipboard history\nExec={quote(str(python))} {quote(str(prefix / LIB / 'tray.py'))}\nIcon={module.with_name('whisper-dictation.png')}\nTerminal=false\nCategories=Utility;Audio;\nStartupWMClass=ClipboardPlus\nX-GNOME-UsesNotifications=true\n",
         )
 
 
@@ -618,7 +622,8 @@ def uninstall(prefix: Path) -> None:
     if (prefix / LIB).is_dir() and not any((prefix / LIB).iterdir()):
         (prefix / LIB).rmdir()
     for relative in (
-        "share/applications/whisper-dictation.desktop",
+        f"share/applications/{desktop.DESKTOP_ENTRY_ID}.desktop",
+        *(f"share/applications/{former}.desktop" for former in desktop.FORMER_DESKTOP_ENTRY_IDS),
         "bin/dictate-toggle",
         "bin/dictate-toggle.cmd",
         *(f"bin/{name}.command" for name in (hotkeys.APP_NAME, *hotkeys.FORMER_NAMES)),
@@ -640,21 +645,31 @@ def uninstall(prefix: Path) -> None:
     if (venv / "pyvenv.cfg").is_file():
         shutil.rmtree(venv)
     if desktop.platform_name() == "macos":
-        agent = hotkeys.agent_path()
         bundle = app_bundle(prefix)
+        agents = (
+            hotkeys.agent_path(),
+            *(
+                Path.home() / f"Library/LaunchAgents/{label}.plist"
+                for label in hotkeys.FORMER_AGENT_LABELS
+            ),
+        )
         # Only remove the login item that launches this installation's bundle: `open`
         # on it (older versions) or its executable. Unloaded too, or launchd keeps
-        # trying to start the deleted app.
-        if agent.is_file() and any(
-            Path(argument) == bundle or bundle in Path(argument).parents
-            for argument in plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])
+        # trying to start the deleted app. Checked under any label a former release
+        # used, in case this install was never relaunched since its last rename.
+        if any(
+            agent.is_file()
+            and any(
+                Path(argument) == bundle or bundle in Path(argument).parents
+                for argument in plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])
+            )
+            for agent in agents
         ):
             hotkeys.set_login_item(False, [])
         info = bundle / "Contents/Info.plist"
-        if (
-            info.is_file()
-            and plistlib.loads(info.read_bytes()).get("CFBundleIdentifier")
-            == "org.whisperdictation.desktop"
+        if info.is_file() and plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") in (
+            hotkeys.BUNDLE_ID,
+            *hotkeys.FORMER_BUNDLE_IDS,
         ):
             (bundle / "Contents/MacOS/WhisperDictation").unlink(missing_ok=True)
             (bundle / "Contents/Resources/AppIcon.icns").unlink(missing_ok=True)

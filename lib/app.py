@@ -2465,7 +2465,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     telemetry.install("window")
     try:
-        root = tk.Tk(className="WhisperDictation")
+        root = tk.Tk(className="ClipboardPlus")
 
         telemetry.watch_tk(root)
         telemetry.event("app_open", page=page or "home")

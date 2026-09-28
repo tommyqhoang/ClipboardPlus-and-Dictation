@@ -266,7 +266,8 @@ def clipboard_command(values: dict[str, Any]) -> list[str]:
 
 # Notifications carry the product name (hotkeys.APP_NAME; desktop cannot import it).
 NOTIFY_NAME = "Clipboard+"
-DESKTOP_ENTRY_ID = "whisper-dictation"
+DESKTOP_ENTRY_ID = "clipboardplus"
+FORMER_DESKTOP_ENTRY_IDS = ("whisper-dictation",)
 
 
 def notification_command(values: dict[str, Any]) -> list[str]:
