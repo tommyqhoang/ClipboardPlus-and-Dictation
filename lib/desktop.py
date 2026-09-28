@@ -91,6 +91,17 @@ def relaunch(entry: str, *args: str) -> list[str]:
     return [overlay_python(), str(lib / f"{entry}.py"), *args]
 
 
+def bundled_binary(name: str) -> Path | None:
+    """A native binary this build ships (ffmpeg, whisper.cpp's server), or None to
+    fall back to the system PATH (source installs, which rely on brew/apt/winget)."""
+    root = frozen_root()
+    if root is None:
+        return None
+    suffix = ".exe" if platform_name() == "windows" else ""
+    candidate = root / f"{name}{suffix}"
+    return candidate if candidate.is_file() else None
+
+
 def roots() -> tuple[Path, Path, Path]:
     home = Path.home()
     system = platform_name()
@@ -186,7 +197,12 @@ def recorder_command(values: dict[str, Any], listing: bool = False) -> list[str]
                 str(values["max_seconds"]),
             ]
         )
-    args = executable(str(values["ffmpeg"])) + ["-hide_banner"]
+    ffmpeg = str(values["ffmpeg"])
+    if ffmpeg == "ffmpeg":  # The unmodified default; never override an explicit user path.
+        bundled = bundled_binary("ffmpeg")
+        if bundled is not None:
+            ffmpeg = str(bundled)
+    args = executable(ffmpeg) + ["-hide_banner"]
     if listing:
         return args + [
             "-f",

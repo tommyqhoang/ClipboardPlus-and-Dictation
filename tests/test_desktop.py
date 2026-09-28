@@ -865,5 +865,30 @@ class RelaunchTests(unittest.TestCase):
                     self.assertEqual(desktop.overlay_python(), str(private.resolve()))
 
 
+class BundledBinaryTests(unittest.TestCase):
+    def test_returns_none_from_source(self):
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertIsNone(desktop.bundled_binary("ffmpeg"))
+
+    def test_finds_a_sibling_binary_when_frozen(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "ffmpeg").touch()
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(desktop, "frozen_root", return_value=root),
+                patch.object(desktop, "platform_name", return_value="linux"),
+            ):
+                self.assertEqual(desktop.bundled_binary("ffmpeg"), root / "ffmpeg")
+
+    def test_returns_none_when_frozen_but_the_binary_is_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(desktop, "frozen_root", return_value=Path(folder)),
+            ):
+                self.assertIsNone(desktop.bundled_binary("ffmpeg"))
+
+
 if __name__ == "__main__":
     unittest.main()

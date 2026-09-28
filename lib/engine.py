@@ -33,9 +33,13 @@ MAX_REPLY = 1024 * 1024
 
 
 def server_binary(config: d.Config) -> str:
-    """The whisper-server path beside the configured whisper-cli, or on PATH."""
+    """The whisper-server path: bundled with this build, beside the configured
+    whisper-cli, or on PATH."""
     import shutil
 
+    bundled = desktop.bundled_binary("whisper-server")
+    if bundled is not None:
+        return str(bundled)
     suffix = ".exe" if sys.platform == "win32" else ""
     cli = str(config.s("whisper_bin"))
     fallback = Path.home() / ".local/opt/whisper.cpp-v1.8.7/build/bin"
