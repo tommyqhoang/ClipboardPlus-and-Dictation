@@ -45,7 +45,9 @@ exes = [
         analysis.scripts,
         [],
         exclude_binaries=True,
-        name=entry,
+        # The tray is the visible program: name it for the product, not "tray.exe".
+        name="Clipboard+" if entry == "tray" else entry,
+        icon=str(ROOT / "assets" / "icon.ico"),
         # No console window on Windows for any of these — including the
         # background workers, which would otherwise flash a black window.
         console=False,

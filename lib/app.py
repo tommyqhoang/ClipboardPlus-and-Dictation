@@ -199,6 +199,9 @@ class App:
             self.clipboard()
         elif service.completed() and page == "settings":
             self.settings()
+        elif service.completed() and not self.features().dictation:
+            # Clipboard-only: there is no dictation page to show.
+            self.clipboard()
         elif service.completed():
             self.home()
         else:

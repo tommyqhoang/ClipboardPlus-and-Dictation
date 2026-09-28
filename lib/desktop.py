@@ -78,6 +78,9 @@ def frozen_root() -> Path | None:
     return Path(appdir) / "usr" / "bin" if appdir else Path(sys.executable).parent
 
 
+WINDOWS_MAIN_EXE = "Clipboard+"  # The packaged tray; keep in sync with the .spec/.iss.
+
+
 def relaunch(entry: str, *args: str) -> list[str]:
     """argv to start another part of this app ("dictation", "app", "tray"/"menubar",
     "overlay", "engine", "updates", "clipservice") — a sibling frozen executable when
@@ -85,8 +88,12 @@ def relaunch(entry: str, *args: str) -> list[str]:
     from source."""
     root = frozen_root()
     if root is not None:
-        suffix = ".exe" if platform_name() == "windows" else ""
-        return [str(root / f"{entry}{suffix}"), *args]
+        if platform_name() == "windows":
+            # The main program is "Clipboard+.exe", so Task Manager and the
+            # firewall prompt show the product name, not "tray.exe".
+            entry = WINDOWS_MAIN_EXE if entry == "tray" else entry
+            entry += ".exe"
+        return [str(root / entry), *args]
     lib = Path(__file__).resolve().parent
     return [overlay_python(), str(lib / f"{entry}.py"), *args]
 

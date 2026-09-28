@@ -17,7 +17,7 @@ def main() -> int:
     found = 0
     failures = 0
     for entry in ENTRIES:
-        binary = folder / (entry + suffix)
+        binary = folder / (("Clipboard+" if entry == "tray" and suffix else entry) + suffix)
         if not binary.is_file():
             continue
         found += 1

@@ -16,7 +16,7 @@ PrivilegesRequired=lowest
 OutputDir=..\..\dist
 OutputBaseFilename=Clipboard+-Setup
 SetupIconFile=..\..\assets\icon.ico
-UninstallDisplayIcon={app}\tray.exe
+UninstallDisplayIcon={app}\Clipboard+.exe
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -25,11 +25,11 @@ WizardStyle=modern
 Source: "..\..\dist\clipboardplus\*"; DestDir: "{app}"; Flags: recursesubdirs
 
 [Icons]
-Name: "{group}\Clipboard+"; Filename: "{app}\tray.exe"
-Name: "{userdesktop}\Clipboard+"; Filename: "{app}\tray.exe"; Tasks: desktopicon
+Name: "{group}\Clipboard+"; Filename: "{app}\Clipboard+.exe"
+Name: "{userdesktop}\Clipboard+"; Filename: "{app}\Clipboard+.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked
 
 [Run]
-Filename: "{app}\tray.exe"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Clipboard+.exe"; Flags: nowait postinstall skipifsilent

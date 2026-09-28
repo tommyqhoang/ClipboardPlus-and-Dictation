@@ -770,6 +770,15 @@ class WindowTests(ServiceCase):
             self.assertEqual(self.gui.main([]), 0)
             self.assertEqual(window.call_args.args[2], "")
 
+    def test_clipboard_only_launch_opens_the_clipboard_not_dictation(self):
+        self.window.destroy()
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(False, True))
+        with patch.object(self.service, "completed", return_value=True):
+            self.root = self.gui.tk.Tk()
+            self.root.withdraw()
+            self.window = self.gui.App(self.root, self.service, "")
+        self.assertEqual(self.window.page, "clipboard")
+
     def test_own_ai_service_choice(self):
         with patch.object(self.service, "microphones", return_value=["USB Mic"]):
             self.window.settings()

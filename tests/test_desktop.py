@@ -885,6 +885,15 @@ class RelaunchTests(unittest.TestCase):
             command = desktop.relaunch("dictation")
             self.assertEqual(Path(command[0]).name, "dictation.exe")
 
+    def test_windows_tray_is_the_product_named_exe(self):
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", r"C:\\Clipboard+\\Clipboard+.exe"),
+            patch.object(desktop, "platform_name", return_value="windows"),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            self.assertEqual(Path(desktop.relaunch("tray")[0]).name, "Clipboard+.exe")
+
     def test_python_for_gui_moved_here_still_works(self):
         self.assertTrue(Path(desktop.python_for_gui()).name.startswith("python"))
 
