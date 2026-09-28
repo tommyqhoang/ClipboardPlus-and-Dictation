@@ -13,6 +13,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -463,6 +464,49 @@ class ExtractTests(unittest.TestCase):
             self.assertRaisesRegex(updates.UpdateError, "too many files or too much data"),
         ):
             updates._extract(archive, self.work / "unpack-large")
+
+
+class FrozenUpdateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("DICTATION_")}
+        self.env.update(
+            {
+                "XDG_CONFIG_HOME": str(self.root / "config"),
+                "XDG_CACHE_HOME": str(self.root / "cache"),
+                "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+            }
+        )
+        self.patch = patch.dict(os.environ, self.env, clear=True)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.paths = d.Paths()
+        d.private_dir(self.paths.config.parent)
+        updates.write_state(self.paths, {})
+
+    def test_frozen_install_swaps_the_directory_instead_of_running_setup(self):
+        install = self.root / "Clipboard+"
+        install.mkdir()
+        (install / "tray").write_text("old")
+
+        def fake_download(_url: str, destination: Path) -> None:
+            with zipfile.ZipFile(destination, "w") as zf:
+                zf.writestr("clipboardplus/tray", "new")
+
+        with (
+            patch.object(updates.desktop, "frozen_root", return_value=install),
+            patch.object(updates, "_download", fake_download),
+            patch.object(updates.desktop, "relaunch", return_value=[str(install / "tray")]),
+            patch.object(updates.subprocess, "Popen") as popen,
+        ):
+            updates.apply_update(self.paths, "9.9.9", "https://example.invalid/release.zip")
+        self.assertEqual(popen.call_args.args[0], [str(install / "tray")])
+        self.assertEqual((install / "tray").read_text(), "new")
+        state = updates.read_state(self.paths)
+        self.assertEqual(state.get("applied"), "9.9.9")
+        self.assertEqual(state.get("status"), "installed")
 
 
 if __name__ == "__main__":

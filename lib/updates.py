@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -22,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -245,6 +247,32 @@ def _extract(archive: Path, folder: Path) -> Path:
     return top[0]
 
 
+def _extract_frozen_release(url: str, work: Path) -> Path:
+    """Download this OS's release asset (a zipped onedir build) and extract it."""
+    archive = work / "release.zip"
+    _download(url, archive)
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(work)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise UpdateError("The downloaded update could not be unpacked.") from exc
+    top = [entry for entry in work.iterdir() if entry.is_dir()]
+    if len(top) != 1:
+        raise UpdateError("The downloaded update did not contain a single install folder.")
+    return top[0]
+
+
+def _swap_install(current: Path, new: Path) -> None:
+    """Replace `current`'s contents with `new`'s, without deleting the running
+    executable while it's still running (Windows can't overwrite an open file)."""
+    old = current.parent / f"{current.name}-old"
+    if old.exists():
+        shutil.rmtree(old, ignore_errors=True)
+    current.rename(old)
+    new.rename(current)
+    shutil.rmtree(old, ignore_errors=True)
+
+
 def apply_update(paths: d.Paths, version: str, url: str) -> None:
     """Download and install a release, then leave the restart to its launcher.
 
@@ -263,28 +291,42 @@ def apply_update(paths: d.Paths, version: str, url: str) -> None:
         write_state(
             paths, {**state, "status": "installing", "target": version, "started": time.time()}
         )
-        with tempfile.TemporaryDirectory(prefix="update-", dir=paths.cache) as work:
-            archive = Path(work) / "release.tar.gz"
-            _download(url, archive)
-            source = _extract(archive, Path(work))
-            # This module's own file is the running installation; a custom --prefix
-            # install must self-update into the same place, not the installer's default.
-            install_prefix = desktop.install_prefix(Path(__file__).resolve())
-            setup = subprocess.run(
-                [
-                    sys.executable,
-                    str(source / "setup-desktop.py"),
-                    "--prefix",
-                    str(install_prefix),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=1800,
-                **desktop.process_options(),
+        root = desktop.frozen_root()
+        if root is not None:
+            # AppImage's frozen_root() points at usr/bin inside the mount; the
+            # install directory to swap is the AppImage's own top-level folder.
+            install = root if root.name != "usr" else root.parents[1]
+            with tempfile.TemporaryDirectory(prefix="update-", dir=paths.cache) as work:
+                extracted = _extract_frozen_release(url, Path(work))
+                _swap_install(install, extracted)
+            subprocess.Popen(
+                desktop.relaunch(Path(sys.executable).stem),
+                **desktop.process_options(detached=True),
             )
-            log.write_text(setup.stdout + setup.stderr, encoding="utf-8", errors="replace")
-            if setup.returncode:
-                raise UpdateError("The update was downloaded but could not be installed.")
+        else:
+            with tempfile.TemporaryDirectory(prefix="update-", dir=paths.cache) as work:
+                archive = Path(work) / "release.tar.gz"
+                _download(url, archive)
+                source = _extract(archive, Path(work))
+                # This module's own file is the running installation; a custom
+                # --prefix install must self-update into the same place, not the
+                # installer's default.
+                install_prefix = desktop.install_prefix(Path(__file__).resolve())
+                setup = subprocess.run(
+                    [
+                        sys.executable,
+                        str(source / "setup-desktop.py"),
+                        "--prefix",
+                        str(install_prefix),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=1800,
+                    **desktop.process_options(),
+                )
+                log.write_text(setup.stdout + setup.stderr, encoding="utf-8", errors="replace")
+                if setup.returncode:
+                    raise UpdateError("The update was downloaded but could not be installed.")
         write_state(
             paths,
             {**read_state(paths), "status": "installed", "applied": version, "at": time.time()},
