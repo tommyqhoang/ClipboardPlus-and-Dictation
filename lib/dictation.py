@@ -77,14 +77,26 @@ class Paths:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (ValueError, OSError) as exc:
-        raise DictationError(
-            f"Cannot read {path.name}; check its JSON syntax and permissions."
-        ) from exc
+    for attempt in range(20):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            break
+        except FileNotFoundError:
+            return {}
+        except PermissionError as exc:
+            # Windows can briefly deny a read while another process replaces the
+            # state file. Give the atomic writer time to finish before reporting it.
+            if sys.platform != "win32" or attempt == 19:
+                raise DictationError(
+                    f"Cannot read {path.name}; check its JSON syntax and permissions."
+                ) from exc
+            time.sleep(0.01)
+        except (ValueError, OSError) as exc:
+            raise DictationError(
+                f"Cannot read {path.name}; check its JSON syntax and permissions."
+            ) from exc
+    else:
+        raise AssertionError("Read retries did not finish")
     if not isinstance(value, dict):
         raise DictationError(f"{path.name} must contain a JSON object.")
     return value

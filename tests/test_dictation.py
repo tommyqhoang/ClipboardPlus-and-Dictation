@@ -74,6 +74,19 @@ class DictationTests(unittest.TestCase):
         self.assertTrue(d.DEFAULTS["overlay"])
         self.assertTrue(d.DEFAULTS["live"])
 
+    def test_windows_read_retries_a_briefly_locked_state_file(self):
+        state = self.paths.state
+        state.write_text('{"phase":"recording"}')
+        with (
+            patch.object(d.sys, "platform", "win32"),
+            patch.object(
+                Path, "read_text", side_effect=[PermissionError(), '{"phase":"recording"}']
+            ),
+            patch.object(d.time, "sleep") as sleep,
+        ):
+            self.assertEqual(d.read_json(state)["phase"], "recording")
+        sleep.assert_called_once_with(0.01)
+
     def cli(self, *args, ok=True):
         result = subprocess.run(
             [sys.executable, str(ROOT / "lib/dictation.py"), *args],
