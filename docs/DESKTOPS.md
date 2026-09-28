@@ -1,10 +1,9 @@
 # Desktop installation and platform notes for Clipboard+
 
-Most users should use the [one-command installer](../README.md#quick-install-no-git-checkout).
-It downloads the application snapshot, installs required runtime dependencies,
-registers a normal desktop launcher, opens Clipboard+ automatically, and
-shows the first-run walkthrough. Users do not need a Git checkout or application
-commands.
+Most users should use the [downloadable installer](../README.md#quick-install)
+for their OS. It needs no Python, no terminal, and no separate dependency
+install — open the app once installed and the first-run walkthrough takes
+over from there. Users do not need a Git checkout or application commands.
 
 ## What gets installed
 

@@ -18,9 +18,11 @@ menu bar, the Windows system tray, or the Linux top bar and starts at login.
 Press **Super+Shift+D** (**Win+Shift+D** on Windows, **⌃⌥⇧D** on a Mac) in any app, talk, press it again, and
 notifications tell you it is recording, transcribing, and then ready to paste.
 
-Linux remains the original platform. macOS and Windows support
-is new; there is no signed app bundle or MSI installer yet. See
-[desktop setup](docs/DESKTOPS.md) for dependencies, permissions, and validation limits.
+Linux remains the original platform. macOS and Windows support is newer.
+Installers exist for all three (see [Quick install](#quick-install)) but
+are not code-signed yet, so each asks for one one-time OS security
+confirmation on first launch. See [desktop setup](docs/DESKTOPS.md) for
+dependencies, permissions, and validation limits.
 
 | Platform | Installed launcher | Microphone | Clipboard (dictation) | Clipboard history capture |
 | --- | --- | --- | --- | --- |
@@ -51,35 +53,28 @@ Desktop usage reports reach the Clipboard+ API, which validates the fixed schema
 forwards it to Google Analytics only when its server-side Measurement Protocol secret
 is configured. That secret is never included in the app or its installer.
 
-## Quick install (no Git checkout)
+## Quick install
 
-Windows automatic installation is x64 only and still needs real-machine
-acceptance testing.
+Download the installer for your OS from the
+[latest release](https://github.com/tommyqhoang/ClipboardPlus-and-Dictation/releases/latest):
 
-macOS or Linux (Debian/Ubuntu, Fedora, Arch, openSUSE), in Terminal:
+- **macOS**: `Clipboard+.dmg` — drag Clipboard+ into Applications, then
+  right-click it and choose Open the first time (it's not signed yet, so
+  Gatekeeper asks once).
+- **Windows**: `Clipboard+-Setup.exe` — run it; if SmartScreen shows a
+  notice, choose "More info" then "Run anyway" (same reason: unsigned).
+  Installs to your user folder, no admin needed.
+- **Linux**: `Clipboard+-x86_64.AppImage` — `chmod +x` it (or check "Allow
+  executing file as program" in your file manager), then double-click. No
+  package manager, no sudo.
 
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.sh)"
-```
+No Python, no terminal, no dependencies to install separately — everything
+needed ships inside the download. Prefer a one-line install script instead
+(or want to build from a Git checkout)? See
+[Build from source](#build-from-source).
 
-Windows x64, in PowerShell:
-
-```powershell
-& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.ps1).Content))
-```
-
-These commands execute downloaded code: review the bootstrap script first if
-you prefer. Administrator permission may be requested by dependency installers;
-do not run the entire installation as root. macOS uses Homebrew (installing it
-if missing); Linux uses apt, dnf, pacman or zypper and installs only what is missing; Windows requires Microsoft's App Installer/WinGet
-and installs Python, FFmpeg, the C++ runtime and a checksum-pinned Whisper build.
-The app snapshot is downloaded automatically. Windows installs the checksum-pinned
-Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching release
-and commit. Git is only needed for that Linux fallback. Dependencies and model
-downloads need internet access.
-
-When installation finishes, **Clipboard+ opens automatically**. The
-first-run screens help the user:
+Once you open Clipboard+ for the first time, the first-run screens help
+the user:
 
 1. Choose what to use: **Dictation**, **Clipboard history**, or **Both**. Only the
    steps for what you chose follow, and you can change it later in Settings.
@@ -141,15 +136,6 @@ Platform details:
   from the menu updates GNOME. On other desktops, bind that command yourself.
   The top bar icon needs AppIndicator support (built into Ubuntu; an extension
   on stock GNOME). Open at login is `~/.config/autostart/clipboardplus.desktop`.
-
-The menu bar/tray component (PyObjC and Pillow on macOS; pystray, Pillow and, on Linux, python-xlib elsewhere) is
-installed into `~/.local/share/whisper-dictation/venv` (Windows: under the app
-folder in `%LOCALAPPDATA%`), so the system Python is not modified. No shell
-profile or system `PATH` is silently changed.
-
-For reproducible deployment, download bootstrap from a reviewed commit and set
-`DICTATION_REF` to that commit (Windows: pass `-Ref`). The quick commands track
-`main`; app snapshots are HTTPS downloads, not signed application releases.
 
 ## Clipboard history
 
@@ -256,7 +242,51 @@ required workflow. The desktop app currently prioritizes faithful transcription.
 Any future rewrite UI should keep the original, show changes for review, and never
 send text to an external provider without clear consent.
 
-## Install from source on Linux
+## Build from source
+
+The downloadable installers above are the recommended path for most
+people. These alternatives are for contributors, Linux power users, or
+anyone who'd rather review the install script than run a downloaded
+binary.
+
+### One-line script (no Git checkout)
+
+Windows automatic installation is x64 only and still needs real-machine
+acceptance testing.
+
+macOS or Linux (Debian/Ubuntu, Fedora, Arch, openSUSE), in Terminal:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.sh)"
+```
+
+Windows x64, in PowerShell:
+
+```powershell
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/tommyqhoang/ClipboardPlus-and-Dictation/main/bootstrap.ps1).Content))
+```
+
+These commands execute downloaded code: review the bootstrap script first if
+you prefer. Administrator permission may be requested by dependency installers;
+do not run the entire installation as root. macOS uses Homebrew (installing it
+if missing); Linux uses apt, dnf, pacman or zypper and installs only what is missing; Windows requires Microsoft's App Installer/WinGet
+and installs Python, FFmpeg, the C++ runtime and a checksum-pinned Whisper build.
+The app snapshot is downloaded automatically. Windows installs the checksum-pinned
+Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching release
+and commit. Git is only needed for that Linux fallback. Dependencies and model
+downloads need internet access.
+
+Unlike the downloadable installers, this path installs the menu bar/tray
+component (PyObjC and Pillow on macOS; pystray, Pillow and, on Linux,
+python-xlib elsewhere) into `~/.local/share/whisper-dictation/venv`
+(Windows: under the app folder in `%LOCALAPPDATA%`), so the system Python
+is not modified. No shell profile or system `PATH` is silently changed.
+
+For reproducible deployment, download bootstrap from a reviewed commit and set
+`DICTATION_REF` to that commit (Windows: pass `-Ref`). The quick commands track
+`main`; app snapshots are HTTPS downloads, not signed application releases.
+
+### Linux, from a Git checkout
 
 Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 
