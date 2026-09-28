@@ -134,11 +134,14 @@ class Tray:
         def dictation_on(_: Any) -> bool:
             return self.clip.features().dictation
 
+        def clipboard_on(_: Any) -> bool:
+            return self.clip.features().clipboard
+
         recent = [
             item(
                 lambda _, index=index: self.row_text(index),
                 lambda index=index: self.copy_row(index),
-                visible=lambda _, index=index: index < len(self.rows),
+                visible=lambda _, index=index: clipboard_on(None) and index < len(self.rows),
             )
             for index in range(MENU_ROWS)
         ]
@@ -200,6 +203,16 @@ class Tray:
                     lambda _: self.history_text(),
                     self.open_history,
                     visible=lambda _: self.clip.features().clipboard and dictation_on(None),
+                ),
+                item(
+                    "Search Clipboard History…",
+                    self.open_history,
+                    visible=clipboard_on,
+                ),
+                item(
+                    "Clear Clipboard History…",
+                    self.open_clear_history,
+                    visible=clipboard_on,
                 ),
                 item(
                     "Pause Clipboard Capture",
@@ -288,7 +301,12 @@ class Tray:
         open_app_window(page)
 
     def open_history(self) -> None:
-        self.open_window("--clipboard")
+        if self.clip.features().clipboard:
+            self.open_window("--clipboard")
+
+    def open_clear_history(self) -> None:
+        if self.clip.features().clipboard:
+            self.open_window("--clipboard-clear")
 
     def toggle(self) -> None:
         self.pressed()
@@ -463,7 +481,7 @@ class Tray:
         return clipcontrol.preview_text(self.rows[index]) if index < len(self.rows) else ""
 
     def copy_row(self, index: int) -> None:
-        if index >= len(self.rows) or self.store is None:
+        if not self.clip.features().clipboard or index >= len(self.rows) or self.store is None:
             return
         clip = self.rows[index]
         try:

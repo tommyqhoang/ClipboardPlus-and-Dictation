@@ -184,14 +184,18 @@ class App:
         self.setup_steps: list[str] = []  # The first-run screens this setup shows.
         self.clipboard_page: clipui.ClipboardPage | None = None
         # Opened by the history shortcut or menu: Esc (with no search typed) closes it.
-        self.quick = page == "clipboard"
+        self.quick = page in ("clipboard", "clipboard-clear")
         self.clipboard_store: clipstore.Store | None = None
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         # The tray/menu bar app owns everyday use; this window is for setup.
         self.tray = True
         if page == "shortcut":
             self.shortcut_page()
-        elif service.completed() and page == "clipboard" and self.features().clipboard:
+        elif (
+            service.completed()
+            and page in ("clipboard", "clipboard-clear")
+            and self.features().clipboard
+        ):
             self.clipboard()
         elif service.completed() and page == "settings":
             self.settings()
@@ -2272,19 +2276,31 @@ class App:
 
     def open_page(self, request: str) -> None:
         """Honor a page request from the tray or a shortcut when it is safe to leave."""
+        clear_history = request == "clipboard-clear"
+        if clear_history:
+            request = "clipboard"
         if request == "clipboard":
             self.quick = True  # Opened to pick something: Esc closes the window.
         if request == "clipboard" and self.page == "clipboard" and self.clipboard_page:
             self.clipboard_page.focus_search()
+            if clear_history:
+                self.root.after_idle(self.clear_clipboard_history)
             return
         if self.pending is not None or self.page == request:
             return
         if request == "clipboard" and self.service.completed() and self.features().clipboard:
             self.clipboard()
+            if clear_history and self.clipboard_page is not None:
+                self.root.after_idle(self.clear_clipboard_history)
         elif request == "shortcut" and not d.busy(self.service.paths):
             self.shortcut_page()
         elif request == "settings" and self.service.completed() and not d.busy(self.service.paths):
             self.settings()
+
+    def clear_clipboard_history(self) -> None:
+        """Show the existing confirmation only while Clipboard is available."""
+        if self.features().clipboard and self.page == "clipboard" and self.clipboard_page:
+            self.clipboard_page.clear()
 
     def on_key(self, action: Callable[[], None], _event: object) -> str:
         action()
@@ -2434,7 +2450,12 @@ def main(argv: list[str] | None = None) -> int:
     os.umask(0o077)
     args = sys.argv[1:] if argv is None else argv
     page = next(
-        (flag[2:] for flag in ("--settings", "--shortcut", "--clipboard") if flag in args), ""
+        (
+            flag[2:]
+            for flag in ("--settings", "--shortcut", "--clipboard-clear", "--clipboard")
+            if flag in args
+        ),
+        "",
     )
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "app.lock")
@@ -2449,8 +2470,10 @@ def main(argv: list[str] | None = None) -> int:
         telemetry.watch_tk(root)
         telemetry.event("app_open", page=page or "home")
         window = App(root, Service(paths), page)
-        if page == "clipboard":
+        if page in ("clipboard", "clipboard-clear"):
             root.after_idle(window.bring_forward)  # Opened by its shortcut: ready to type.
+        if page == "clipboard-clear":
+            root.after_idle(window.clear_clipboard_history)
         root.mainloop()
     finally:
         os.close(fd)

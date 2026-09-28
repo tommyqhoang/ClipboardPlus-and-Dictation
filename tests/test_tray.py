@@ -305,7 +305,7 @@ class TrayTests(unittest.TestCase):
         self.tray.sync_history_shortcut()
         self.assertEqual(self.tray.history_key.registered[-1], None)
         self.tray.open_history()
-        self.assertIn("--clipboard", self.popen.call_args.args[0])
+        self.popen.assert_not_called()
 
     def test_gnome_hotkey_binds_toggle_command(self):
         taken = hotkeys.Conflict("Old dictation", hotkeys.GNOME_LIST_PREFIX + "custom0/")
@@ -414,7 +414,12 @@ class TrayTests(unittest.TestCase):
 
     def test_menu_shows_only_the_chosen_features(self):
         dictation_items = ("Start Dictation", "Copy Last Transcript", "Shortcut:")
-        clipboard_items = ("Clipboard History…", "Pause Clipboard Capture")
+        clipboard_items = (
+            "Clipboard History…",
+            "Search Clipboard History…",
+            "Clear Clipboard History…",
+            "Pause Clipboard Capture",
+        )
         self.use_features(True, False)
         self.assertTrue(all(self.visible(t) for t in dictation_items))
         self.assertFalse(any(self.visible(t) for t in clipboard_items))
@@ -444,6 +449,27 @@ class TrayTests(unittest.TestCase):
         self.item("Clipboard History…").action()
         self.assertEqual(self.popen.call_args.args[0][-1], "--clipboard")
         self.assertTrue(self.popen.call_args.args[0][-2].endswith("app.py"))
+        self.item("Search Clipboard History…").action()
+        self.assertEqual(self.popen.call_args.args[0][-1], "--clipboard")
+        self.item("Clear Clipboard History…").action()
+        self.assertEqual(self.popen.call_args.args[0][-1], "--clipboard-clear")
+
+    def test_clipboard_menu_actions_ignore_a_recently_disabled_feature(self):
+        self.use_features(False, True)
+        self.tray.rows = [ITEM]
+        recent_item = self.tray.icon.menu[2]
+        self.assertTrue(recent_item.options["visible"](None))
+        self.use_features(False, False)
+        self.assertFalse(self.visible("Search Clipboard History…"))
+        self.assertFalse(self.visible("Clear Clipboard History…"))
+        self.assertFalse(recent_item.options["visible"](None))
+        self.tray.open_history()
+        self.tray.open_clear_history()
+        self.popen.assert_not_called()
+        self.tray.store = Mock()
+        with patch.object(self.tray.service, "copy_item") as copy:
+            self.tray.copy_row(0)
+        copy.assert_not_called()
 
     def test_tick_keeps_the_clipboard_service_running(self):
         self.use_features(True, True)

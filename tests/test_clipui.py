@@ -536,6 +536,29 @@ class TabTests(PageCase):
 
 
 class WindowTests(PageCase):
+    def test_menu_clear_request_opens_confirmation_for_a_running_window(self):
+        with patch.object(self.page, "clear") as clear:
+            self.window.open_page("clipboard-clear")
+            self.root.update()
+        clear.assert_called_once()
+        self.assertEqual(self.window.page, "clipboard")
+
+    def test_menu_clear_request_is_ignored_if_clipboard_was_disabled(self):
+        with patch.object(self.page, "clear") as clear:
+            self.window.open_page("clipboard-clear")
+            hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, False))
+            self.root.update()
+        clear.assert_not_called()
+
+    def test_menu_clear_request_opens_the_clipboard_page_first(self):
+        with patch.object(self.service, "completed", return_value=True):
+            self.window.settings()
+            with patch.object(self.gui.clipui.ClipboardPage, "clear") as clear:
+                self.window.open_page("clipboard-clear")
+                self.root.update()
+        self.assertEqual(self.window.page, "clipboard")
+        clear.assert_called_once()
+
     def test_the_shortcut_opens_the_clipboard_tab_ready_to_search(self):
         with patch.object(self.service, "completed", return_value=True):
             self.window.settings()

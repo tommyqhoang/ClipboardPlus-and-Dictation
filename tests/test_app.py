@@ -756,11 +756,17 @@ class WindowTests(ServiceCase):
             self.root.withdraw()
             self.window = self.gui.App(self.root, self.service, "settings")
         self.assertEqual(self.window.page, "settings")
-        with patch.object(self.gui.tk, "Tk"), patch.object(self.gui, "App") as window:
+        with patch.object(self.gui.tk, "Tk") as root, patch.object(self.gui, "App") as window:
             self.assertEqual(self.gui.main(["--settings"]), 0)
             self.assertEqual(window.call_args.args[2], "settings")
             self.assertEqual(self.gui.main(["--shortcut"]), 0)
             self.assertEqual(window.call_args.args[2], "shortcut")
+            self.assertEqual(self.gui.main(["--clipboard-clear"]), 0)
+            self.assertEqual(window.call_args.args[2], "clipboard-clear")
+            self.assertEqual(
+                [args.args[0] for args in root.return_value.after_idle.call_args_list[-2:]],
+                [window.return_value.bring_forward, window.return_value.clear_clipboard_history],
+            )
             self.assertEqual(self.gui.main([]), 0)
             self.assertEqual(window.call_args.args[2], "")
 
