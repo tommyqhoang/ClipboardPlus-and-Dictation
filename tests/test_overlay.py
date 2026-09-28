@@ -69,20 +69,6 @@ class HelperTests(unittest.TestCase):
 
 
 class WorkerHandoverTests(unittest.TestCase):
-    def test_the_installed_private_python_is_preferred(self):
-        with tempfile.TemporaryDirectory() as folder:
-            prefix = Path(folder)
-            (prefix / "lib").mkdir()
-            module = prefix / "lib/dictation.py"
-            with patch.object(d, "__file__", str(module)):
-                self.assertEqual(d.overlay_python(), sys.executable)
-                private = prefix / "share/whisper-dictation/venv/bin/python"
-                private.parent.mkdir(parents=True)
-                private.touch()
-                with patch.object(d.desktop, "platform_name", return_value="linux"):
-                    # install_prefix resolves symlinks (/var → /private/var on macOS).
-                    self.assertEqual(d.overlay_python(), str(private.resolve()))
-
     def test_turned_off_it_is_never_started(self):
         config = Mock(b=Mock(return_value=False))
         with patch.object(d.subprocess, "Popen") as popen:

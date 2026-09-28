@@ -828,5 +828,41 @@ install_model
         self.assertFalse((invalid_dir / "selected.bin").exists())
 
 
+class OpenAppAndOverlayFrozenTests(unittest.TestCase):
+    def test_open_app_launches_even_when_the_source_script_is_missing_and_frozen(self):
+        config = Mock(b=Mock(return_value=True))
+        with (
+            patch.object(d.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+            patch.object(d.desktop, "relaunch", return_value=["/opt/Clipboard+/app"]),
+            patch.object(d.subprocess, "Popen") as popen,
+        ):
+            d.open_app(config)
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args.args[0], ["/opt/Clipboard+/app"])
+
+    def test_open_app_does_nothing_from_source_when_the_script_is_missing(self):
+        config = Mock(b=Mock(return_value=True))
+        with (
+            patch.object(d.desktop, "frozen_root", return_value=None),
+            patch.object(Path, "is_file", return_value=False),
+            patch.object(d.subprocess, "Popen") as popen,
+        ):
+            d.open_app(config)
+        popen.assert_not_called()
+
+    def test_start_overlay_launches_even_when_the_source_script_is_missing_and_frozen(self):
+        token = "worker-token"
+        config = Mock(b=Mock(return_value=True))
+        with (
+            patch.object(d.desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+            patch.object(d.desktop, "relaunch", return_value=["/opt/Clipboard+/overlay", token]),
+            patch.object(d.subprocess, "Popen") as popen,
+        ):
+            result = d.start_overlay(config, token)
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args.args[0], ["/opt/Clipboard+/overlay", token])
+        self.assertIsNotNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -542,12 +542,14 @@ def open_app(config: Config) -> None:
 
     Like the recording pill, it is a window of its own: "overlay": false turns both off.
     """
-    script = Path(__file__).resolve().with_name("app.py")
-    if not config.b("overlay") or not script.is_file():
+    if not config.b("overlay"):
+        return
+    frozen = desktop.frozen_root() is not None
+    if not frozen and not Path(__file__).resolve().with_name("app.py").is_file():
         return
     with contextlib.suppress(OSError):
         subprocess.Popen(
-            [overlay_python(), str(script)],
+            desktop.relaunch("app"),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -555,26 +557,16 @@ def open_app(config: Config) -> None:
         )
 
 
-def overlay_python() -> str:
-    """A Python that can draw windows: the app's private environment when installed
-    (the shortcut may run a system Python without Tk), otherwise this one."""
-    venv = desktop.install_prefix(Path(__file__)) / "share/whisper-dictation/venv"
-    private = (
-        venv / "Scripts/pythonw.exe"
-        if desktop.platform_name() == "windows"
-        else venv / "bin/python"
-    )
-    return str(private) if private.is_file() else sys.executable
-
-
 def start_overlay(config: Config, token: str) -> subprocess.Popen[bytes] | None:
     """Launch the floating recording pill for this session, when wanted and present."""
-    script = Path(__file__).resolve().with_name("overlay.py")
-    if not config.b("overlay") or not script.is_file():
+    if not config.b("overlay"):
+        return None
+    frozen = desktop.frozen_root() is not None
+    if not frozen and not Path(__file__).resolve().with_name("overlay.py").is_file():
         return None
     try:
         return subprocess.Popen(
-            [overlay_python(), str(script), token],
+            desktop.relaunch("overlay", token),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
