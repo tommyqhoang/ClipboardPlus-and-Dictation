@@ -49,7 +49,9 @@ class MacBundleSigningTests(unittest.TestCase):
         # staging folder, next to the app.
         helper_pos = script.index("Install Clipboard+.command")
         hdiutil_pos = script.index("hdiutil create")
-        self.assertLess(helper_pos, hdiutil_pos, "installer helper must be staged before the DMG is created")
+        self.assertLess(
+            helper_pos, hdiutil_pos, "installer helper must be staged before the DMG is created"
+        )
 
 
 if __name__ == "__main__":
