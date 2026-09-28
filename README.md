@@ -463,17 +463,17 @@ continuously, and only while Clipboard history is on). Local CLI and HTTP transc
 share normalization, recovery, and clipboard delivery.
 
 ```bash
-python3 -m unittest discover -s tests -v
-ruff check lib tests tools setup-desktop.py
-ruff format --check lib tests tools setup-desktop.py
-mypy --strict lib tools setup-desktop.py
-bash -n bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/with-xvfb.sh
-shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh
-python3 -m compileall -q lib setup-desktop.py
+sh tests/check.sh          # everything CI checks, in about a minute
+sh tests/check.sh --full   # also Python 3.10 and a bare install on 5 distributions (Docker)
+git config core.hooksPath .githooks   # run tests/check.sh before every push
 ```
 
-The app icon is generated, not hand-edited: run `python3 tools/make_icon.py` on
-macOS to rebuild the matching native and website icon files in `lib/`, `assets/`,
+`tests/check.sh` mirrors `.github/workflows/quality.yml`: ruff, `mypy --strict` for
+Linux, macOS and Windows (`--platform`), shellcheck and shfmt (from Docker when they
+are not installed), and the tests with the 90% coverage floor under Xvfb.
+
+The app icon is generated, not hand-edited: run `python3 tools/make_icon.py` (any
+OS, needs Pillow) to rebuild the matching native and website icon files in `lib/`, `assets/`,
 and `site/assets/`.
 
 Tests use a subprocess recorder and transcription fixture plus an actual local

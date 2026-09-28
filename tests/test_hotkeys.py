@@ -137,6 +137,36 @@ class HotkeyTests(unittest.TestCase):
             hotkeys.set_login_item(True, executable, self.folder, "macos", run=run)
             self.assertEqual(calls, [["launchctl", "bootstrap"]])
 
+    def test_start_login_item_starts_the_app_under_launchd(self):
+        calls = []
+        codes = iter([0, 5, 5, 0])  # bootout, then bootstrap busy twice while it unloads.
+
+        def run(args, **_):
+            calls.append(args[1])
+            return Mock(returncode=next(codes))
+
+        with patch.object(hotkeys, "agent_path", return_value=self.folder / "agent.plist"):
+            self.assertFalse(hotkeys.start_login_item(run=run))  # No login item: `open`.
+            (self.folder / "agent.plist").write_text("x")
+            self.assertTrue(hotkeys.start_login_item(run=run, sleep=Mock()))
+            self.assertEqual(calls, ["bootout", "bootstrap", "bootstrap", "bootstrap"])
+            always_busy = Mock(return_value=Mock(returncode=5))
+            self.assertFalse(hotkeys.start_login_item(run=always_busy, sleep=Mock()))
+            broken = Mock(side_effect=OSError)
+            self.assertFalse(hotkeys.start_login_item(run=broken, sleep=Mock()))
+
+    def test_menubar_is_idle_only_when_its_lock_is_free(self):
+        with patch.object(hotkeys.desktop, "lock", return_value=None):
+            self.assertFalse(hotkeys._menubar_is_idle())  # Held: running.
+        with patch.object(hotkeys.desktop, "lock", side_effect=OSError):
+            self.assertFalse(hotkeys._menubar_is_idle())
+        with (
+            patch.object(hotkeys.desktop, "lock", return_value=7),
+            patch.object(hotkeys.os, "close") as close,
+        ):
+            self.assertTrue(hotkeys._menubar_is_idle())
+        close.assert_called_once_with(7)
+
     def test_bundle_login_command_runs_the_executable_so_launchd_supervises_it(self):
         bundle = self.folder / "Clipboard+ and Dictation.app"
         # No executable yet (e.g. a half-written bundle): fall back to `open`.

@@ -49,6 +49,9 @@ DANGER_ACTIVE = "#a82e24"
 WARNING = "#c98a12"
 IDLE = "#a39b90"
 HOVER = "#faf5ec"  # A list row under the pointer.
+# How long the scrollbar stays once shown, so a page at the window's height cannot
+# make it appear and disappear forever.
+SCROLLBAR_SETTLE = 0.4
 PAD = 20  # The page's side padding.
 # Past this, a maximized window centers a readable column instead of stretching
 # buttons and fields across the whole screen.
@@ -127,6 +130,8 @@ class App:
             yscrollincrement=20,
         )
         self.scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
+        self.scrollbar_shown_at = 0.0  # time.monotonic() when it last appeared.
+        self.scrollbar_recheck: str | None = None
         self.canvas.configure(yscrollcommand=self.scroll)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.frame = ttk.Frame(self.canvas, padding=(PAD, 14, PAD, 20))
@@ -545,11 +550,28 @@ class App:
 
     def scroll(self, first: float, last: float) -> None:
         # Show the scrollbar only when the page is taller than the window.
-        if float(first) <= 0 and float(last) >= 1:
-            self.scrollbar.pack_forget()
-        elif not self.scrollbar.winfo_manager():
+        fits = float(first) <= 0 and float(last) >= 1
+        shown = bool(self.scrollbar.winfo_manager())
+        if fits and shown:
+            # Showing it narrowed the page and re-wrapped its text; hiding it again at
+            # once can make the page too tall again, a loop that never settles (a page
+            # just at the window's height, as with macOS fonts). So it stays a moment,
+            # then goes if the settled page still fits.
+            settled = time.monotonic() - self.scrollbar_shown_at >= SCROLLBAR_SETTLE
+            if settled:
+                self.scrollbar.pack_forget()
+            elif self.scrollbar_recheck is None:
+                self.scrollbar_recheck = self.root.after(
+                    int(SCROLLBAR_SETTLE * 1000) + 50, self.recheck_scrollbar
+                )
+        elif not fits and not shown:
             self.scrollbar.pack(side="right", fill="y", before=self.canvas)
+            self.scrollbar_shown_at = time.monotonic()
         self.scrollbar.set(first, last)
+
+    def recheck_scrollbar(self) -> None:
+        self.scrollbar_recheck = None
+        self.scroll(*self.canvas.yview())
 
     def wheel(self, event: tk.Event[Any]) -> None:
         """Scroll the page with the mouse wheel or trackpad, wherever the pointer is."""

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import dictation as d
@@ -320,6 +320,50 @@ class TrayTests(unittest.TestCase):
         again = tray.desktop.lock(self.paths.runtime / "menubar.lock")
         self.assertIsNotNone(again)
         os.close(again)
+
+    def test_main_with_an_unreachable_display_exits_quietly_but_real_errors_surface(self):
+        real_import = __import__
+
+        def importing(error):
+            def fake(name, *args, **kwargs):
+                if name == "pystray":
+                    raise error
+                return real_import(name, *args, **kwargs)
+
+            return fake
+
+        unreachable = type("DisplayConnectionError", (Exception,), {})("no X server")
+        with (
+            patch.object(tray.desktop, "has_display", return_value=True),
+            patch.object(tray.telemetry, "install"),
+            patch("builtins.__import__", importing(unreachable)),
+        ):
+            self.assertEqual(tray.main(), 1)
+        with (
+            patch.object(tray.desktop, "has_display", return_value=True),
+            patch.object(tray.telemetry, "install"),
+            patch("builtins.__import__", importing(ImportError("pystray missing"))),
+            self.assertRaises(ImportError),
+        ):
+            tray.main()
+        again = tray.desktop.lock(self.paths.runtime / "menubar.lock")
+        self.assertIsNotNone(again)  # Released either way.
+        os.close(again)
+
+    def test_main_runs_the_tray_icon(self):
+        fake = MagicMock()
+        (self.paths.runtime / "menubar-quit").write_text("quit")  # Left by the last quit.
+        with (
+            patch.object(tray.desktop, "has_display", return_value=True),
+            patch.object(tray.telemetry, "install") as install,
+            patch.dict(sys.modules, {"pystray": fake}),
+            patch.object(tray, "Tray") as made,
+        ):
+            self.assertEqual(tray.main(), 0)
+        install.assert_called_once_with("tray")
+        made.assert_called_once()
+        made.return_value.icon.run.assert_called_once_with(setup=made.return_value.started)
+        self.assertFalse((self.paths.runtime / "menubar-quit").exists())
 
     def use_features(self, dictation, clipboard):
         hotkeys.Preferences(self.paths).save(features=hotkeys.Features(dictation, clipboard))

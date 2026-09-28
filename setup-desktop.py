@@ -242,7 +242,8 @@ def kill_lock_holder(lock: Path) -> None:
     """
     if desktop.platform_name() == "windows" or not shutil.which("lsof"):
         return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    # getattr: Windows has no SIGKILL (this never runs there, but mypy checks it).
+    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
         pids = subprocess.run(
             ["lsof", "-t", str(lock)], capture_output=True, text=True, check=False
         ).stdout.split()
@@ -470,7 +471,9 @@ def install_app_launcher(prefix: Path) -> None:
 LAUNCH_CHECK_SECONDS = 3.0
 
 
-def launch(prefix: Path) -> None:
+def launch(prefix: Path) -> bool:
+    """Start the installed app now. False when there is no desktop to show it in (an
+    SSH session or a container): it then starts at the next login instead."""
     module = prefix / LIB / "app.py"
     if not module.is_file():
         raise dictation.DictationError("The desktop app is not installed at this location.")
@@ -487,7 +490,11 @@ def launch(prefix: Path) -> None:
         if not hotkeys.start_login_item():
             subprocess.run(["/usr/bin/open", str(bundle)], check=True, timeout=15)
     else:
+        # Stopped even when it cannot be started again here (an upgrade over SSH): left
+        # running, it would keep serving old code until the next login anyway.
         stop_menubar(dictation.Paths())
+        if not desktop.has_display():
+            return False
         windowed = gui_python(prefix)[1]
         command = (
             tray_command(prefix, windowed)
@@ -505,12 +512,13 @@ def launch(prefix: Path) -> None:
         try:
             code = started.wait(timeout=LAUNCH_CHECK_SECONDS)
         except subprocess.TimeoutExpired:
-            return
+            return True
         if code:
             raise dictation.DictationError(
                 f"{hotkeys.APP_NAME} didn't start. Open it from your application menu, or "
                 f"run: {shlex.join(command)}"
             )
+    return True
 
 
 def stop_clipboard_service(paths: dictation.Paths) -> None:
@@ -639,17 +647,20 @@ def main() -> int:
             )
             # Normal installation should be immediately usable. On a first run the menu
             # bar app opens the setup window; on later runs it opens Settings.
-            if not args.no_shortcut:
-                launch(prefix)
+            opened = launch(prefix) if not args.no_shortcut else False
             if not os.environ.get("DICTATION_QUICK_INSTALL"):  # It says what happens next.
                 print(f"Installed: {launcher}")
                 print(f"Settings: {dictation.Paths().config}")
                 # The same marker the window reads: set up before means this was an update.
                 welcome = dictation.Paths().config.parent / "welcome.json"
                 done = dictation.read_json(welcome).get("complete") is True
-                print(
-                    f"Opened {hotkeys.APP_NAME}" + (" (updated)." if done else " to finish setup.")
-                )
+                if opened:
+                    print(
+                        f"Opened {hotkeys.APP_NAME}"
+                        + (" (updated)." if done else " to finish setup.")
+                    )
+                elif not args.no_shortcut:
+                    print(f"No desktop session here: {hotkeys.APP_NAME} opens at your next login.")
         return 0
     except (OSError, dictation.DictationError, subprocess.SubprocessError) as exc:
         print(f"Setup did not complete: {exc}", file=sys.stderr)

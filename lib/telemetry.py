@@ -195,7 +195,8 @@ def client_id() -> str:
 # -- what describes the system -----------------------------------------------
 def _memory_gb() -> int:
     try:
-        pages, size = os.sysconf("SC_PHYS_PAGES"), os.sysconf("SC_PAGE_SIZE")
+        sysconf = getattr(os, "sysconf")  # Not on Windows: AttributeError, like a failure.
+        pages, size = int(sysconf("SC_PHYS_PAGES")), int(sysconf("SC_PAGE_SIZE"))
         return round(pages * size / 1e9)
     except (AttributeError, OSError, ValueError):
         return 0

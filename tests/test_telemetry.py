@@ -6,9 +6,10 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import telemetry
@@ -101,3 +102,92 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(first, second)
         path = self.root / "telemetry-id"
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_scrub_removes_personal_data_before_anything_is_sent(self) -> None:
+        home = str(Path.home())
+        text = (
+            f"{home}/notes.txt jane.doe@example.com https://x.test/p?token=abc#frag "
+            "key cp_live_ABCDEF123456 and " + "a" * 40
+        )
+        cleaned = telemetry.scrub(text)
+        self.assertIn("~/notes.txt", cleaned)
+        self.assertIn("[email]", cleaned)
+        self.assertIn("https://x.test/p", cleaned)
+        for leaked in (home, "jane.doe", "token=abc", "cp_live_ABCDEF123456", "a" * 40):
+            self.assertNotIn(leaked, cleaned)
+        self.assertEqual(len(telemetry.scrub("word " * 1000)), 1000)  # Capped.
+
+    def test_crash_envelope_goes_to_the_dsn_project_with_its_key(self) -> None:
+        posted = []
+        with patch.object(telemetry, "_post", side_effect=lambda *a: posted.append(a)):
+            telemetry._post_sentry({"event_id": "abc"})
+        url, body, headers = posted[0]
+        self.assertTrue(url.endswith("/envelope/"))
+        header, kind, payload = (json.loads(line) for line in body.decode().splitlines())
+        self.assertEqual(
+            (header["event_id"], kind, payload), ("abc", {"type": "event"}, {"event_id": "abc"})
+        )
+        self.assertIn("sentry_key=", headers["X-Sentry-Auth"])
+
+    def test_nothing_is_posted_without_consent_and_network_errors_stay_quiet(self) -> None:
+        with patch.object(telemetry.urllib.request, "urlopen") as urlopen:
+            with patch.dict(os.environ, {"DO_NOT_TRACK": "1"}, clear=False):
+                telemetry._post("https://x.test", b"{}", {})
+            urlopen.assert_not_called()
+            with self.enabled():
+                urlopen.side_effect = OSError("offline")
+                telemetry._post("https://x.test", b"{}", {})  # No exception.
+                urlopen.side_effect = None
+                telemetry._post("https://x.test", b"{}", {})
+            self.assertEqual(urlopen.call_count, 2)
+
+    def test_sending_never_raises_and_never_piles_up(self) -> None:
+        ran = []
+
+        def broken() -> None:
+            ran.append(True)
+            raise RuntimeError("reporting failed")
+
+        with self.enabled():
+            telemetry._send(broken, wait=True)  # Its failure is swallowed.
+        self.assertEqual(ran, [True])
+        # At most two reports in flight: a third is dropped, not queued.
+        for _ in range(2):
+            telemetry._pending.acquire()
+        try:
+            telemetry._send(lambda: ran.append(False), wait=True)
+        finally:
+            for _ in range(2):
+                telemetry._pending.release()
+        self.assertEqual(ran, [True])
+        with patch.object(telemetry.threading.Thread, "start", side_effect=RuntimeError):
+            telemetry._send(lambda: None, wait=False)  # Shutting down: gives its slot back.
+        self.assertTrue(telemetry._pending.acquire(blocking=False))
+        telemetry._pending.release()
+
+    def test_crash_hooks_report_unhandled_errors_then_defer_to_the_previous_ones(self) -> None:
+        captured = []
+        with (
+            patch.object(sys, "excepthook", MagicMock()) as previous,
+            patch.object(threading, "excepthook", MagicMock()) as previous_thread,
+            patch.object(telemetry, "capture", side_effect=lambda e, **_: captured.append(e)),
+        ):
+            telemetry.install("tests", ignore=(ValueError,))
+            error = RuntimeError("boom")
+            sys.excepthook(RuntimeError, error, None)
+            sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)  # Quitting: no report.
+            sys.excepthook(ValueError, ValueError(), None)  # Ignored by this component.
+            thread_error = OSError("thread")
+            args = MagicMock(exc_value=thread_error)
+            threading.excepthook(args)
+            self.assertEqual(captured, [error, thread_error])
+            self.assertEqual(previous.call_count, 3)
+            previous_thread.assert_called_once_with(args)
+        root = MagicMock()
+        shown = root.report_callback_exception
+        with patch.object(telemetry, "capture", side_effect=lambda e, **_: captured.append(e)):
+            telemetry.watch_tk(root)
+            tk_error = KeyError("tk")
+            root.report_callback_exception(KeyError, tk_error, None)
+        self.assertIs(captured[-1], tk_error)
+        shown.assert_called_once()

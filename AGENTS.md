@@ -21,11 +21,15 @@ Wayland/X11), also macOS and Windows.
 ## Verify before claiming done
 
 ```sh
-sh tests/check.sh          # ruff, format, mypy --strict, shellcheck, shfmt, tests
-sh tests/with-xvfb.sh python3 -m unittest discover -s tests   # tests only, headless
+sh tests/check.sh          # all of CI's checks (~1 min): lint, mypy for Linux/macOS/Windows,
+                           # shellcheck, shfmt, tests + coverage under Xvfb
+sh tests/check.sh --full   # also Python 3.10 and the 5 distro installs in Docker (~10 min)
+sh tests/with-xvfb.sh /usr/bin/python3 -m unittest discover -s tests   # tests only
 ```
 
-Use `/usr/bin/python3` (the shell's Homebrew python has no Tk). GUI tests run
+Run it before pushing instead of waiting on GitHub Actions; `git config core.hooksPath
+.githooks` makes every push run it. Run `--full` after touching an installer.
+check.sh picks a Python with Tk (the shell's Homebrew python has none); GUI tests run
 under Xvfb, never on the user's display.
 
 ## Working rules

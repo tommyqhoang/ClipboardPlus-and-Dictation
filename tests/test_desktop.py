@@ -20,6 +20,9 @@ import dictation
 ROOT = Path(__file__).resolve().parents[1]
 
 
+HAS_DISPLAY = desktop.has_display  # The real one: tests patch it.
+
+
 def setup_module():
     spec = importlib.util.spec_from_file_location("setup_desktop", ROOT / "setup-desktop.py")
     module = importlib.util.module_from_spec(spec)
@@ -30,6 +33,40 @@ def setup_module():
 class DesktopTests(unittest.TestCase):
     def setUp(self):
         self.values = dictation.DEFAULTS.copy()
+        # Launching needs a desktop session; tests run with and without one.
+        display = patch.object(desktop, "has_display", return_value=True)
+        display.start()
+        self.addCleanup(display.stop)
+
+    def test_has_display_needs_a_desktop_session_only_on_linux(self):
+        for platform, environment, expected in (
+            ("linux", {}, False),  # SSH or a container.
+            ("linux", {"DISPLAY": ":0"}, True),
+            ("linux", {"WAYLAND_DISPLAY": "wayland-0"}, True),
+            ("macos", {}, True),
+            ("windows", {}, True),
+        ):
+            with (
+                patch.object(desktop, "platform_name", return_value=platform),
+                patch.dict(os.environ, environment, clear=True),
+            ):
+                self.assertEqual(HAS_DISPLAY(), expected, (platform, environment))
+
+    def test_install_without_a_desktop_session_does_not_fail_to_open_it(self):
+        # Installing over SSH or in a container: the app starts at the next login.
+        setup = setup_module()
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder)
+            (prefix / setup.LIB).mkdir(parents=True)
+            (prefix / setup.LIB / "app.py").touch()
+            with (
+                patch.object(desktop, "has_display", return_value=False),
+                patch.object(setup.subprocess, "Popen") as process,
+                patch.object(setup, "stop_menubar") as stop,
+            ):
+                self.assertFalse(setup.launch(prefix))
+            process.assert_not_called()
+            stop.assert_called_once()  # An older copy still quits, so the upgrade applies.
 
     def test_platform_selection(self):
         for system, expected in (("darwin", "macos"), ("win32", "windows"), ("linux", "linux")):

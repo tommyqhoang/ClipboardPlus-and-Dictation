@@ -861,6 +861,21 @@ class WindowTests(ServiceCase):
         self.window.scroll(0.0, 0.5)
         self.assertEqual(self.window.scrollbar.winfo_manager(), "pack")
 
+    def test_a_page_at_the_window_height_cannot_flip_the_scrollbar_forever(self):
+        # Showing the scrollbar narrows the page, which can make it fit, which hides the
+        # scrollbar, which widens the page... Tk's update() then never returned (macOS).
+        self.window.scroll(0.0, 0.9)
+        self.assertEqual(self.window.scrollbar.winfo_manager(), "pack")
+        for _ in range(5):
+            self.window.scroll(0.0, 1.0)  # "Fits" right after appearing: it stays.
+            self.assertEqual(self.window.scrollbar.winfo_manager(), "pack")
+        self.assertIsNotNone(self.window.scrollbar_recheck)
+        # Once settled, a page that still fits loses it.
+        self.window.scrollbar_shown_at -= self.gui.SCROLLBAR_SETTLE
+        with patch.object(self.window.canvas, "yview", return_value=(0.0, 1.0)):
+            self.window.recheck_scrollbar()
+        self.assertEqual(self.window.scrollbar.winfo_manager(), "")
+
     def test_existing_setup_and_recording_controls(self):
         with patch.object(self.service, "ready", return_value=True):
             self.window.after_features("dictation")

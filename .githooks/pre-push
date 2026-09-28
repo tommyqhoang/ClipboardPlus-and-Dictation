@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs what CI checks before anything leaves this machine (skip once: git push --no-verify).
+# Enable: git config core.hooksPath .githooks
+exec sh "$(git rev-parse --show-toplevel)/tests/check.sh"

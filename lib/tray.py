@@ -495,9 +495,7 @@ def main() -> int:
         open_app_window()
         return 0
     try:
-        if desktop.platform_name() == "linux" and not (
-            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-        ):
+        if not desktop.has_display():
             print("No desktop session to show the tray icon in; it starts at your next login.")
             return 1
         telemetry.install("tray")

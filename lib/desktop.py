@@ -34,6 +34,14 @@ def user_id() -> int:
     return int(getattr(os, "getuid", os.getpid)())
 
 
+def has_display() -> bool:
+    """Whether windows and tray icons can be shown here: always on macOS and Windows;
+    on Linux only inside a desktop session (not over SSH or in a container)."""
+    return platform_name() != "linux" or bool(
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    )
+
+
 def install_prefix(module: Path) -> Path:
     """The prefix an installed module lives under: …/lib/whisper-dictation, or …/lib."""
     folder = module.resolve().parent
