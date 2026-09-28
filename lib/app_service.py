@@ -61,7 +61,10 @@ class MicrophoneTest:
     def _listen(self) -> None:
         stream = self.process.stdout
         while stream is not None:
-            chunk = stream.read(self.CHUNK)
+            try:
+                chunk = stream.read(self.CHUNK)
+            except (OSError, ValueError):
+                return  # The device may disappear while the test is running.
             if not chunk:
                 return
             self.level = d.audio_level(chunk)
@@ -74,14 +77,26 @@ class MicrophoneTest:
 
     def stop(self) -> None:
         if self.process.poll() is None:
-            self.process.terminate()
+            try:
+                self.process.terminate()
+            except OSError:
+                pass  # It may have exited between poll and terminate.
             try:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+                try:
+                    self.process.kill()
+                except OSError:
+                    pass
+                try:
+                    self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
         if self.process.stdout is not None:
-            self.process.stdout.close()
+            try:
+                self.process.stdout.close()
+            except OSError:
+                pass
 
     def outcome(self) -> str:
         """none, quiet, faint or good (for statistics; `verdict` says it in words)."""
@@ -284,13 +299,18 @@ class Service:
         """The microphones to offer (device ids; `microphone_names` has friendly names)."""
         self.microphone_names: dict[str, str] = {}
         config = d.Config(self.paths)
-        result = subprocess.run(
-            desktop.recorder_command(config.values, listing=True),
-            capture_output=True,
-            timeout=15,
-            check=False,
-            **desktop.process_options(),
-        )
+        try:
+            result = subprocess.run(
+                desktop.recorder_command(config.values, listing=True),
+                capture_output=True,
+                timeout=15,
+                check=False,
+                **desktop.process_options(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise d.DictationError(
+                "Couldn’t check microphones. Check the audio tool and microphone permissions, then try again."
+            ) from exc
         output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
         backend = desktop.audio_backend(config.values)
         if backend == "alsa" and result.returncode != 0:

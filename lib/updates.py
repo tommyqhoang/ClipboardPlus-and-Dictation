@@ -20,9 +20,10 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import desktop
@@ -35,11 +36,24 @@ TARBALL_URL = f"https://github.com/{REPOSITORY}/archive/refs/tags/{{tag}}.tar.gz
 CHECK_SECONDS = 24 * 3600.0  # At most one check a day.
 TIMEOUT = 10  # Seconds; a slow connection must not hold anything open.
 MAX_RELEASE_BYTES = 50 * 1024 * 1024  # The source download is a few MB.
+MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 10_000
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
 class UpdateError(Exception):
     """A download or installation step failed; messages are safe to show."""
+
+
+class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
+    """A release download must stay encrypted through every redirect."""
+
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> urllib.request.Request | None:
+        if urllib.parse.urlsplit(newurl).scheme != "https":
+            raise UpdateError("The update download redirected to an insecure address.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:
@@ -128,7 +142,7 @@ def _download(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": desktop.APP_VERSION})
     try:
         with (
-            urllib.request.build_opener().open(request, timeout=60) as response,
+            urllib.request.build_opener(HTTPSRedirect()).open(request, timeout=60) as response,
             destination.open("wb") as output,
         ):
             written = 0
@@ -149,8 +163,26 @@ def _extract(archive: Path, folder: Path) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     try:
         with tarfile.open(archive) as tar:
-            safely = {name for name in tar.getnames() if not name.startswith(("/", ".."))}
-            tar.extractall(folder, members=[m for m in tar.getmembers() if m.name in safely])
+            members = tar.getmembers()
+            if (
+                len(members) > MAX_ARCHIVE_MEMBERS
+                or sum(m.size for m in members) > MAX_EXTRACTED_BYTES
+            ):
+                raise UpdateError(
+                    "The downloaded update contained too many files or too much data."
+                )
+            for member in members:
+                name = PurePosixPath(member.name)
+                if (
+                    not member.name
+                    or "\\" in member.name
+                    or name.is_absolute()
+                    or bool(PureWindowsPath(member.name).drive)
+                    or ".." in name.parts
+                    or not (member.isfile() or member.isdir())
+                ):
+                    raise UpdateError("The downloaded update contained an unsafe file path.")
+            tar.extractall(folder, members=members)
     except (tarfile.TarError, OSError) as exc:
         raise UpdateError("The downloaded update could not be unpacked.") from exc
     top = [entry for entry in folder.iterdir() if entry.is_dir()]

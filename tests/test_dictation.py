@@ -11,7 +11,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import dictation as d
@@ -282,6 +282,21 @@ class DictationTests(unittest.TestCase):
         self.wait_phase("idle")
         self.assertLess(time.monotonic() - begin, 3)
         self.assertTrue(self.paths.text.exists())
+
+    def test_recorder_shutdown_handles_exit_race_and_hung_process(self):
+        recorder = Mock(stdin=None)
+        recorder.poll.return_value = None
+        recorder.terminate.side_effect = ProcessLookupError("already exited")
+        recorder.wait.side_effect = [subprocess.TimeoutExpired("recorder", 1), None]
+        d.stop_recorder(recorder)
+        recorder.kill.assert_called_once()
+        self.assertEqual(recorder.wait.call_count, 2)
+
+        hung = Mock(stdin=None)
+        hung.poll.return_value = None
+        hung.wait.side_effect = subprocess.TimeoutExpired("recorder", 1)
+        d.stop_recorder(hung)
+        self.assertEqual(hung.wait.call_count, 2)  # Never wait forever for a bad driver.
 
     def test_live_preview_and_final(self):
         self.env["DICTATION_LIVE"] = "1"

@@ -582,6 +582,30 @@ def start_overlay(config: Config, token: str) -> subprocess.Popen[bytes] | None:
         return None
 
 
+def stop_recorder(recorder: subprocess.Popen[bytes] | None) -> None:
+    """Stop a recorder even when its device disappears during shutdown."""
+    if recorder is None or recorder.poll() is not None:
+        return
+    if recorder.stdin is not None:
+        with contextlib.suppress(OSError):
+            recorder.stdin.write(b"q\n")
+            recorder.stdin.close()
+        try:
+            recorder.wait(timeout=1)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+    with contextlib.suppress(OSError):
+        recorder.terminate()
+    try:
+        recorder.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            recorder.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            recorder.wait(timeout=2)
+
+
 def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
     recorder: subprocess.Popen[bytes] | None = None
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -614,28 +638,6 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                 }
             ),
         )
-
-    def stop() -> None:
-        if recorder is not None and recorder.poll() is None:
-            if recorder.stdin is not None:
-                with contextlib.suppress(OSError):
-                    recorder.stdin.write(b"q\n")
-                    recorder.stdin.close()
-                try:
-                    recorder.wait(timeout=1)
-                    return
-                except subprocess.TimeoutExpired:
-                    pass
-            # A recorder can exit between poll and terminate when its device goes away.
-            with contextlib.suppress(OSError):
-                recorder.terminate()
-            try:
-                recorder.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(OSError):
-                    recorder.kill()
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    recorder.wait(timeout=2)
 
     try:
         paths.preview.unlink(missing_ok=True)
@@ -709,7 +711,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
                     pcm = audio.read(config.n("live_window") * 32000)
                 pending = executor.submit(transcribe, config, pcm, paths.cache)
             time.sleep(0.05)
-        stop()
+        stop_recorder(recorder)
         loading = (
             "Loading the speech model; the first transcription can take longer."
             if config.s("backend") == "local"
@@ -766,7 +768,7 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
             model=model_name(config),
         )
     finally:
-        stop()
+        stop_recorder(recorder)
         executor.shutdown(wait=True)
         paths.preview.unlink(missing_ok=True)
         os.close(fd)

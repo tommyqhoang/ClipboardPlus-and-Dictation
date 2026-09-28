@@ -4,6 +4,7 @@ import array
 import gc
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -155,6 +156,26 @@ class ServiceTests(ServiceCase):
         ):
             with self.assertRaisesRegex(d.DictationError, "Microphone"):
                 self.service.microphones()
+
+    def test_microphone_discovery_reports_missing_or_hung_audio_tool(self):
+        for failure in (FileNotFoundError("ffmpeg"), subprocess.TimeoutExpired("ffmpeg", 15)):
+            with (
+                patch.object(app_service.subprocess, "run", side_effect=failure),
+                self.assertRaisesRegex(d.DictationError, "Couldn’t check microphones"),
+            ):
+                self.service.microphones()
+
+    def test_microphone_test_stops_when_device_disappears(self):
+        process = Mock(stdout=Mock())
+        process.poll.return_value = None
+        process.stdout.read.side_effect = OSError("device unplugged")
+        process.terminate.side_effect = ProcessLookupError("already exited")
+        process.wait.side_effect = [subprocess.TimeoutExpired("recorder", 2), None]
+        with patch.object(app_service.subprocess, "Popen", return_value=process):
+            test = app_service.MicrophoneTest(self.paths, "default", seconds=0.01)
+            test.stop()
+        process.kill.assert_called_once()
+        process.stdout.close.assert_called_once()
 
     def test_microphones_have_friendly_names(self):
         listing = (

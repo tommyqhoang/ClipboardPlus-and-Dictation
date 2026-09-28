@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -10,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -116,6 +118,14 @@ class UpdateTests(unittest.TestCase):
     def test_only_https_download_addresses_are_allowed(self):
         with self.assertRaises(updates.UpdateError):
             updates._download("http://example.com", self.root / "out.tar.gz")
+
+    def test_download_refuses_insecure_redirect(self):
+        handler = updates.HTTPSRedirect()
+        request = urllib.request.Request("https://example.com/release.tar.gz")
+        with self.assertRaisesRegex(updates.UpdateError, "insecure address"):
+            handler.redirect_request(
+                request, None, 302, "Found", {}, "http://example.com/release.tar.gz"
+            )
 
     def test_the_updater_runs_as_its_own_detached_process(self):
         with patch.object(updates.subprocess, "Popen") as popen:
@@ -254,8 +264,6 @@ class ExtractTests(unittest.TestCase):
         self.assertEqual((folder / "setup-desktop.py").read_text(encoding="utf-8"), "# setup\n")
 
     def test_paths_leaving_the_unpack_folder_are_refused(self):
-        import io
-
         evil = self.work / "evil.tar.gz"
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w:gz") as tar:
@@ -266,6 +274,38 @@ class ExtractTests(unittest.TestCase):
         evil.write_bytes(data.getvalue())
         with self.assertRaises(updates.UpdateError):
             updates._extract(evil, self.work / "unpack2")
+
+    def test_nested_traversal_links_and_windows_paths_are_refused(self):
+        for name, kind in (
+            ("release/../../escaped.txt", tarfile.REGTYPE),
+            ("release/link", tarfile.SYMTYPE),
+            ("release/hardlink", tarfile.LNKTYPE),
+            ("C:/escaped.txt", tarfile.REGTYPE),
+            ("release\\escaped.txt", tarfile.REGTYPE),
+        ):
+            with self.subTest(name=name):
+                archive = self.work / "unsafe.tar.gz"
+                with tarfile.open(archive, "w:gz") as tar:
+                    member = tarfile.TarInfo(name)
+                    member.type = kind
+                    member.linkname = "../../escaped.txt"
+                    member.size = 2 if kind == tarfile.REGTYPE else 0
+                    tar.addfile(member, io.BytesIO(b"no") if member.size else None)
+                with self.assertRaisesRegex(updates.UpdateError, "unsafe file path"):
+                    updates._extract(archive, self.work / "unpack-unsafe")
+                self.assertFalse((self.work / "escaped.txt").exists())
+
+    def test_decompressed_archive_size_is_bounded(self):
+        archive = self.work / "large.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            member = tarfile.TarInfo("release/large.bin")
+            member.size = 3
+            tar.addfile(member, io.BytesIO(b"abc"))
+        with (
+            patch.object(updates, "MAX_EXTRACTED_BYTES", 2),
+            self.assertRaisesRegex(updates.UpdateError, "too many files or too much data"),
+        ):
+            updates._extract(archive, self.work / "unpack-large")
 
 
 if __name__ == "__main__":
