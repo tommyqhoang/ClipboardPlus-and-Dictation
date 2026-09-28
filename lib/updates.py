@@ -173,7 +173,7 @@ def check(
             return None
     found = release(fetch)
     previous = read_state(paths)
-    progress = (
+    progress: dict[str, Any] = (
         {key: previous[key] for key in ("status", "target", "started") if key in previous}
         if previous.get("status") == "installing"
         else {}
