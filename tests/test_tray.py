@@ -147,6 +147,10 @@ class TrayTests(unittest.TestCase):
         popen = patch.object(tray.subprocess, "Popen")
         self.popen = popen.start()
         self.addCleanup(popen.stop)
+        # ClipboardControl captures Popen as a default argument when imported,
+        # before the patch above. Replace that bound value too or tests launch a
+        # real clipboard service that writes into the temporary directory.
+        self.tray.clip._popen = self.popen
 
     def items(self, menu=None):
         for entry in menu if menu is not None else self.tray.icon.menu:
