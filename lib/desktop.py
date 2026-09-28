@@ -50,6 +50,47 @@ def install_prefix(module: Path) -> Path:
     return folder.parent
 
 
+def python_for_gui() -> str:
+    """pythonw on Windows so no console window flashes; sys.executable elsewhere."""
+    python = Path(sys.executable)
+    windowed = python.with_name("pythonw.exe")
+    return str(windowed if windowed.exists() else python)
+
+
+def overlay_python() -> str:
+    """A Python that can draw windows: the app's private environment when installed
+    (a desktop shortcut may run a system Python without Tk), otherwise `python_for_gui()`.
+    Also `relaunch()`'s source-mode fallback, so every cross-process launch this app
+    makes from source gets the same Tk-capable interpreter, not just the two call
+    sites (`dictation.py`'s recording pill and app window) that originally needed it.
+    """
+    venv = install_prefix(Path(__file__)) / "share/whisper-dictation/venv"
+    private = venv / "Scripts/pythonw.exe" if platform_name() == "windows" else venv / "bin/python"
+    return str(private) if private.is_file() else python_for_gui()
+
+
+def frozen_root() -> Path | None:
+    """The directory holding this build's sibling executables, or None when running
+    from source (`python3 lib/whatever.py`)."""
+    if not getattr(sys, "frozen", False):
+        return None
+    appdir = os.environ.get("APPDIR")  # Set only while running inside an AppImage.
+    return Path(appdir) / "usr" / "bin" if appdir else Path(sys.executable).parent
+
+
+def relaunch(entry: str, *args: str) -> list[str]:
+    """argv to start another part of this app ("dictation", "app", "tray"/"menubar",
+    "overlay", "engine", "updates", "clipservice") — a sibling frozen executable when
+    packaged, the matching script under a window-capable interpreter when running
+    from source."""
+    root = frozen_root()
+    if root is not None:
+        suffix = ".exe" if platform_name() == "windows" else ""
+        return [str(root / f"{entry}{suffix}"), *args]
+    lib = Path(__file__).resolve().parent
+    return [overlay_python(), str(lib / f"{entry}.py"), *args]
+
+
 def roots() -> tuple[Path, Path, Path]:
     home = Path.home()
     system = platform_name()

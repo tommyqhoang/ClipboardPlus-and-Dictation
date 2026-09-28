@@ -797,5 +797,73 @@ class DesktopTests(unittest.TestCase):
                 setup.launch(prefix)
 
 
+class RelaunchTests(unittest.TestCase):
+    def test_frozen_root_is_none_from_source(self):
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertIsNone(desktop.frozen_root())
+
+    def test_frozen_root_is_the_executables_own_directory(self):
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", "/opt/Clipboard+/tray"),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            self.assertEqual(desktop.frozen_root(), Path("/opt/Clipboard+"))
+
+    def test_frozen_root_prefers_appdir_inside_an_appimage(self):
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.dict(os.environ, {"APPDIR": "/tmp/.mount_ClipboardAbc123"}),
+        ):
+            self.assertEqual(desktop.frozen_root(), Path("/tmp/.mount_ClipboardAbc123/usr/bin"))
+
+    def test_relaunch_from_source_uses_overlay_python_and_the_lib_dir(self):
+        with patch.object(sys, "frozen", False, create=True):
+            command = desktop.relaunch("dictation", "--worker", "abc")
+        lib = Path(desktop.__file__).resolve().parent
+        self.assertEqual(command[1:], [str(lib / "dictation.py"), "--worker", "abc"])
+        self.assertTrue(Path(command[0]).name.startswith("python"))
+
+    def test_relaunch_when_frozen_uses_a_sibling_binary_with_no_extension_on_linux(self):
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", "/opt/Clipboard+/tray"),
+            patch.object(desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            self.assertEqual(
+                desktop.relaunch("dictation", "--worker", "abc"),
+                ["/opt/Clipboard+/dictation", "--worker", "abc"],
+            )
+
+    def test_relaunch_when_frozen_appends_exe_on_windows(self):
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(
+                sys, "executable", r"C:\Users\a\AppData\Local\Programs\Clipboard+\tray.exe"
+            ),
+            patch.object(desktop, "platform_name", return_value="windows"),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            command = desktop.relaunch("dictation")
+            self.assertEqual(Path(command[0]).name, "dictation.exe")
+
+    def test_python_for_gui_moved_here_still_works(self):
+        self.assertTrue(Path(desktop.python_for_gui()).name.startswith("python"))
+
+    def test_overlay_python_prefers_the_installed_private_venv(self):
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder)
+            (prefix / "lib").mkdir()
+            module = prefix / "lib/desktop.py"
+            with patch.object(desktop, "__file__", str(module)):
+                self.assertEqual(desktop.overlay_python(), desktop.python_for_gui())
+                private = prefix / "share/whisper-dictation/venv/bin/python"
+                private.parent.mkdir(parents=True)
+                private.touch()
+                with patch.object(desktop, "platform_name", return_value="linux"):
+                    self.assertEqual(desktop.overlay_python(), str(private.resolve()))
+
+
 if __name__ == "__main__":
     unittest.main()
