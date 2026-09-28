@@ -15,10 +15,21 @@ intentional gap, not an oversight.
     pip install pyinstaller
     pyinstaller packaging/linux/clipboardplus.spec
     ls dist/clipboardplus/   # tray, app, dictation, engine, overlay, updates, clipservice
+    dist/clipboardplus/tray --help    # smoke-test before wrapping; Ctrl+C if it doesn't exit on its own
+    bash packaging/linux/build-appimage.sh   # needs appimagetool on PATH; produces dist/Clipboard+-x86_64.AppImage
 
-## Smoke-test before wrapping into an AppImage
+## macOS
 
-    dist/clipboardplus/tray --help    # confirm it starts; Ctrl+C to stop if it doesn't exit on its own
+    pip install pyinstaller
+    pyinstaller packaging/macos/clipboardplus.spec
+    bash packaging/macos/build-dmg.sh   # needs hdiutil (macOS only); produces dist/Clipboard+.dmg
+
+## Windows
+
+    pip install pyinstaller
+    pyinstaller packaging\windows\clipboardplus.spec
+    iscc packaging\windows\clipboardplus.iss
+    :: needs Inno Setup's iscc on PATH; produces dist\Clipboard+-Setup.exe
 
 ## Manual pre-release checklist (run this on a clean VM/user account, no dev tools)
 
