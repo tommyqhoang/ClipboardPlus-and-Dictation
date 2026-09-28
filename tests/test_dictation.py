@@ -894,5 +894,27 @@ class OpenAppAndOverlayFrozenTests(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+class WhisperBinDefaultTests(unittest.TestCase):
+    def test_default_whisper_bin_prefers_a_bundled_binary_when_frozen(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        bundled = root / "whisper-cli"
+        bundled.write_text("")
+        env = {
+            "XDG_CONFIG_HOME": str(root / "config"),
+            "XDG_CACHE_HOME": str(root / "cache"),
+            "XDG_RUNTIME_DIR": str(root / "runtime"),
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(d.shutil, "which", return_value=None),
+            patch.object(d.desktop, "frozen_root", return_value=root),
+            patch.object(d.desktop, "platform_name", return_value="linux"),
+        ):
+            config = d.Config(d.Paths())
+        self.assertEqual(config.s("whisper_bin"), str(bundled))
+
+
 if __name__ == "__main__":
     unittest.main()

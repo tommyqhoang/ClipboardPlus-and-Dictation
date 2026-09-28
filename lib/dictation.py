@@ -183,8 +183,10 @@ class Config:
                 selected if selected.exists() else models / "ggml-base.en.bin"
             )
         if not self.s("whisper_bin"):
-            self.values["whisper_bin"] = shutil.which("whisper-cli") or str(
-                Path.home() / ".local/opt/whisper.cpp-v1.8.7/build/bin/whisper-cli"
+            bundled = desktop.bundled_binary("whisper-cli")
+            self.values["whisper_bin"] = str(bundled) if bundled is not None else (
+                shutil.which("whisper-cli")
+                or str(Path.home() / ".local/opt/whisper.cpp-v1.8.7/build/bin/whisper-cli")
             )
 
     def s(self, key: str) -> str:
