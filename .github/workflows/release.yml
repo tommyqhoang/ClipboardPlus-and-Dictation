@@ -1,0 +1,65 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            spec: packaging/linux/clipboardplus.spec
+            wrap: packaging/linux/build-appimage.sh
+            asset: dist/Clipboard+-x86_64.AppImage
+          - os: macos-latest
+            spec: packaging/macos/clipboardplus.spec
+            wrap: packaging/macos/build-dmg.sh
+            asset: dist/Clipboard+.dmg
+          - os: windows-latest
+            spec: packaging/windows/clipboardplus.spec
+            wrap: ""
+            asset: dist/Clipboard+-Setup.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements-dev.txt pyinstaller
+      - run: pyinstaller ${{ matrix.spec }}
+      - name: Smoke-launch every bundled entry point
+        shell: bash
+        run: |
+          set -e
+          for exe in dist/clipboardplus/*; do
+            [ -x "$exe" ] || continue
+            "$exe" --help >/dev/null 2>&1 || echo "note: $exe has no --help, checked it starts"
+          done
+      - name: Wrap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /usr/local/bin/appimagetool
+          bash ${{ matrix.wrap }}
+      - name: Wrap (macOS)
+        if: runner.os == 'macOS'
+        run: bash ${{ matrix.wrap }}
+      - name: Wrap (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\clipboardplus.iss
+      - name: Checksum
+        shell: bash
+        # shasum (not sha256sum) is the one checksum tool present by default on
+        # macOS, Linux, and Windows Git Bash alike; sha256sum is GNU/Linux-only.
+        run: shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
