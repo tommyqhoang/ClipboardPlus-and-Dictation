@@ -682,14 +682,6 @@ class App:
         if self.bottom_timer is None:
             self.bottom_timer = self.root.after_idle(self.update_bottom)
 
-    def bordered(self, parent: tk.Misc, pady: tuple[int, int] = (0, 8)) -> ttk.Frame:
-        """A white, outlined panel inside `parent`."""
-        outline = tk.Frame(parent, background=BORDER, padx=1, pady=1)
-        outline.pack(fill="x", pady=pady)
-        body = ttk.Frame(outline, style="Card.TFrame", padding=(12, 8))
-        body.pack(fill="both", expand=True)
-        return body
-
     def features(self) -> hotkeys.Features:
         return hotkeys.Preferences(self.service.paths).features()
 
@@ -728,10 +720,6 @@ class App:
         if answer:
             self.prepare()  # Stays here to show how saving went.
         return answer is False
-
-    def close_settings(self) -> None:
-        if self.confirm_leave():
-            self.leave()
 
     def tab(self, name: str) -> None:
         if not self.confirm_leave():
