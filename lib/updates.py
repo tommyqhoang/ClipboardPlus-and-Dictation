@@ -39,6 +39,7 @@ MAX_RELEASE_BYTES = 50 * 1024 * 1024  # The source download is a few MB.
 MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 10_000
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+ALLOWED_HOSTS = {"api.github.com", "github.com", "codeload.github.com"}
 
 
 class UpdateError(d.DictationError):
@@ -46,13 +47,16 @@ class UpdateError(d.DictationError):
 
 
 class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
-    """A release download must stay encrypted through every redirect."""
+    """A release download must stay encrypted, and on GitHub's hosts, through every redirect."""
 
     def redirect_request(
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> urllib.request.Request | None:
-        if urllib.parse.urlsplit(newurl).scheme != "https":
+        parsed = urllib.parse.urlsplit(newurl)
+        if parsed.scheme != "https":
             raise UpdateError("The update download redirected to an insecure address.")
+        if parsed.hostname not in ALLOWED_HOSTS:
+            raise UpdateError("The update download redirected to an unexpected address.")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -110,7 +114,7 @@ def release(fetch: Callable[[str], dict[str, Any]] = _github) -> dict[str, str] 
         raise UpdateError("The update service returned an invalid download address.") from exc
     if (
         parsed.scheme != "https"
-        or parsed.hostname not in {"api.github.com", "github.com", "codeload.github.com"}
+        or parsed.hostname not in ALLOWED_HOSTS
         or parsed.username
         or parsed.password
         or parsed.fragment
@@ -263,8 +267,16 @@ def apply_update(paths: d.Paths, version: str, url: str) -> None:
             archive = Path(work) / "release.tar.gz"
             _download(url, archive)
             source = _extract(archive, Path(work))
+            # This module's own file is the running installation; a custom --prefix
+            # install must self-update into the same place, not the installer's default.
+            install_prefix = desktop.install_prefix(Path(__file__).resolve())
             setup = subprocess.run(
-                [sys.executable, str(source / "setup-desktop.py")],
+                [
+                    sys.executable,
+                    str(source / "setup-desktop.py"),
+                    "--prefix",
+                    str(install_prefix),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=1800,

@@ -438,10 +438,12 @@ Environment overrides still work: `DICTATION_MODEL`, `DICTATION_LANGUAGE`,
 `DICTATION_<SETTING>` names. Boolean overrides accept 0/1 or true/false.
 XDG config/cache/runtime paths are respected.
 
-Uninstall with `./uninstall.sh` after the active session finishes. It removes
-the installed command/module and GNOME binding, and stops the clipboard service,
-retaining models, settings, transcripts, recoverable audio and the clipboard history
-(use **Delete all clipboard data** first to erase it).
+Uninstall with `./uninstall.sh` (macOS/Linux) or `.\uninstall.ps1` (Windows,
+PowerShell) after the active session finishes. It removes the installed
+command/module, the Start Menu shortcut or GNOME binding, the macOS app bundle,
+and stops the clipboard service, retaining models, settings, transcripts,
+recoverable audio and the clipboard history (use **Delete all clipboard data**
+first to erase it).
 
 ## Architecture and development
 
@@ -476,8 +478,7 @@ Linux, macOS and Windows (`--platform`), shellcheck and shfmt (from Docker when 
 are not installed), and the tests with the 90% coverage floor under Xvfb.
 
 The app icon is generated, not hand-edited: run `python3 tools/make_icon.py` (any
-OS, needs Pillow) to rebuild the matching native and website icon files in `lib/`, `assets/`,
-and `site/assets/`.
+OS, needs Pillow) to rebuild the matching native icon files in `lib/` and `assets/`.
 
 Tests use a subprocess recorder and transcription fixture plus an actual local
 HTTP server. They do not establish speech accuracy, hardware latency, or live

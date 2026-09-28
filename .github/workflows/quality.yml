@@ -36,13 +36,15 @@ jobs:
         if: runner.os == 'Linux'
       - run: shfmt -d -i 2 -ci bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh
         if: runner.os == 'Linux'
-      - name: Parse Windows bootstrap without installing
+      - name: Parse Windows scripts without running them
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$pwd/bootstrap.ps1", [ref]$null, [ref]$parseErrors) | Out-Null
-          if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+          foreach ($script in @('bootstrap.ps1', 'uninstall.ps1')) {
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile("$pwd/$script", [ref]$null, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+          }
       - run: sh tests/with-xvfb.sh sh -c 'coverage run -m unittest discover -s tests -v && coverage combine && coverage report'
         if: runner.os == 'Linux'
       # The coverage floor is held on Linux, where every test runs; here Linux-only

@@ -16,7 +16,8 @@ Wayland/X11), also macOS and Windows.
 - `lib/overlay.py` — the recording pill
 - `lib/clip*.py`, `lib/clipboardplus.py` — clipboard capture, storage, sync
 - `setup-desktop.py`, `install.sh`, `bootstrap.*` — installers
-- `site/` — unused; the download page lives on the Clipboard+ site
+- The download page lives on the Clipboard+ site (clipboardplus.apercallc.com); this repo
+  no longer carries a `site/` (retired 2026-09-28 — was an unmaintained GitHub Pages mirror)
 
 ## Verify before claiming done
 

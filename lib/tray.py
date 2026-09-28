@@ -61,9 +61,10 @@ class WindowsHotKey:
             elif message.message == WM_APP:
                 self.user32.UnregisterHotKey(None, 1)
                 shortcut = self.request
-                self.result = bool(
-                    shortcut
-                    and self.user32.RegisterHotKey(
+                # None means "turn it off", which this unregister just did: that is
+                # success, not failure (matches GnomeHotKey.register(None)).
+                self.result = shortcut is None or bool(
+                    self.user32.RegisterHotKey(
                         None, 1, shortcut.windows_modifiers(), shortcut.windows_key()
                     )
                 )

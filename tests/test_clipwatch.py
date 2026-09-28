@@ -23,6 +23,13 @@ try:
 except ImportError:
     HAS_XLIB = False
 
+try:
+    import PIL  # noqa: F401
+
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
+
 
 class SharedTests(unittest.TestCase):
     def test_limit_clip_drops_oversize_parts_and_empty_clips(self):
@@ -101,7 +108,31 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual((both.text_target, both.image_target), ("UTF8_STRING", "image/png"))
         self.assertEqual(linux.choose(["image/png", "image/jpeg"]).text_target, "")
         self.assertEqual(linux.choose(["image/png"]).image_target, "image/png")
-        self.assertEqual(linux.choose(["text/html", "image/jpeg"]), linux.Choice(False, "", ""))
+        self.assertFalse(linux.choose(["image/png"]).image_needs_conversion)
+        self.assertEqual(linux.choose(["text/html"]), linux.Choice(False, "", ""))
+
+    def test_a_non_png_image_is_offered_as_a_fallback_needing_conversion(self):
+        # Some apps (older GTK, LibreOffice) never offer image/png at all.
+        jpeg = linux.choose(["text/html", "image/jpeg"])
+        self.assertEqual(jpeg.image_target, "image/jpeg")
+        self.assertTrue(jpeg.image_needs_conversion)
+        # image/png still wins over a fallback format when both are offered.
+        both = linux.choose(["image/bmp", "image/png"])
+        self.assertEqual((both.image_target, both.image_needs_conversion), ("image/png", False))
+
+    def test_image_conversion_rejects_garbage(self):
+        self.assertEqual(linux.image_to_png(b"not an image"), b"")
+
+    @unittest.skipUnless(HAS_PILLOW, "Pillow not installed")
+    def test_image_conversion_decodes_a_non_png_format(self):
+        from io import BytesIO
+
+        from PIL import Image
+
+        buffer = BytesIO()
+        Image.new("RGB", (2, 2), "red").save(buffer, "BMP")
+        png = linux.image_to_png(buffer.getvalue())
+        self.assertTrue(png.startswith(b"\x89PNG"))
 
     def test_text_targets_are_tried_in_order_of_fidelity(self):
         self.assertEqual(linux.choose(["STRING", "text/plain"]).text_target, "text/plain")

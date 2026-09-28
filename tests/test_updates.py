@@ -231,6 +231,14 @@ class UpdateTests(unittest.TestCase):
                 request, None, 302, "Found", {}, "http://example.com/release.tar.gz"
             )
 
+    def test_download_refuses_redirect_off_the_allowed_hosts(self):
+        handler = updates.HTTPSRedirect()
+        request = urllib.request.Request("https://github.com/release.tar.gz")
+        with self.assertRaisesRegex(updates.UpdateError, "unexpected address"):
+            handler.redirect_request(
+                request, None, 302, "Found", {}, "https://evil.example.com/release.tar.gz"
+            )
+
     def test_the_updater_runs_as_its_own_detached_process(self):
         with patch.object(updates.subprocess, "Popen") as popen:
             updates.start_updater("9.9.9", "https://example.com/t.tar.gz")

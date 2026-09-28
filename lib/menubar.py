@@ -12,6 +12,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ import dictation as d
 import hotkeys
 import objc  # type: ignore[import-not-found]
 import telemetry
+import updates
 import workflow
 from app_service import Service
 from AppKit import (  # type: ignore[import-not-found]
@@ -196,6 +198,10 @@ class Controller(NSObject):  # type: ignore[misc]
         self.store: clipstore.Store | None = None
         self.rows: clipstore.Items = []
         self.selected = 0
+        self.update: dict[str, str] | None = None  # A newer release to offer.
+        self.update_checked = False
+        self.update_checking = False
+        self.update_done = False
         return self
 
     # -- lifecycle --------------------------------------------------------
@@ -227,6 +233,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.5, self, "refresh:", None, True
         )
+        self.start_update_check()
         self.refresh_(None)
         if not self.service.completed():
             self.open_window("--setup")
@@ -409,6 +416,41 @@ class Controller(NSObject):  # type: ignore[misc]
         if bundle.endswith(".app"):
             hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
 
+    # -- updates ------------------------------------------------------------
+    @objc.python_method
+    def start_update_check(self) -> None:
+        """Look for a newer release off the main thread; updates.check() throttles
+        itself to once a day, so calling this on every tick is cheap."""
+        if self.update_checking or self.update_checked:
+            return
+        self.update_checked = True
+        self.update_checking = True
+        self.update_result: dict[str, str] | None = None
+
+        def look() -> None:
+            try:
+                found = updates.check(self.paths)
+            except Exception:  # noqa: BLE001 - a failed check must never touch the menu bar.
+                found = None
+            self.update_result = found  # Picked up by refresh_, on the main thread.
+            self.update_done = True
+
+        threading.Thread(target=look, daemon=True).start()
+
+    @objc.python_method
+    def collect_update(self) -> None:
+        """Adopt a finished update check (called from refresh_, never a worker thread)."""
+        if not self.update_done:
+            return
+        found, self.update_result = self.update_result, None
+        self.update_checking = self.update_done = False
+        if found is not None and self.update is None:
+            self.update = found
+            d.notify(
+                d.Config(self.paths),
+                f"Version {found['version']} is available. Open Settings to update.",
+            )
+
     def quit_(self, _sender: Any) -> None:
         self.clip.stop()
         NSApplication.sharedApplication().terminate_(self)
@@ -484,6 +526,8 @@ class Controller(NSObject):  # type: ignore[misc]
             self.quit_(None)
             return
         self.clip.supervise()
+        self.start_update_check()
+        self.collect_update()
         if self.clip.changed():
             self.apply_features()
         self.follow_window_shortcut()

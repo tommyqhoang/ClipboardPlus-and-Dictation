@@ -19,6 +19,8 @@ legacy_owned() {
 library="$APP_LIB"
 if [[ -f "${library}/dictation.py" ]]; then
   python3 - "$library" <<'PY'
+import os
+import plistlib
 import sys
 sys.path.insert(0, sys.argv[1])
 from dictation import Paths, busy
@@ -32,9 +34,43 @@ if runtime.is_dir():
     (runtime / "menubar-quit").write_text("quit")  # Closes the tray app.
     (runtime / "clip-quit").write_text("quit")  # And the clipboard service (history is kept).
 library = Path(sys.argv[1])
-python = desktop.install_prefix(library / "app.py") / "share/whisper-dictation/venv/bin/python"
+prefix = desktop.install_prefix(library / "app.py")
+python = prefix / "share/whisper-dictation/venv/bin/python"
 hotkeys.set_login_item(False, [str(python), str(library / "tray.py")])
 hotkeys.gnome_remove(hotkeys.history_command(library, str(python)), path=hotkeys.GNOME_HISTORY_PATH)
+if desktop.platform_name() == "macos":
+    # Mirrors setup-desktop.py's uninstall(): the .app bundle install() creates
+    # isn't under `library`, so it needs its own cleanup here too.
+    system_apps = Path("/Applications")
+    apps_root = (
+        system_apps
+        if prefix == Path.home() / ".local" and os.access(system_apps, os.W_OK)
+        else prefix.parent / "Applications"
+    )
+    bundle = apps_root / f"{hotkeys.APP_NAME}.app"
+    agent = hotkeys.agent_path()
+    if agent.is_file() and any(
+        Path(argument) == bundle or bundle in Path(argument).parents
+        for argument in plistlib.loads(agent.read_bytes()).get("ProgramArguments", [])
+    ):
+        hotkeys.set_login_item(False, [])
+    info = bundle / "Contents/Info.plist"
+    if (
+        info.is_file()
+        and plistlib.loads(info.read_bytes()).get("CFBundleIdentifier")
+        == "org.whisperdictation.desktop"
+    ):
+        (bundle / "Contents/MacOS/WhisperDictation").unlink(missing_ok=True)
+        (bundle / "Contents/Resources/AppIcon.icns").unlink(missing_ok=True)
+        info.unlink()
+        for folder in (
+            bundle / "Contents/MacOS",
+            bundle / "Contents/Resources",
+            bundle / "Contents",
+            bundle,
+        ):
+            if folder.exists() and not any(folder.iterdir()):
+                folder.rmdir()
 PY
 fi
 if command -v gsettings >/dev/null 2>&1; then

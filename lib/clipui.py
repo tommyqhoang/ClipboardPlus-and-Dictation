@@ -416,7 +416,9 @@ class ClipboardPage:
             ttk.Button(
                 self.footer, text="Load more", style="Small.TButton", command=self.load_more
             ).pack()
-        total = self.store.count()
+        # self._signature[0] is the same COUNT(*) reload() just took; no need to ask again.
+        assert self._signature is not None
+        total = self._signature[0]
         self.count_label.configure(text=f"{total} item{'s' if total != 1 else ''}" if total else "")
         if total:
             if not self.clear_button.winfo_manager():

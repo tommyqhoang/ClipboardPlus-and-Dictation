@@ -12,6 +12,7 @@ Content marked by a password manager (`x-kde-passwordManagerHint`) is never read
 
 from __future__ import annotations
 
+import io
 import os
 import select
 import shutil
@@ -29,6 +30,10 @@ from clipwatch import Clip, Unavailable, limit_clip
 # Most faithful first. text/plain without a charset is taken as UTF-8.
 TEXT_TARGETS = ("UTF8_STRING", "text/plain;charset=utf-8", "text/plain", "STRING")
 IMAGE_TARGET = "image/png"
+# Offered instead of image/png by some apps (older GTK, LibreOffice); converted with
+# Pillow, the same fallback macOS (TIFF) and Windows (CF_DIB) already have.
+FALLBACK_IMAGE_TARGETS = ("image/bmp", "image/tiff", "image/jpeg", "image/gif")
+FALLBACK_IMAGE_FACTOR = 4  # These are far larger than the PNG made from them.
 CONCEALED_TARGET = "x-kde-passwordManagerHint"
 _READ_TIMEOUT = 2.0  # Per step of a selection transfer.
 _TRANSFER_TIMEOUT = 10.0  # A whole transfer, however large.
@@ -40,6 +45,7 @@ class Choice:
     concealed: bool
     text_target: str
     image_target: str
+    image_needs_conversion: bool = False
 
 
 def choose(targets: Iterable[str]) -> Choice:
@@ -50,8 +56,25 @@ def choose(targets: Iterable[str]) -> Choice:
     """
     offered = set(targets)
     text = next((name for name in TEXT_TARGETS if name in offered), "")
-    image = IMAGE_TARGET if IMAGE_TARGET in offered else ""
-    return Choice(CONCEALED_TARGET in offered, text, image)
+    if IMAGE_TARGET in offered:
+        return Choice(CONCEALED_TARGET in offered, text, IMAGE_TARGET)
+    fallback = next((name for name in FALLBACK_IMAGE_TARGETS if name in offered), "")
+    return Choice(CONCEALED_TARGET in offered, text, fallback, bool(fallback))
+
+
+def image_to_png(data: bytes) -> bytes:
+    """PNG bytes decoded by Pillow from a non-PNG clipboard image, or nothing."""
+    try:
+        from PIL import Image  # type: ignore[import-not-found, unused-ignore]
+    except ImportError:
+        return b""
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            output = io.BytesIO()
+            image.save(output, "PNG")
+            return output.getvalue()
+    except Exception:  # noqa: BLE001 - any decoder failure just means no image
+        return b""
 
 
 def decode_text(target: str, data: bytes) -> str:
@@ -194,9 +217,17 @@ class X11Source:
                 if text.strip():
                     return Clip(text=text)
         if choice.image_target:
-            data = self._fetch(choice.image_target, self._max["image"])
+            limit = self._max["image"] * (
+                FALLBACK_IMAGE_FACTOR if choice.image_needs_conversion else 1
+            )
+            data = self._fetch(choice.image_target, limit)
             if data is not None:
-                return Clip(image_png=data)
+                if choice.image_needs_conversion:
+                    converted = image_to_png(data)
+                    if converted:
+                        return Clip(image_png=converted)
+                else:
+                    return Clip(image_png=data)
         return Clip()
 
     def _fetch_targets(self) -> list[str]:
@@ -358,11 +389,17 @@ class WlPasteSource:
             if data is not None and (text := decode_text(choice.text_target, data)).strip():
                 return Clip(text=text)
         if choice.image_target:
-            data = self._reader(
-                ["wl-paste", "--no-newline", "--type", choice.image_target], self._max["image"]
+            limit = self._max["image"] * (
+                FALLBACK_IMAGE_FACTOR if choice.image_needs_conversion else 1
             )
+            data = self._reader(["wl-paste", "--no-newline", "--type", choice.image_target], limit)
             if data is not None:
-                return Clip(image_png=data)
+                if choice.image_needs_conversion:
+                    converted = image_to_png(data)
+                    if converted:
+                        return Clip(image_png=converted)
+                else:
+                    return Clip(image_png=data)
         return Clip()
 
     def close(self) -> None:
