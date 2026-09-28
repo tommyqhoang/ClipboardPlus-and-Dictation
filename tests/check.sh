@@ -88,7 +88,7 @@ step "tests with only the standard library (CI's python-compatibility)"
 # -S: no installed packages (no Pillow or coverage), and no display, as on that job.
 stdlib_log="$(mktemp -t clipboardplus-stdlib.XXXXXX)"
 if env -u DISPLAY -u WAYLAND_DISPLAY "$python" -S -m unittest discover -s tests >"$stdlib_log" 2>&1; then
-  tail -n 1 "$stdlib_log"
+  grep -E "^(Ran |OK)" "$stdlib_log"
 else
   grep -E "^(FAIL|ERROR):|^Ran |^FAILED" "$stdlib_log"
   fail "tests without optional packages: $stdlib_log"
