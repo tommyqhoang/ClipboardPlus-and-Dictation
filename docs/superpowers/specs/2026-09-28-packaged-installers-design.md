@@ -145,30 +145,45 @@ helper.
 
 ### 3.4 Per-OS installer wrapping
 
-- **macOS**: assemble the PyInstaller onedir output into a standard `.app`
-  bundle (`Contents/MacOS/<entry>` for each binary, `Contents/Resources` for
-  icons/ffmpeg/whisper, an `Info.plist` naming `menubar` as the launched
-  binary and setting `LSUIElement` so no Dock icon/menu bar app icon flashes
-  before the real status-item appears). Wrap it in a plain `.dmg` (via
-  `hdiutil create`) with a background image showing "drag to Applications" —
-  no installer wizard needed on macOS, that's the platform-idiomatic pattern.
-  First launch needs one right-click → Open (unsigned); document this
-  once, clearly, on the download page.
+Branding throughout this section uses the app's real, already-existing
+assets — nothing here is a placeholder to fill in later:
+`hotkeys.APP_NAME = "Clipboard+"` is the canonical name (installer titles,
+window titles, Start Menu entry, `.desktop` `Name=`); `assets/AppIcon.icns`
+is the macOS app/volume icon; `assets/icon.ico` is the Windows installer and
+`.exe` icon; `assets/icon-1024.png` / `icon-recording-1024.png` are the
+source PNGs for the Linux `.desktop` icon and any other size AppImage
+packaging needs.
+
+- **macOS**: assemble the PyInstaller onedir output into a standard
+  `Clipboard+.app` bundle (`Contents/MacOS/<entry>` for each binary,
+  `Contents/Resources/AppIcon.icns` copied from `assets/AppIcon.icns`, an
+  `Info.plist` with `CFBundleName`/`CFBundleDisplayName` = "Clipboard+",
+  `CFBundleIconFile` = `AppIcon`, naming `menubar` as the launched binary,
+  and setting `LSUIElement` so no Dock icon flashes before the real
+  menu-bar status item appears). Wrap it in a plain `Clipboard+.dmg` (via
+  `hdiutil create`, volume name "Clipboard+") with a background image
+  showing "drag to Applications" — no installer wizard needed on macOS,
+  that's the platform-idiomatic pattern. First launch needs one right-click
+  → Open (unsigned); document this once, clearly, on the download page.
 - **Windows**: an Inno Setup script (free, MIT-licensed, the same tool VS
-  Code's user-scope installer uses) that installs to
+  Code's user-scope installer uses), `AppName=Clipboard+`,
+  `SetupIconFile=assets\icon.ico`, that installs to
   `%LOCALAPPDATA%\Programs\Clipboard+` — a per-user directory, so the
-  installer **never triggers UAC**. It creates a Start Menu shortcut, an
-  optional desktop shortcut (one checkbox, default off), registers the
-  uninstaller in "Apps & features", and runs the app after install. The
-  unsigned `Setup.exe` shows one SmartScreen "More info → Run anyway" the
-  first time it's downloaded from a browser (Mark-of-the-Web) — unavoidable
-  without a certificate, and a single click, not a repeated prompt.
-- **Linux**: a single-file AppImage (via `linuxdeploy` + `appimagetool`),
-  embedding the desktop file and icon for file-manager integration. No sudo,
-  no distro package manager, no dependency resolution — replaces the
-  apt/dnf/pacman/zypper branch of `install.sh` entirely for the packaged path.
-  First run needs `chmod +x` (or a file manager's "Allow executing" checkbox)
-  — the standard, well-understood AppImage step, not a security warning wall.
+  installer **never triggers UAC**. It creates a Start Menu shortcut named
+  "Clipboard+", an optional desktop shortcut (one checkbox, default off),
+  registers the uninstaller in "Apps & features" as "Clipboard+", and runs
+  the app after install. The unsigned `Clipboard+-Setup.exe` shows one
+  SmartScreen "More info → Run anyway" the first time it's downloaded from a
+  browser (Mark-of-the-Web) — unavoidable without a certificate, and a
+  single click, not a repeated prompt.
+- **Linux**: a single-file `Clipboard+-x86_64.AppImage` (via `linuxdeploy` +
+  `appimagetool`), with a `clipboardplus.desktop` file (`Name=Clipboard+`,
+  `Icon=clipboardplus`) and `assets/icon-1024.png` installed as that icon,
+  for file-manager integration. No sudo, no distro package manager, no
+  dependency resolution — replaces the apt/dnf/pacman/zypper branch of
+  `install.sh` entirely for the packaged path. First run needs `chmod +x`
+  (or a file manager's "Allow executing" checkbox) — the standard,
+  well-understood AppImage step, not a security warning wall.
 
 ### 3.5 First-run responsibilities (mostly unchanged)
 
