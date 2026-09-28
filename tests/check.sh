@@ -69,13 +69,13 @@ if [ "$full" = 1 ]; then
 fi
 
 step "ruff"
-ruff check lib tests tools packaging/smoke_release.py setup-desktop.py || fail "ruff check"
-ruff format --check lib tests tools packaging/smoke_release.py setup-desktop.py || fail "ruff format"
+ruff check lib tests tools packaging/checksum.py packaging/smoke_release.py setup-desktop.py || fail "ruff check"
+ruff format --check lib tests tools packaging/checksum.py packaging/smoke_release.py setup-desktop.py || fail "ruff format"
 
 # CI type-checks on each operating system; --platform does all three from here.
 for platform in linux darwin win32; do
   step "mypy --strict ($platform)"
-  mypy --strict --platform "$platform" lib tools packaging/smoke_release.py setup-desktop.py || fail "mypy ($platform)"
+  mypy --strict --platform "$platform" lib tools packaging/checksum.py packaging/smoke_release.py setup-desktop.py || fail "mypy ($platform)"
 done
 
 step "shellcheck and shfmt"

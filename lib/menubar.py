@@ -229,10 +229,12 @@ class HoverTableView(NSTableView):  # type: ignore[misc]
     def mouseExited_(self, _event: Any) -> None:
         self._hover(-1)
 
+    @objc.python_method
     def _track(self, event: Any) -> None:
         point = self.convertPoint_fromView_(event.locationInWindow(), None)
         self._hover(int(self.rowAtPoint_(point)))
 
+    @objc.python_method
     def _hover(self, row: int) -> None:
         if row != self.hover_row:
             self.hover_row = row
@@ -300,6 +302,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.open_window("--setup")
 
     @objc.python_method
+    @objc.python_method
     def framed(self, view: Any, rect: Any) -> Any:
         """Pin a factory-made control (button/label) to a fixed frame.
 
@@ -312,6 +315,7 @@ class Controller(NSObject):  # type: ignore[misc]
         view.setFrame_(rect)
         return view
 
+    @objc.python_method
     @objc.python_method
     def build_popover(self) -> None:
         """A Maccy-style quick view: clicking the icon shows recent clips, a search
@@ -423,12 +427,14 @@ class Controller(NSObject):  # type: ignore[misc]
 
     # -- actions ----------------------------------------------------------
     @objc.python_method
+    @objc.python_method
     def pressed(self) -> None:
         if not self.service.ready():
             self.open_window("--setup")
             return
         self.run_engine()
 
+    @objc.python_method
     @objc.python_method
     def run_engine(self, *flags: str) -> None:
         # The engine owns locking, recording, notifications and the clipboard.
@@ -457,6 +463,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.open_window("--settings")
 
     @objc.python_method
+    @objc.python_method
     def open_window(self, page: str) -> None:
         open_app_window(page)
 
@@ -467,6 +474,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.open_window("")
         return False
 
+    @objc.python_method
     @objc.python_method
     def apply_shortcut(self, shortcut: hotkeys.Shortcut) -> None:
         if self.hotkey.register(shortcut):
@@ -485,6 +493,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.refresh_popover_header()
 
     @objc.python_method
+    @objc.python_method
     def sync_login_item(self) -> None:
         enabled = self.preferences.open_at_login()
         bundle = desktop.macos_bundle()
@@ -492,6 +501,7 @@ class Controller(NSObject):  # type: ignore[misc]
             hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
 
     # -- updates ------------------------------------------------------------
+    @objc.python_method
     @objc.python_method
     def start_update_check(self) -> None:
         """Look for a newer release off the main thread; updates.check() throttles
@@ -513,6 +523,7 @@ class Controller(NSObject):  # type: ignore[misc]
         threading.Thread(target=look, daemon=True).start()
 
     @objc.python_method
+    @objc.python_method
     def collect_update(self) -> None:
         """Adopt a finished update check (called from refresh_, never a worker thread)."""
         if not self.update_done:
@@ -531,6 +542,7 @@ class Controller(NSObject):  # type: ignore[misc]
         NSApplication.sharedApplication().terminate_(self)
 
     @objc.python_method
+    @objc.python_method
     def warn(self, title: str, message: str) -> None:
         alert = NSAlert.alloc().init()
         alert.setMessageText_(title)
@@ -539,6 +551,7 @@ class Controller(NSObject):  # type: ignore[misc]
         alert.runModal()
 
     # -- state ------------------------------------------------------------
+    @objc.python_method
     @objc.python_method
     def apply_features(self) -> None:
         """Own the global shortcuts for the chosen features and refresh the popover to match."""
@@ -560,6 +573,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.refresh_popover_layout()
         self.view = None  # Redraw the status icon.
 
+    @objc.python_method
     @objc.python_method
     def follow_window_shortcut(self) -> None:
         """Pause the dictation shortcut while the window records a new one, then use it."""
@@ -586,6 +600,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.hotkey_ok = self.hotkey.register(self.shortcut)
             hotkeys.record_status(self.paths, self.hotkey_ok)
 
+    @objc.python_method
     @objc.python_method
     def ready(self) -> bool:
         """Setup state, re-checked every few seconds rather than on every tick."""
@@ -647,6 +662,7 @@ class Controller(NSObject):  # type: ignore[misc]
             window.makeFirstResponder_(self.search_field)
 
     @objc.python_method
+    @objc.python_method
     def refresh_popover_layout(self) -> None:
         """Show only the sections the chosen features need."""
         features = self.clip.features()
@@ -667,6 +683,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.empty_label.setHidden_(False)
         self.refresh_popover_header()
 
+    @objc.python_method
     @objc.python_method
     def refresh_popover_header(self) -> None:
         if not self.clip.features().dictation:
@@ -700,6 +717,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.header_button.setEnabled_(True)
 
     @objc.python_method
+    @objc.python_method
     def open_store(self) -> clipstore.Store | None:
         if self.store is None:
             try:
@@ -708,6 +726,7 @@ class Controller(NSObject):  # type: ignore[misc]
                 telemetry.capture(exc, level="warning", stage="popover_store")
         return self.store
 
+    @objc.python_method
     @objc.python_method
     def run_query(self, query: str) -> None:
         store = self.open_store()
@@ -732,9 +751,11 @@ class Controller(NSObject):  # type: ignore[misc]
             self.empty_label.setHidden_(False)
 
     @objc.python_method
+    @objc.python_method
     def row_text(self, item: clipstore.Item) -> str:
         return clipcontrol.preview_text(item, POPOVER_PREVIEW_CHARS)
 
+    @objc.python_method
     @objc.python_method
     def select_row(self, row: int) -> None:
         if not self.rows:
@@ -745,15 +766,18 @@ class Controller(NSObject):  # type: ignore[misc]
         self.table.scrollRowToVisible_(row)
 
     @objc.python_method
+    @objc.python_method
     def move_selection(self, delta: int) -> None:
         self.select_row(self.selected + delta)
 
+    @objc.python_method
     @objc.python_method
     def activate_selected(self) -> None:
         if 0 <= self.selected < len(self.rows):
             if self.copy_item(self.rows[self.selected]):
                 self.flash_copied()
 
+    @objc.python_method
     @objc.python_method
     def flash_copied(self) -> None:
         """Show "Copied" over the list briefly, then close (Maccy-style confirmation)."""
@@ -768,6 +792,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.popover.close()
 
     @objc.python_method
+    @objc.python_method
     def on_hover_row(self, row: int) -> None:
         """Repaint only the rows whose hover state actually changed."""
         previous, self.hovered_row = self.hovered_row, row
@@ -780,6 +805,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.table.reloadDataForRowIndexes_columnIndexes_(indexes, NSIndexSet.indexSetWithIndex_(0))
 
     @objc.python_method
+    @objc.python_method
     def row_detail(self, item: clipstore.Item) -> str:
         """What hovering shows: kind, where it came from, and when it was copied."""
         kind = f"Image {item.width}×{item.height}" if item.kind == "image" else "Text"
@@ -789,6 +815,7 @@ class Controller(NSObject):  # type: ignore[misc]
         stamp = time.strftime("%b %d, %Y at %H:%M", time.localtime(item.created_at))
         return f"{kind} · {source} · {stamp}"
 
+    @objc.python_method
     @objc.python_method
     def copy_item(self, item: clipstore.Item) -> bool:
         if self.store is None:

@@ -124,7 +124,15 @@ jobs:
           Copy-Item $cli.FullName dist\clipboardplus\whisper-cli.exe
           Copy-Item $server.FullName dist\clipboardplus\whisper-server.exe
       - name: Smoke-launch every bundled entry point
-        run: python packaging/smoke_release.py
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y xvfb xauth
+            xvfb-run -a python packaging/smoke_release.py
+          else
+            python packaging/smoke_release.py
+          fi
       - name: Wrap (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -142,10 +150,7 @@ jobs:
           $version = python -c "import sys; sys.path.insert(0, 'lib'); import desktop; print(desktop.APP_VERSION)"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging\windows\clipboardplus.iss
       - name: Checksum
-        shell: bash
-        # shasum (not sha256sum) is the one checksum tool present by default on
-        # macOS, Linux, and Windows Git Bash alike; sha256sum is GNU/Linux-only.
-        run: shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+        run: python packaging/checksum.py "${{ matrix.asset }}"
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
