@@ -487,8 +487,7 @@ class Controller(NSObject):  # type: ignore[misc]
     @objc.python_method
     def sync_login_item(self) -> None:
         enabled = self.preferences.open_at_login()
-        # Set by the bundle launcher; the Python interpreter is a different bundle.
-        bundle = os.environ.get("WHISPER_DICTATION_BUNDLE", "")
+        bundle = desktop.macos_bundle()
         if bundle.endswith(".app"):
             hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
 

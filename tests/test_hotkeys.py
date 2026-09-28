@@ -195,6 +195,19 @@ class HotkeyTests(unittest.TestCase):
         executable.write_text("#!/bin/sh\n")
         self.assertEqual(hotkeys.bundle_login_command(str(bundle)), [str(executable)])
 
+    def test_bundle_login_command_reads_the_executable_name_from_info_plist(self):
+        # A packaged build's Info.plist names its own executable ("menubar", not
+        # the source-install wrapper's "WhisperDictation") — read it, don't guess.
+        bundle = self.folder / "Clipboard+.app"
+        macos_dir = bundle / "Contents/MacOS"
+        macos_dir.mkdir(parents=True)
+        (bundle / "Contents/Info.plist").write_bytes(
+            plistlib.dumps({"CFBundleExecutable": "menubar"})
+        )
+        executable = macos_dir / "menubar"
+        executable.write_text("#!/bin/sh\n")
+        self.assertEqual(hotkeys.bundle_login_command(str(bundle)), [str(executable)])
+
     def test_login_items_per_platform(self):
         command = ["/usr/bin/open", str(self.folder / "Whisper Dictation.app")]
         hotkeys.set_login_item(True, command, self.folder, "macos", run=Mock())

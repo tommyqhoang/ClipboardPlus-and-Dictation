@@ -102,6 +102,20 @@ def bundled_binary(name: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def macos_bundle() -> str:
+    """This app's .app bundle path on macOS, for the login-item command: the
+    source-install wrapper's WHISPER_DICTATION_BUNDLE env var, or (for a packaged
+    build, which sets no such env var) derived from frozen_root() — two levels up
+    from Contents/MacOS. Empty when neither applies (source install, not macOS)."""
+    env = os.environ.get("WHISPER_DICTATION_BUNDLE", "")
+    if env:
+        return env
+    if platform_name() != "macos":
+        return ""
+    root = frozen_root()
+    return str(root.parent.parent) if root is not None else ""
+
+
 def roots() -> tuple[Path, Path, Path]:
     home = Path.home()
     system = platform_name()

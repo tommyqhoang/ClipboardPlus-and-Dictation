@@ -890,5 +890,39 @@ class BundledBinaryTests(unittest.TestCase):
                 self.assertIsNone(desktop.bundled_binary("ffmpeg"))
 
 
+class MacosBundleTests(unittest.TestCase):
+    def test_prefers_the_source_install_wrapper_env_var(self):
+        with patch.dict(os.environ, {"WHISPER_DICTATION_BUNDLE": "/Applications/Old.app"}):
+            self.assertEqual(desktop.macos_bundle(), "/Applications/Old.app")
+
+    def test_derives_the_bundle_from_frozen_root_when_the_env_var_is_unset(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(desktop, "platform_name", return_value="macos"),
+            patch.object(
+                desktop,
+                "frozen_root",
+                return_value=Path("/Applications/Clipboard+.app/Contents/MacOS"),
+            ),
+        ):
+            self.assertEqual(desktop.macos_bundle(), "/Applications/Clipboard+.app")
+
+    def test_empty_from_source_with_no_env_var(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(desktop, "platform_name", return_value="macos"),
+            patch.object(desktop, "frozen_root", return_value=None),
+        ):
+            self.assertEqual(desktop.macos_bundle(), "")
+
+    def test_empty_off_macos_even_when_frozen(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(desktop, "platform_name", return_value="linux"),
+            patch.object(desktop, "frozen_root", return_value=Path("/opt/Clipboard+")),
+        ):
+            self.assertEqual(desktop.macos_bundle(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

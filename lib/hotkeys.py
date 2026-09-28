@@ -401,8 +401,16 @@ def former_autostart_paths(home: Path | None = None) -> tuple[Path, ...]:
 def bundle_login_command(bundle: str) -> list[str]:
     """What the macOS login item runs for the app bundle: its executable itself (not
     `open`, which returns at once) so launchd supervises the app and KeepAlive can
-    restart it after a crash."""
-    executable = Path(bundle) / "Contents/MacOS/WhisperDictation"
+    restart it after a crash. The executable name comes from the bundle's own
+    Info.plist (a packaged build names it "menubar"; the source-install wrapper
+    names it "WhisperDictation") rather than a single hardcoded guess."""
+    name = "WhisperDictation"
+    try:
+        info = plistlib.loads((Path(bundle) / "Contents/Info.plist").read_bytes())
+        name = info.get("CFBundleExecutable", name)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        pass
+    executable = Path(bundle) / "Contents/MacOS" / name
     return [str(executable)] if executable.is_file() else ["/usr/bin/open", bundle]
 
 
