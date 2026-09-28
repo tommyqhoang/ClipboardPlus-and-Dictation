@@ -75,14 +75,14 @@ class HotkeyTests(unittest.TestCase):
 
     def test_preferences_round_trip_and_fallbacks(self):
         self.assertEqual(self.preferences.shortcut(), hotkeys.DEFAULT)
-        self.assertEqual(self.preferences.stamp(), 0.0)
+        self.assertEqual(self.preferences.stamp(), (0, 0))
         self.assertTrue(self.preferences.open_at_login())
         custom = hotkeys.Shortcut(("alt",), "Space")
         self.preferences.save(shortcut=custom)
         self.preferences.save(open_at_login=False)
         self.assertEqual(self.preferences.shortcut(), custom)
         self.assertFalse(self.preferences.open_at_login())
-        self.assertGreater(self.preferences.stamp(), 0)
+        self.assertGreater(self.preferences.stamp(), (0, 0))
         for broken in (
             '{"shortcut": "nope"}',
             '{"shortcut": {"modifiers": "ctrl", "key": "D"}}',

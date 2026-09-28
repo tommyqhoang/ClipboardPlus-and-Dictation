@@ -45,7 +45,7 @@ class ClipboardControl:
         self._process: Any = None
         self._starts: list[float] = []
         self._not_before = 0.0
-        self._stamp: float | None = None
+        self._stamp: tuple[int, int] | None = None
         self._features = hotkeys.Features()
         self._settings = hotkeys.ClipboardSettings()
         self._history: hotkeys.Shortcut | None = hotkeys.DEFAULT_HISTORY

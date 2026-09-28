@@ -135,7 +135,7 @@ class CachedPreferences:
 
     def __init__(self, prefs: hotkeys.Preferences) -> None:
         self._prefs = prefs
-        self._stamp: float | None = None
+        self._stamp: tuple[int, int] | None = None
         self._features = hotkeys.Features()
         self._settings = hotkeys.ClipboardSettings()
         self._refresh()

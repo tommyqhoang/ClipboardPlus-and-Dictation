@@ -874,8 +874,10 @@ class WindowTests(ServiceCase):
             self.window.scroll(0.0, 1.0)  # "Fits" right after appearing: it stays.
             self.assertEqual(self.window.scrollbar.winfo_manager(), "pack")
         self.assertIsNotNone(self.window.scrollbar_recheck)
-        # Once settled, a page that still fits loses it.
-        self.window.scrollbar_shown_at -= self.gui.SCROLLBAR_SETTLE
+        # Once settled, a page that still fits loses it. Twice the window: a coarse
+        # monotonic() (Windows) plus float rounding can leave one window's age just
+        # under the boundary.
+        self.window.scrollbar_shown_at -= self.gui.SCROLLBAR_SETTLE * 2
         with patch.object(self.window.canvas, "yview", return_value=(0.0, 1.0)):
             self.window.recheck_scrollbar()
         self.assertEqual(self.window.scrollbar.winfo_manager(), "")

@@ -272,11 +272,13 @@ class Preferences:
         except (d.DictationError, OSError, ValueError):
             return {}
 
-    def stamp(self) -> float:
+    def stamp(self) -> tuple[int, int]:
+        """(mtime ns, size): either alone can miss a fast rewrite on a coarse clock."""
         try:
-            return self.path.stat().st_mtime
+            info = self.path.stat()
         except OSError:
-            return 0.0
+            return (0, 0)
+        return (info.st_mtime_ns, info.st_size)
 
     @staticmethod
     def _shortcut(raw: Any, default: Shortcut) -> Shortcut:

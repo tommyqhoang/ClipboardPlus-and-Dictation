@@ -453,6 +453,18 @@ class TrayTests(unittest.TestCase):
         self.assertEqual(self.tray.hotkey.registered[-1], self.tray.shortcut)
         self.assertTrue(self.tray.dictation_registered)
 
+    def test_preference_changes_are_seen_even_at_the_same_mtime(self):
+        # Coarse filesystem clocks (some Windows setups) give two quick saves one
+        # mtime; the stamp must also cover the file's size or the tray keeps old
+        # settings.
+        self.use_features(False, True)
+        self.tray.sync_dictation_shortcut()
+        stamp = self.tray.preferences.path.stat().st_mtime
+        self.use_features(True, True)
+        os.utime(self.tray.preferences.path, (stamp, stamp))
+        self.tray.sync_dictation_shortcut()
+        self.assertEqual(self.tray.hotkey.registered[-1], self.tray.shortcut)
+
     def test_status_shows_the_clipboard_when_dictation_is_off(self):
         self.use_features(False, True)
         with patch.object(self.tray.clip, "status_line", return_value="Clipboard: 3 items"):
