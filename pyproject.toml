@@ -34,6 +34,13 @@ files = ["lib", "setup-desktop.py"]
 module = "menubar"
 disable_error_code = ["untyped-decorator"]
 
+[[tool.mypy.overrides]]
+# PyGObject is a system package (python3-gi): present on some machines and CI images and
+# not others, and untyped where present, so it must never change the result.
+module = ["gi", "gi.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false
+
 [tool.coverage.run]
 branch = true
 source = ["lib"]

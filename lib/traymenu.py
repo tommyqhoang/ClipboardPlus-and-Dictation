@@ -54,11 +54,14 @@ def install(icon: Any, thumb_of: Callable[[Any], Path | None]) -> bool:
     if not supported(icon):
         return False
     try:
-        import gi  # type: ignore[import-untyped, unused-ignore]
+        import gi  # type: ignore[import-untyped, import-not-found, unused-ignore]
 
         gi.require_version("Gtk", "3.0")
         gi.require_version("GdkPixbuf", "2.0")
-        from gi.repository import GdkPixbuf, Gtk  # type: ignore[import-untyped, unused-ignore]
+        from gi.repository import (  # type: ignore[import-untyped, import-not-found, unused-ignore]
+            GdkPixbuf,
+            Gtk,
+        )
     except (ImportError, ValueError) as exc:
         log.info("tray thumbnails unavailable (%s)", exc)
         return False
