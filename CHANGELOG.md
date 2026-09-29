@@ -5,6 +5,12 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-09-29
+
+### Changed
+- CI and release workflows use actions/checkout 7.0.1 and actions/setup-python 7.0.0 (Dependabot #1).
+  No change to the app. Platforms: build tooling for macOS, Windows and Linux.
+
 ## [1.4.2] - 2026-09-29
 
 ### Changed

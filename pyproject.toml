@@ -1,7 +1,7 @@
 [project]
 name = "clipboardplus"
 # Kept equal to lib/desktop.py APP_VERSION; tests/test_packaging.py enforces it.
-version = "1.4.2"
+version = "1.4.3"
 description = "Clipboard+ and Dictation: local clipboard history and on-device voice dictation"
 readme = "README.md"
 requires-python = ">=3.10"
