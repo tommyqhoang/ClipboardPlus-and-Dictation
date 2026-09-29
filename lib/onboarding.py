@@ -411,12 +411,18 @@ class Wizard:
     def microphone(self, values: dict[str, Any]) -> None:
         self.step(3, "Microphone")
         say("Available microphones (listing may ask for microphone permission):")
-        subprocess.run(
-            desktop.recorder_command(values, listing=True),
-            timeout=15,
-            check=False,
-            **desktop.process_options(),
-        )
+        try:
+            subprocess.run(
+                desktop.recorder_command(values, listing=True),
+                timeout=15,
+                check=False,
+                **desktop.process_options(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            # No recorder installed (arecord, ffmpeg) or it hung: setup can still finish, and
+            # the microphone test below says what is wrong.
+            _log.info("could not list microphones: %s", exc)
+            say("Could not list the microphones; the recorder is missing or not responding.")
         values["device"] = (
             self.options.device
             or self.ask(f"Microphone name/index [{values['device']}]: ")

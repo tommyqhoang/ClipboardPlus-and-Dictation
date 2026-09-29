@@ -33,6 +33,10 @@ class SetupBase(unittest.TestCase):
         )
         env.start()
         self.addCleanup(env.stop)
+        # Windows refuses the "default" microphone; a named one keeps these tests the same everywhere.
+        defaults = patch.dict(dictation.DEFAULTS, {"device": "Test Mic"})
+        defaults.start()
+        self.addCleanup(defaults.stop)
         self.paths = dictation.Paths()
         self.model = self.root / "custom.bin"
         self.model.write_bytes(b"lmgg-test")
@@ -84,6 +88,17 @@ class NonInteractiveTests(SetupBase):
         self.assertTrue(self.paths.config.exists())
 
     def test_the_command_line_runs_unattended_and_offline(self):
+        # Setup insists on a recorder, a clipboard tool and a transcriber. CI machines have
+        # none of them (and each OS names them differently), so stand-in scripts are used.
+        stub = self.root / "tool.py"
+        stub.write_text("import sys\nsys.exit(0)\n")
+        tools = {
+            "DICTATION_AUDIO_BACKEND": "alsa",
+            "DICTATION_CLIPBOARD_BACKEND": "wayland",
+            "DICTATION_ARECORD": str(stub),
+            "DICTATION_WL_COPY": str(stub),
+            "DICTATION_WHISPER_BIN": str(stub),
+        }
         result = subprocess.run(
             [
                 sys.executable,
@@ -92,12 +107,14 @@ class NonInteractiveTests(SetupBase):
                 "--model-file",
                 str(self.model),
                 "--skip-mic-test",
+                "--mic",
+                "Test Mic",
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=60,
-            env={**os.environ, "DICTATION_TELEMETRY": "0"},
+            env={**os.environ, "DICTATION_TELEMETRY": "0", **tools},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Step 1 of 5", result.stdout)
@@ -218,7 +235,7 @@ class MicrophoneTests(unittest.TestCase):
     def test_declining_a_broken_microphone_leaves_settings_alone(self):
         case = SetupBase()
         case.setUp()
-        self.addCleanup(case.temp.cleanup)
+        self.addCleanup(case.doCleanups)  # Its env and defaults patches too.
         options = onboarding.SetupOptions(model=str(case.model), interactive=True)
         with self.assertRaisesRegex(dictation.DictationError, "did not record"):
             case.run_setup(

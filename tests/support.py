@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import faulthandler
+import logging
 import os
 import random
 import struct
@@ -11,6 +12,25 @@ import zlib
 
 # Inherited by subprocesses, even when a fixture strips DICTATION_* variables.
 os.environ["DO_NOT_TRACK"] = "1"
+
+
+def release_logs(folder: object) -> None:
+    """Close and detach the app's log files that live under `folder`.
+
+    Windows cannot delete a file another handle has open, and a module imported inside
+    a test opens its rotating log in that test's temporary folder. Call this before the
+    folder is removed (register it after the folder's cleanup so it runs first).
+    """
+    root = str(folder)
+    for logger in list(logging.root.manager.loggerDict.values()):
+        if not isinstance(logger, logging.Logger):
+            continue
+        for handler in list(logger.handlers):
+            name = getattr(handler, "baseFilename", "")
+            if name.startswith(root):
+                logger.removeHandler(handler)
+                handler.close()
+                logger.addHandler(logging.NullHandler())
 
 
 def share_one_tk_root() -> None:

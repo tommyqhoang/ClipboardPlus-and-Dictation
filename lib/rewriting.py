@@ -147,8 +147,7 @@ def request(config: d.Config, original: str) -> str:
             f"Rewrite endpoint returned HTTP {exc.code}; original kept. No automatic retries."
         ) from exc
     except (
-        urllib.error.URLError,
-        TimeoutError,
+        OSError,  # URLError, timeouts and (before Python 3.11) a bare connection reset.
         ValueError,
         http.client.HTTPException,
         KeyError,

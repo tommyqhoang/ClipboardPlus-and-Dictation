@@ -15,6 +15,7 @@ import clipservice
 import desktop
 import dictation as d
 import hotkeys
+import support
 
 
 class ControlCase(unittest.TestCase):
@@ -22,6 +23,7 @@ class ControlCase(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         folder = Path(temporary.name)
+        self.addCleanup(support.release_logs, folder)
         environment = patch.dict(
             os.environ,
             {

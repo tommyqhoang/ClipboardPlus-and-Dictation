@@ -18,6 +18,7 @@ import clipcontrol
 import clipstore
 import dictation as d
 import hotkeys
+import support
 import tray
 
 
@@ -122,6 +123,7 @@ class TrayTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         folder = Path(temporary.name)
+        self.addCleanup(support.release_logs, folder)
         environment = patch.dict(
             os.environ,
             {
@@ -147,6 +149,11 @@ class TrayTests(unittest.TestCase):
         popen = patch.object(tray.subprocess, "Popen")
         self.popen = popen.start()
         self.addCleanup(popen.stop)
+        # Popen is patched process-wide, so the `icacls` call that locks down a new
+        # folder on Windows would get a mock; that lock-down is tested in test_desktop.
+        restrict = patch.object(d.desktop, "restrict_to_owner", return_value=True)
+        restrict.start()
+        self.addCleanup(restrict.stop)
         # ClipboardControl captures Popen as a default argument when imported,
         # before the patch above. Replace that bound value too or tests launch a
         # real clipboard service that writes into the temporary directory.

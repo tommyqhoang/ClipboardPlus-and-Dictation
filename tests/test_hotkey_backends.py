@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,7 +16,7 @@ import dictation as d
 import hotkeys
 
 SHORTCUT = hotkeys.Shortcut(("ctrl", "shift"), "D")
-COMMAND = Path("/home/me/.local/bin/dictate-toggle")
+COMMAND = PurePosixPath("/home/me/.local/bin/dictate-toggle")  # Backends are Linux-only.
 
 
 def finished(code=0, out="", err=""):

@@ -555,6 +555,7 @@ class ExtractTests(unittest.TestCase):
         ):
             updates._extract(archive, self.work / "unpack-large")
 
+    @unittest.skipIf(sys.platform == "win32", "Windows files carry no Unix mode bits")
     def test_fallback_extraction_normalizes_modes_without_the_data_filter(self):
         archive = self.work / "modes.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:

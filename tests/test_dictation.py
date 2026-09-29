@@ -227,7 +227,8 @@ class DictationTests(unittest.TestCase):
             paste.return_value = False
             self.paths.audio.write_bytes(b"audio")
             self.assertEqual(d.finish(self.config, self.paths, auto_paste=True), "copied")
-            self.assertIn("Ctrl+V", told.call_args.args[1])  # Says how to finish by hand.
+            by_hand = "Command+V" if d.desktop.platform_name() == "macos" else "Ctrl+V"
+            self.assertIn(by_hand, told.call_args.args[1])  # Says how to finish by hand.
 
     def test_paste_uses_platform_helper_and_never_falls_back_across_wayland(self):
         with (
@@ -294,7 +295,9 @@ class DictationTests(unittest.TestCase):
         begin = time.monotonic()
         self.cli()
         self.wait_phase("idle")
-        self.assertLess(time.monotonic() - begin, 3)
+        self.assertLess(time.monotonic() - begin, 10)  # Not stuck on a shutdown timeout.
+        # The recorder was asked to quit on its stdin, not terminated after a wait.
+        self.assertTrue((self.root / "recorder-quit").exists())
         self.assertTrue(self.paths.text.exists())
 
     def test_recorder_shutdown_handles_exit_race_and_hung_process(self):

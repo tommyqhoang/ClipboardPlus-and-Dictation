@@ -50,7 +50,11 @@ class HomeAndSettingsTests(PageCase):
     def test_home_shows_why_the_shortcut_could_not_be_set(self):
         hotkeys.record_status(self.paths, False)
         hotkeys.record_message(self.paths, "Sway said no. Add to ~/.config/sway/config: bindsym x")
-        with patch.object(self.service, "completed", return_value=True):
+        with (
+            patch.object(self.service, "completed", return_value=True),
+            # Only Linux desktops show why a shortcut could not be set.
+            patch("desktop.platform_name", return_value="linux"),
+        ):
             self.window.home()
         self.assertIn("Sway said no", self.labels())
 

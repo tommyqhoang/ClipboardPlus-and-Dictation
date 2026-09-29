@@ -73,8 +73,10 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(saved["model"], str(self.model.resolve()))
             self.assertTrue(saved["live"])
             self.assertFalse(saved["allow_remote"])
-            self.assertEqual(runner.call_count, 1)  # device enumeration only
-            args = runner.call_args.args[0]
+            # Device enumeration only (Windows also runs `icacls` on the settings folder).
+            listing = [c for c in runner.call_args_list if c.args[0][0] != "icacls"]
+            self.assertEqual(len(listing), 1)
+            args = listing[0].args[0]
             self.assertTrue("-L" in args or "-list_devices" in args)
             self.assertIn("Nothing has been recorded", output)
 

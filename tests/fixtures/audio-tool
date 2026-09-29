@@ -15,6 +15,7 @@ if mode in ("arecord", "ffmpeg"):
     if mode == "ffmpeg":
         def wait_for_stop():
             sys.stdin.buffer.read(1)
+            (root / "recorder-quit").write_text("q")
             stopped.set()
         threading.Thread(target=wait_for_stop, daemon=True).start()
     while not stopped.is_set():

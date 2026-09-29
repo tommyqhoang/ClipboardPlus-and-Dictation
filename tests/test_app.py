@@ -29,6 +29,7 @@ class ServiceCase(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.folder = Path(temporary.name)
+        self.addCleanup(support.release_logs, self.folder)
         environment = patch.dict(
             os.environ,
             {

@@ -105,7 +105,8 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_a_version_bump_on_main_releases_automatically(self):
         self.assertIn("branches: [main]", self.release)
-        self.assertIn('paths: ["lib/desktop.py"]', self.release)
+        # No paths filter: a release that failed is retried by the next push.
+        self.assertNotIn("paths:", self.release)
         self.assertIn("needs.plan.outputs.release == 'true'", self.release)
         self.assertIn("uses: ./.github/workflows/quality.yml", self.release)
         # Built as a draft and published last, so no half-built release is public.
