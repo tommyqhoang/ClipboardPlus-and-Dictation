@@ -40,6 +40,13 @@ Every fix and feature ships to macOS, Windows and Linux together. Where to make 
 - `tests/test_platform_parity.py` fails when a menu capability exists in one of the two
   files and not the other. If a difference is deliberate, list it in `ALLOWED` there,
   with the reason.
+- Shortcuts are one code path: defaults, presets, reserved combinations and the
+  candidate list are in `hotkeys.py` and `shortcut_test.py`, the "Test it" widget is
+  `shortcut_panel.py` (used by `app.py` for Settings, the recorder, Home and the
+  tutorial). A press is acknowledged with `hotkeys.record_heard` by the macOS menu bar
+  and the Windows tray, and on Linux by the command the desktop runs (`--via-shortcut`,
+  added by `hotkeys.register_shortcut`). A new shortcut backend must pass the marker on
+  and accept the `cmd` modifier (Win, Super, ⌘).
 - A release publishes only when the macOS, Windows and Linux builds all succeed and pass
   their tests, so a platform that breaks blocks everyone. Known limit: the Windows tray
   (pystray) cannot draw pictures in menu items, so image clips are text there

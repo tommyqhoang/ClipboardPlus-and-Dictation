@@ -116,6 +116,8 @@ MODULES = (
     "app_service.py",
     "app.py",
     "hotkeys.py",
+    "shortcut_test.py",
+    "shortcut_panel.py",
     "menubar.py",
     "tray.py",
     "traymenu.py",

@@ -104,7 +104,16 @@ class ParityTests(unittest.TestCase):
         # The names both files call must still exist in the shared modules.
         expectations = {
             "clipcontrol.py": ("def preview_text(", "def image_label(", "def supervise("),
-            "hotkeys.py": ("CAPTURE_FLAGS =", "def record_heard(", "def set_login_item("),
+            "hotkeys.py": (
+                "CAPTURE_FLAGS =",
+                "def record_heard(",
+                "def set_login_item(",
+                "def acknowledge(",
+                "def record_outcome(",
+                "def via_shortcut(",
+            ),
+            "shortcut_test.py": ("def assess(", "def next_candidate(", "CANDIDATES"),
+            "shortcut_panel.py": ("class TestPanel",),
             "updates.py": ("def check(", "def start_updater("),
             "clipstore.py": ("def thumb_path(",),
         }
@@ -112,6 +121,25 @@ class ParityTests(unittest.TestCase):
             text = (LIB / module).read_text(encoding="utf-8")
             for needle in needles:
                 self.assertIn(needle, text, f"{module} lost {needle}")
+
+    def test_test_your_shortcut_is_shared_code_on_every_platform(self):
+        """ "Test it" lives in app.py (one window for all three platforms) and the shared
+        modules; neither tray file may grow its own copy. Each platform acknowledges a press
+        its own way: menubar.py and tray.py call hotkeys.record_heard (see CAPABILITIES),
+        and where the desktop runs the command itself (Linux) the command does, through
+        the marker register_shortcut adds."""
+        window = (LIB / "app.py").read_text(encoding="utf-8")
+        hotkeys = (LIB / "hotkeys.py").read_text(encoding="utf-8")
+        dictation = (LIB / "dictation.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            window.count("shortcut_panel.TestPanel("), 4, "settings, recorder, tutorial, home"
+        )
+        for name, source in SOURCES.items():
+            self.assertNotIn("TestPanel", source, f"{name}.py must use the shared panel in app.py")
+        self.assertIn("command = via_shortcut(command)", hotkeys)
+        self.assertIn("hotkeys.acknowledge(paths", window)
+        self.assertIn("hotkeys.acknowledge(Paths()", dictation)
+        self.assertIn("--via-shortcut", dictation)
 
     def test_allowed_differences_are_real_and_explained(self):
         for name, (has, pattern, reason) in ALLOWED.items():

@@ -11,6 +11,11 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+# Two runs for one version must never overlap: the draft job deletes and recreates the
+# draft release. A newer run waits for the one going; it never cancels it halfway.
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   plan:
     runs-on: ubuntu-latest

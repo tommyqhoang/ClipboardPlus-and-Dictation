@@ -15,7 +15,7 @@ separately or together:
 
 The same icon, menu and workflow on every platform: the app lives in the macOS
 menu bar, the Windows system tray, or the Linux top bar and starts at login.
-Press **Ctrl+Shift+D** (**⌃⇧D** on a Mac) in any app, talk, press it again, and
+Press **Win+Shift+D** (**Super+Shift+D** on Linux, **⇧⌘D** on a Mac) in any app, talk, press it again, and
 notifications tell you it is recording, transcribing, and then ready to paste.
 
 Linux remains the original platform. macOS and Windows support is newer.
@@ -118,14 +118,15 @@ seconds and keeps nothing).
 
 ### Everyday use (all platforms)
 
-- **Ctrl+Shift+D** (Ctrl+Shift+D on Windows, ⌃⇧D on macOS) starts recording from any app. Press it again
+- **Win+Shift+D** (Super+Shift+D on Linux, ⇧⌘D on macOS) starts recording from any app. Press it again
   to stop. A small bar at the top of the screen shows your voice level while
   it listens, then *Transcribing…* and *Copied*; paste with Ctrl+V (⌘V). Click
   its ■ to stop or ✕ to cancel. The icon turns red while recording. (Set
   `"overlay": false` in `config.json` for plain notifications instead.)
-- **Ctrl+Shift+F** (Ctrl+Shift+F on Windows, ⌃⇧F on macOS) opens the clipboard
+- **Win+Shift+F** (Super+Shift+F on Linux, ⇧⌘F on macOS) opens the clipboard
   history with the search box ready, from any app. Choose another shortcut or turn
-  it off in *Settings → Keyboard shortcuts*.
+  it off in *Settings → Keyboard shortcuts*, where **Test it** checks that a press
+  is heard and offers another shortcut when it is not.
 - In the window, Ctrl+F (⌘F) searches the clipboard history, Ctrl+, (⌘,) opens
   Settings and Ctrl+W (⌘W) closes it. In the search box, ↑/↓ choose a result,
   Enter copies it and Esc clears the search. Opened by the history shortcut, a
@@ -152,7 +153,7 @@ Platform details:
   Open at login is the `ClipboardPlus` value under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - **Linux**: Wayland does not let apps capture global keys, so the shortcut is a
-  GNOME custom keybinding that runs `~/.local/bin/dictate-toggle`; changing it
+  GNOME custom keybinding that runs `~/.local/bin/dictate-toggle --via-shortcut`; changing it
   from the menu updates GNOME. On other desktops, bind that command yourself.
   The top bar icon needs AppIndicator support (built into Ubuntu; an extension
   on stock GNOME). Open at login is `~/.config/autostart/clipboardplus.desktop`.
@@ -230,17 +231,31 @@ items without duplicates.
 
 ### Shortcuts
 
+The same keys everywhere, using each system's own key (`cmd` in the code):
+
 | Platform | Dictation shortcut | Clipboard history shortcut |
 | --- | --- | --- |
-| Linux | Ctrl+Shift+D (GNOME keybinding) | Ctrl+Shift+F (GNOME keybinding) |
-| Windows | Ctrl+Shift+D | Ctrl+Shift+F |
-| macOS | ⌃⇧D | ⌃⇧F |
+| Linux | Super+Shift+D (desktop keybinding) | Super+Shift+F (desktop keybinding) |
+| Windows | Win+Shift+D | Win+Shift+F |
+| macOS | ⇧⌘D | ⇧⌘F |
 
-These were checked against Chrome's published shortcut list, which uses Alt, Ctrl,
-Ctrl+Shift and (on a Mac) ⌘ combinations with D but no Win/Super or ⌃⌥ ones. That
-list does not cover the in-page shortcuts of web apps such as Google Docs, or the
-shortcuts of other software you run; pick any preset or record your own from the
-menu. `Ctrl+Alt+D`, the earlier default, is still one click away.
+Ctrl+Shift+D was the default before. It did not reach the app everywhere (browsers,
+terminals and other apps take it first), so it is now a one-click preset instead, and
+anyone who already chose a shortcut keeps theirs. Super/Win/⌘ plus Shift plus a letter
+is not a system shortcut on macOS, Windows, GNOME or KDE by default (an app can still
+use it: browsers and editors use ⇧⌘D and ⇧⌘F on a Mac, and the shortcut here takes
+precedence while it is on). The app refuses combinations the system owns (such as Win+D, ⌘Space
+or ⌥⌘D, which shows the Dock) and, on GNOME, reads the desktop's own shortcut list to
+warn about a clash before you pick.
+
+**Test it.** *Settings → Keyboard shortcuts → Test it* (also after **Save** in the
+recorder, on Home, and in the first-run tutorial) asks you to press the shortcut and
+says whether it was heard. If not, it says the likely cause and offers the next
+shortcut that can work, one click each, ending with the exact steps to set it by hand.
+On GNOME, KDE, Sway and Hyprland the desktop runs
+`dictate-toggle --via-shortcut` (or `app.py --clipboard --via-shortcut`); the marker makes
+the command record that it was pressed. A binding without the marker still works, it just
+cannot report.
 
 ## Why use this instead of built-in dictation?
 
@@ -319,7 +334,7 @@ Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 
 The installer detects your package manager (apt, dnf, pacman or zypper), installs only the dependencies that are missing (asking for administrator access only then), downloads the base English model,
 builds whisper.cpp if necessary, adds Clipboard+ to the application menu,
-and requests the optional GNOME shortcut Ctrl+Shift+D. Open the app to complete
+and requests the optional GNOME shortcut Super+Shift+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations
 skip GNOME registration, and with no desktop session (over SSH, or in a container)
 the installer says so and the app opens at your next login instead. Use
@@ -330,7 +345,7 @@ build. Configure the endpoint before recording. Existing settings are never
 overwritten by installation or `--init-config`.
 
 Other Wayland desktops can bind `~/.local/bin/dictate-toggle` themselves.
-For example, Sway: `bindsym $mod+Shift+d exec ~/.local/bin/dictate-toggle`.
+For example, Sway: `bindsym $mod+Shift+d exec ~/.local/bin/dictate-toggle --via-shortcut`.
 GNOME users change the shortcut from the top bar icon's **Shortcut** menu. The
 app re-applies its saved shortcut each time it starts, so
 `DICTATION_BINDING='<Super><Shift>v' ./install.sh --no-packages` only lasts when

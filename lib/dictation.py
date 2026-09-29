@@ -1183,6 +1183,8 @@ def build_parser() -> argparse.ArgumentParser:
     for flag in COMMAND_FLAGS:
         group.add_argument("--" + flag, action="store_true")
     group.add_argument("--worker", help=argparse.SUPPRESS)
+    # Added by the desktop's keyboard shortcut (hotkeys.VIA_SHORTCUT); see acknowledge_press.
+    parser.add_argument("--via-shortcut", action="store_true", help=argparse.SUPPRESS)
     setup = parser.add_argument_group(
         "setup options", "Answers for --setup; without a terminal the defaults are used."
     )
@@ -1315,11 +1317,26 @@ def report_failure(config: Config | None, exc: Exception) -> int:
     return 1
 
 
+def acknowledge_press(args: argparse.Namespace) -> None:
+    """When the desktop ran this because the shortcut was pressed (GNOME, KDE, Sway and
+    Hyprland run the command themselves), leave a note first thing so Settings can say
+    "it works". Never gets in the way of the dictation itself."""
+    if not args.via_shortcut:
+        return
+    try:
+        import hotkeys
+
+        hotkeys.acknowledge(Paths(), "dictation")
+    except (ImportError, OSError, DictationError) as exc:
+        log.debug("could not acknowledge the shortcut press: %s", exc)
+
+
 def main() -> int:
     os.umask(0o077)
+    args = build_parser().parse_args()
+    acknowledge_press(args)
     telemetry.install("engine")
     config: Config | None = None
-    args = build_parser().parse_args()
     try:
         paths = Paths()
         if args.setup:

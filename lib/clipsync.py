@@ -5,6 +5,13 @@ network. One round: apply a pending "clear everywhere", send new text and links,
 what the account has (adding, linking and applying changes and deletions), tell the
 account about local deletions, then mirror changed favorites and labels. Every step is safe to
 repeat, so an interrupted round is simply run again.
+
+Deleting works both ways. A deletion or clear here is sent to the account (and so shows
+on the web). A deletion on the web reaches this device through the pull's `deletedItems`,
+and, for anything that window misses (a web "clear all", a long-offline device), through
+`_reconcile`, which compares this history with the account's complete listing.
+Retention (`Store.prune`) is the one local-only removal: it never touches the account,
+and the pruned copies are not added back.
 """
 
 from __future__ import annotations
@@ -27,6 +34,13 @@ MAX_PUSH_BATCHES = 10  # Per round: up to 1000 items, then the next round contin
 CURSOR = clipstore.META_CURSOR
 CLEAR_PENDING = clipstore.META_CLEAR
 CLEARED = clipstore.META_CLEARED
+PRUNED = clipstore.META_PRUNED
+
+# Reconciliation with the account's complete listing (see `Engine._reconcile`).
+RECONCILE_INTERVAL_SECONDS = 30 * 60.0  # At most this often, unless asked (Sync now).
+RECONCILE_MIN_AGE_SECONDS = 10 * 60.0  # Items confirmed more recently are never removed.
+RECONCILE_BULK_MIN = 20  # Removing more than this many, and over half of the synced items,
+RECONCILE_BULK_SHARE = 0.5  # is a "bulk" removal (a web clear-all): a full pull must agree.
 
 
 class CloudClient(Protocol):
@@ -36,6 +50,7 @@ class CloudClient(Protocol):
     def set_label(self, cloud_id: str, label: str) -> None: ...
     def delete(self, cloud_id: str) -> None: ...
     def clear(self, *, favorites: bool) -> None: ...
+    def list_ids(self) -> cp.Listing: ...
 
 
 @dataclass
@@ -43,12 +58,18 @@ class Report:
     pushed: int = 0
     pulled: int = 0
     deleted: int = 0
+    removed: int = 0  # Items removed here because the account no longer has them.
     errors: list[str] = field(default_factory=list)
 
 
 def request_clear(store: clipstore.Store, *, favorites: bool) -> None:
     """Ask for the account's history to be cleared too (done on the next round)."""
     store.meta_set(CLEAR_PENDING, "all" if favorites else "keep")
+
+
+def request_reconcile(store: clipstore.Store) -> None:
+    """Ask the next round to compare this history with the account's full listing."""
+    store.meta_set(clipstore.META_RECONCILE_NOW, "1")
 
 
 def _stamp(key: str) -> str:
@@ -107,6 +128,7 @@ class Engine:
         self._push(report)
         pulled = self._pull(report)
         self._deletions(report, pulled)
+        self._reconcile(report)
         self._favorites()
         self._labels()
 
@@ -115,10 +137,21 @@ class Engine:
         if not mode:
             return
         self._cloud.clear(favorites=mode == "all")
+        # Copies made here while the clear was on its way may have been uploaded and then
+        # cleared with the rest; they are still in this history, so send them again.
+        cleared = self._cleared_at()
+        if cleared:
+            self._store.relink_since(cleared)
         # The account is now empty of everything deleted here, so those deletions
         # need not be sent one by one.
         self._store.drop_tombstones()
         self._store.meta_set(CLEAR_PENDING, "")
+
+    def _cleared_at(self) -> float:
+        try:
+            return float(self._store.meta_get(CLEARED) or 0.0)
+        except ValueError:
+            return 0.0
 
     def _push(self, report: Report) -> None:
         for _ in range(MAX_PUSH_BATCHES):
@@ -137,6 +170,7 @@ class Engine:
                     cloud_favorite=item.cloud_favorite or item.favorite,
                     updated_at=item.updated_at,
                     cloud_label=item.label if item.favorite else "",
+                    now=self._clock(),
                 )
                 report.pushed += 1
             if len(batch) < cp.BATCH:
@@ -162,10 +196,11 @@ class Engine:
         cursor = self._store.meta_get(CURSOR)
         since = float(cursor) - OVERLAP_SECONDS if cursor else None
         pulled = self._cloud.pull(since)
+        self._cleared = self._cleared_at()
         try:
-            self._cleared = float(self._store.meta_get(CLEARED) or 0.0)
+            pruned = float(self._store.meta_get(PRUNED) or 0.0)
         except ValueError:
-            self._cleared = 0.0
+            pruned = 0.0
         # Items the user deleted here but the account has not heard about yet must
         # not come back.
         doomed = self._store.tombstones()
@@ -175,7 +210,7 @@ class Engine:
             key = cp.sync_key(cloud_item.kind, cloud_item.created_ms, cloud_item.text)
             if cloud_item.id in ids or _stamp(key) in stamps:
                 continue
-            if self._merge(cloud_item, key):
+            if self._merge(cloud_item, key, pruned):
                 report.pulled += 1
         for removed in pulled.deleted:
             gone = self._store.find_by_key(
@@ -186,7 +221,7 @@ class Engine:
                 report.deleted += 1
         return pulled
 
-    def _merge(self, cloud_item: cp.CloudItem, key: str) -> bool:
+    def _merge(self, cloud_item: cp.CloudItem, key: str, pruned: float = 0.0) -> bool:
         """Fold one account item into the history. True when it was added."""
         local = self._store.find_by_cloud_id(cloud_item.id)
         if local is None:
@@ -200,7 +235,9 @@ class Engine:
         if local is None:
             if cloud_item.created_ms / 1000 <= self._cleared:
                 return False  # Cleared here: an older copy must not come back.
-            return self._store.add_cloud(cloud_item, key) is not None
+            if not cloud_item.favorite and cloud_item.created_ms / 1000 <= pruned:
+                return False  # Retention removed it here on purpose: not a new item.
+            return self._store.add_cloud(cloud_item, key, now=self._clock()) is not None
 
         pending = local.favorite != local.cloud_favorite or local.label != local.cloud_label
         if not local.cloud_key:
@@ -211,14 +248,15 @@ class Engine:
                 cloud_favorite=cloud_item.favorite,
                 updated_at=local.updated_at,
                 cloud_label=cloud_item.label,
+                now=self._clock(),
             )
         if local.cloud_id != cloud_item.id:
             # The account's copy may carry another time or text than this device's
             # (an upload refused as a duplicate, a rewritten link): its key is the
             # one a later deletion will name.
-            self._store.link(local.id, cloud_item.id, cloud_item.favorite, key)
+            self._store.link(local.id, cloud_item.id, cloud_item.favorite, key, now=self._clock())
         elif local.cloud_favorite != cloud_item.favorite:
-            self._store.link(local.id, cloud_item.id, cloud_item.favorite)
+            self._store.link(local.id, cloud_item.id, cloud_item.favorite, now=self._clock())
         # A pending local change wins only when it is the newer one.
         keep_local = pending and local.updated_at >= cloud_item.updated_at
         if not keep_local and (
@@ -262,6 +300,73 @@ class Engine:
             if key == tombstone.cloud_key or (wanted and _stamp(key) == wanted):
                 return cloud_item.id
         return ""
+
+    def _reconcile(self, report: Report) -> None:
+        """Remove what was deleted on the web from this history.
+
+        The pull only reports deletions made inside its window, so this compares the
+        history with the account's complete listing. It runs at most every 30 minutes,
+        or on the next round after `request_reconcile` (Sync now), and only ever removes
+        items under ALL of these rules:
+
+        1. The listing must be complete: every page read without error, every row a valid
+           id, and an explicit "no more pages" at the end, within the item cap. A failed,
+           partial, capped or malformed listing removes nothing.
+        2. An item qualifies only when it has an account id, is text or a link, has no
+           unsent change (upload, favorite or label), was confirmed by the account at
+           least 10 minutes ago, and has no deletion waiting to be sent.
+        3. Its id must be absent from the listing.
+        4. A second complete listing, taken at once, must agree: paging can skip an item
+           when the account changes mid-read. Only items absent from both are removed.
+        5. A bulk removal (more than 20 items and over half of the synced items here,
+           which includes a web "clear all" and an empty account) also needs a full pull
+           (`pull(None)`, another route) to hold none of those ids.
+        Anything that fails a rule is left alone until the next attempt.
+        Removed items leave no tombstone: the account is not told, it already knows.
+        """
+        now = self._clock()
+        forced = self._store.meta_get(clipstore.META_RECONCILE_NOW) == "1"
+        try:
+            last = float(self._store.meta_get(clipstore.META_RECONCILED) or 0.0)
+        except ValueError:
+            last = 0.0
+        if not forced and 0 < last <= now < last + RECONCILE_INTERVAL_SECONDS:
+            return
+        self._reconcile_now(report, now)  # Offline raises: tried again next round.
+        self._store.meta_set(clipstore.META_RECONCILED, repr(now))
+        self._store.meta_set(clipstore.META_RECONCILE_NOW, "")
+
+    def _reconcile_now(self, report: Report, now: float) -> None:
+        candidates = self._store.reconcile_candidates(now - RECONCILE_MIN_AGE_SECONDS)
+        if not candidates:
+            return
+        gone = self._absent(candidates)
+        if not gone:
+            return
+        again = self._absent([item for item in candidates if item.id in gone])
+        if again is None:
+            return
+        doomed = [item for item in candidates if item.id in gone and item.id in again]
+        total = self._store.synced_count()
+        if len(doomed) > RECONCILE_BULK_MIN and len(doomed) > RECONCILE_BULK_SHARE * total:
+            present = {i.id.lower() for i in self._cloud.pull(None).items}
+            doomed = [item for item in doomed if item.cloud_id.lower() not in present]
+        for item in doomed:
+            self._store.delete_local(item.id)
+            report.removed += 1
+
+    def _absent(self, candidates: list[clipstore.Item]) -> set[int] | None:
+        """Ids of `candidates` missing from a complete listing; None when it is not usable."""
+        try:
+            listing = self._cloud.list_ids()
+        except cp.SyncError as exc:
+            if exc.status is None:
+                raise  # Offline: the round fails and backs off as usual.
+            return None  # This route failed: leave everything as it is.
+        if not listing.complete:
+            return None
+        held = {identifier.lower() for identifier in listing.ids}
+        return {item.id for item in candidates if item.cloud_id.lower() not in held}
 
     def _favorites(self) -> None:
         for item in self._store.pending_favorites():

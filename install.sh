@@ -439,7 +439,7 @@ install_gnome_shortcut() {
   fi
   if ! {
     gsettings set "$KEYBINDING_SCHEMA" name "$APP_NAME" &&
-      gsettings set "$KEYBINDING_SCHEMA" command "\"$BIN_DEST\"" &&
+      gsettings set "$KEYBINDING_SCHEMA" command "\"$BIN_DEST --via-shortcut\"" &&
       gsettings set "$KEYBINDING_SCHEMA" binding "" &&
       gsettings set "$KEYBINDING_SCHEMA" binding "$DEFAULT_BINDING"
   }; then

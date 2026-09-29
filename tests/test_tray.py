@@ -362,7 +362,10 @@ class TrayTests(unittest.TestCase):
             self.assertEqual(gnome.conflict, taken)
             self.assertTrue(gnome.register(None))
             self.assertIsNone(gnome.conflict)
-        self.assertEqual(bind.call_args.args[1].name, "dictate-toggle")
+        # The desktop runs the command with the marker that lets the press be acknowledged
+        # (register_shortcut adds it; the tray's own command stays the bare launcher).
+        self.assertEqual(Path(bind.call_args.args[1][0]).name, "dictate-toggle")
+        self.assertEqual(bind.call_args.args[1][-1], "--via-shortcut")
 
     def test_gnome_hotkey_defaults_to_persistent_relaunch_when_frozen(self):
         # bin/dictate-toggle only exists for a source install; a packaged build

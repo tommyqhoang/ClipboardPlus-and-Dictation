@@ -109,6 +109,13 @@ class ReleasePipelineTests(unittest.TestCase):
     def setUp(self):
         self.release = read(".github", "workflows", "release.yml")
 
+    def test_two_release_runs_never_overlap_or_cancel_each_other(self):
+        # The draft job deletes and recreates the draft, so runs queue instead.
+        self.assertRegex(
+            self.release,
+            r"(?m)^concurrency:\n  group: release\n  cancel-in-progress: false\n",
+        )
+
     def test_a_version_bump_on_main_releases_automatically(self):
         self.assertIn("branches: [main]", self.release)
         # No paths filter: a release that failed is retried by the next push.

@@ -31,7 +31,7 @@ class HotkeyTests(unittest.TestCase):
         self.preferences = hotkeys.Preferences(d.Paths())
 
     def test_same_shortcut_on_every_platform(self):
-        shortcut = hotkeys.default_shortcut("linux")
+        shortcut = hotkeys.Shortcut(("ctrl", "shift"), "D")  # The earlier default's spellings.
         self.assertEqual(shortcut.label("macos"), "⌃⇧D")
         self.assertEqual(shortcut.label("windows"), "Ctrl+Shift+D")
         self.assertEqual(shortcut.label("linux"), "Ctrl+Shift+D")
@@ -58,18 +58,19 @@ class HotkeyTests(unittest.TestCase):
         self.assertIn("Most apps", hotkeys.Shortcut(("ctrl",), "C").problem())
         self.assertIn("letter", hotkeys.Shortcut(("ctrl",), "Home").problem())
         self.assertEqual(hotkeys.Shortcut((), "F5").problem(), "")
-        self.assertEqual(hotkeys.Shortcut(("cmd",), "D").problem(), "")
+        self.assertEqual(hotkeys.Shortcut(("cmd",), "D").problem("macos"), "")
 
     def test_captured_keys(self):
         flags = hotkeys.EVENT_FLAGS["shift"] | hotkeys.EVENT_FLAGS["ctrl"]
-        self.assertEqual(hotkeys.from_mac_event(2, flags, "d"), hotkeys.default_shortcut("linux"))
+        old = hotkeys.Shortcut(("ctrl", "shift"), "D")
+        self.assertEqual(hotkeys.from_mac_event(2, flags, "d"), old)
         self.assertEqual(hotkeys.from_mac_event(49, flags, " ").key, "Space")
         # Every modifier survives, whatever order the event flags are read in.
         every = sum(hotkeys.EVENT_FLAGS.values())
         self.assertEqual(hotkeys.from_mac_event(2, every, "d").modifiers, hotkeys.MODIFIER_ORDER)
         self.assertEqual(hotkeys.from_mac_event(200, 0, "é").key, "É")
         self.assertIsNone(hotkeys.from_tk("Control_L", set()))
-        self.assertEqual(hotkeys.from_tk("d", {"ctrl", "shift"}), hotkeys.default_shortcut("linux"))
+        self.assertEqual(hotkeys.from_tk("d", {"ctrl", "shift"}), old)
         self.assertEqual(hotkeys.from_tk("space", {"alt"}), hotkeys.Shortcut(("alt",), "Space"))
         self.assertEqual(hotkeys.from_tk("F9", set()).key, "F9")
 
@@ -285,7 +286,7 @@ class HotkeyTests(unittest.TestCase):
             self.assertIn(
                 ["set", *hotkeys.GNOME_LIST, f"['/other/', {hotkeys.GNOME_PATH!r}]"], calls
             )
-            self.assertEqual(calls[-1][-2:], ["binding", "<Control><Shift>d"])
+            self.assertEqual(calls[-1][-2:], ["binding", "<Shift><Super>d"])
             failing = Mock(return_value=Mock(returncode=1, stdout="", stderr="no schema"))
             self.assertFalse(hotkeys.gnome_shortcut(linux_default, Path("/t"), failing))
         with patch.object(hotkeys.shutil, "which", return_value=None):
@@ -313,8 +314,8 @@ class HotkeyTests(unittest.TestCase):
     def test_another_shortcut_on_the_same_keys_is_found(self):
         old = hotkeys.GNOME_LIST_PREFIX + "custom0/"
         custom = {
-            hotkeys.GNOME_PATH: ("Clipboard+ and Dictation", "<Control><Shift>d"),
-            old: ("Whisper Dictation", "<Shift><Control>D"),  # Other order and case: same keys.
+            hotkeys.GNOME_PATH: ("Clipboard+ and Dictation", "<Shift><Super>d"),
+            old: ("Whisper Dictation", "<Super><Shift>D"),  # Other order and case: same keys.
         }
         built_in = (
             "org.gnome.desktop.wm.keybindings activate-window-menu ['<Alt>space']\n"
@@ -379,7 +380,7 @@ class HotkeyTests(unittest.TestCase):
         self.assertIn(["set", *hotkeys.GNOME_LIST, listed], calls)
         self.assertIn("/venv/python /lib/app.py --clipboard", calls[-3][-1])
         # Cleared, then set: GNOME grabs the keys again even if the value is unchanged.
-        self.assertEqual([call[-1] for call in calls[-2:]], ["", "<Control><Shift>f"])
+        self.assertEqual([call[-1] for call in calls[-2:]], ["", "<Shift><Super>f"])
 
     def test_history_command_default_matches_relaunch_when_frozen(self):
         with (
@@ -441,8 +442,11 @@ class HotkeyTests(unittest.TestCase):
 
     def test_the_history_shortcut_defaults_to_f_and_can_be_changed_or_switched_off(self):
         self.assertEqual(self.preferences.history_shortcut(), hotkeys.DEFAULT_HISTORY)
-        self.assertEqual(hotkeys.default_history_shortcut("linux").label("linux"), "Ctrl+Shift+F")
-        self.assertEqual(hotkeys.default_history_shortcut("macos").label("macos"), "⌃⇧F")
+        self.assertEqual(hotkeys.default_history_shortcut("linux").label("linux"), "Super+Shift+F")
+        self.assertEqual(
+            hotkeys.default_history_shortcut("windows").label("windows"), "Win+Shift+F"
+        )
+        self.assertEqual(hotkeys.default_history_shortcut("macos").label("macos"), "⇧⌘F")
         for preset in hotkeys.HISTORY_PRESETS:
             self.assertEqual(preset.problem(), "")
             self.assertNotEqual(preset, hotkeys.DEFAULT)
@@ -454,18 +458,135 @@ class HotkeyTests(unittest.TestCase):
         self.preferences.save(open_at_login=False)  # Other changes keep it off.
         self.assertIsNone(self.preferences.history_shortcut())
 
-    def test_defaults_are_control_shift_d_and_f_on_every_platform(self):
+    def test_defaults_are_the_same_cmd_shift_d_and_f_on_every_platform(self):
         for platform in ("macos", "linux", "windows"):
             self.assertEqual(
-                hotkeys.default_shortcut(platform), hotkeys.Shortcut(("ctrl", "shift"), "D")
+                hotkeys.default_shortcut(platform), hotkeys.Shortcut(("shift", "cmd"), "D")
             )
             self.assertEqual(
                 hotkeys.default_history_shortcut(platform),
-                hotkeys.Shortcut(("ctrl", "shift"), "F"),
+                hotkeys.Shortcut(("shift", "cmd"), "F"),
             )
+        default, history = (
+            hotkeys.default_shortcut("linux"),
+            hotkeys.default_history_shortcut("linux"),
+        )
+        self.assertEqual(
+            [default.label(p) for p in ("macos", "windows", "linux")],
+            ["⇧⌘D", "Win+Shift+D", "Super+Shift+D"],
+        )
+        self.assertEqual(
+            [history.label(p) for p in ("macos", "windows", "linux")],
+            ["⇧⌘F", "Win+Shift+F", "Super+Shift+F"],
+        )
+
+    def test_every_backend_spells_the_cmd_defaults(self):
+        for shortcut, letter in (
+            (hotkeys.default_shortcut("linux"), "D"),
+            (hotkeys.default_history_shortcut("linux"), "F"),
+        ):
+            self.assertEqual(shortcut.gnome(), f"<Shift><Super>{letter.lower()}")
+            self.assertEqual(shortcut.qt(), f"Shift+Meta+{letter}")
+            self.assertEqual(shortcut.sway(), f"Shift+Mod4+{letter.lower()}")
+            self.assertEqual(shortcut.hyprland(), ("SHIFT SUPER", letter))
+            self.assertEqual(shortcut.carbon_modifiers(), 0x200 | 0x100)  # shift + cmdKey
+            self.assertEqual(shortcut.windows_modifiers(), 0x4 | 0x8 | hotkeys.MOD_NOREPEAT)
+            self.assertEqual(shortcut.windows_key(), ord(letter))
+        self.assertEqual(
+            hotkeys.default_shortcut("macos").mac_key_code(), hotkeys.MAC_KEY_CODES["D"]
+        )
+        self.assertEqual(hotkeys.default_history_shortcut("macos").mac_key_code(), 3)
+
+    def test_the_default_is_not_reserved_anywhere_and_old_and_new_are_presets(self):
+        for platform in ("macos", "windows", "linux"):
+            for shortcut in (
+                hotkeys.default_shortcut(platform),
+                hotkeys.default_history_shortcut(platform),
+            ):
+                self.assertEqual(shortcut.problem(platform), "", platform)
+            self.assertEqual(hotkeys.presets(platform)[0], hotkeys.default_shortcut(platform))
+            self.assertIn(hotkeys.Shortcut(("ctrl", "shift"), "D"), hotkeys.presets(platform))
+            self.assertEqual(
+                hotkeys.history_presets(platform)[:2],
+                (
+                    hotkeys.default_history_shortcut(platform),
+                    hotkeys.Shortcut(("ctrl", "shift"), "F"),
+                ),
+            )
+            for preset in (*hotkeys.presets(platform), *hotkeys.history_presets(platform)):
+                self.assertEqual(preset.problem(platform), "", (platform, preset))
+        self.assertIn(hotkeys.Shortcut(("alt",), "Space"), hotkeys.presets("macos"))
+        self.assertNotIn(hotkeys.Shortcut(("alt",), "Space"), hotkeys.presets("windows"))
+
+    def test_reserved_combinations_are_refused_with_a_clear_message(self):
+        cases = (
+            ("macos", ("cmd",), "Space", "macOS"),
+            ("macos", ("cmd",), "Tab", "macOS"),
+            ("macos", ("alt", "cmd"), "D", "macOS"),  # Shows and hides the Dock.
+            ("windows", ("cmd",), "D", "Windows"),
+            ("windows", ("cmd",), "L", "Windows"),
+            ("windows", ("cmd",), "R", "Windows"),
+            ("windows", ("shift", "cmd"), "S", "Windows"),
+            ("windows", ("alt",), "F4", "Windows"),
+            ("linux", ("cmd",), "L", "your desktop"),
+            ("linux", ("alt",), "Tab", "your desktop"),
+        )
+        for platform, modifiers, key, who in cases:
+            shortcut = hotkeys.Shortcut(modifiers, key)
+            message = shortcut.problem(platform)
+            self.assertIn(who, message, (platform, shortcut))
+            self.assertIn(shortcut.label(platform), message)
+        self.assertNotEqual(hotkeys.Shortcut(("cmd",), "Q").problem("macos"), "")  # Quit.
+        # The same keys are fine where nothing owns them.
+        self.assertEqual(hotkeys.Shortcut(("alt", "cmd"), "D").problem("linux"), "")
+        self.assertEqual(hotkeys.Shortcut(("shift", "cmd"), "D").problem("windows"), "")
+        # A saved shortcut is never thrown away for being reserved by a later release.
+        self.preferences.save(shortcut=hotkeys.Shortcut(("alt", "cmd"), "D"))
+        self.assertEqual(self.preferences.shortcut(), hotkeys.Shortcut(("alt", "cmd"), "D"))
+
+    def test_a_saved_shortcut_wins_over_the_new_default(self):
+        old = hotkeys.Shortcut(("ctrl", "shift"), "D")
+        self.preferences.save(
+            shortcut=old, history_shortcut=hotkeys.Shortcut(("ctrl", "shift"), "F")
+        )
+        self.assertEqual(self.preferences.shortcut(), old)
+        self.assertEqual(
+            self.preferences.history_shortcut(), hotkeys.Shortcut(("ctrl", "shift"), "F")
+        )
+
+    def test_the_marker_is_added_once_and_removal_matches_either_command(self):
+        marked = hotkeys.via_shortcut(PurePosixPath("/bin/toggle"))
+        self.assertEqual(marked, ["/bin/toggle", "--via-shortcut"])
+        self.assertEqual(hotkeys.via_shortcut(marked), marked)
+        self.assertEqual(
+            hotkeys.via_shortcut(["/x/python", "/x/app.py", "--clipboard"])[-1], "--via-shortcut"
+        )
+        for stored in ("/bin/toggle", "/bin/toggle --via-shortcut"):
+            calls = []
+
+            def run(args, stored=stored, **_):
+                calls.append(args[1:])
+                text = (
+                    f"[{hotkeys.GNOME_PATH!r}]"
+                    if args[1:3] == ["get", *hotkeys.GNOME_LIST[:1]]
+                    else repr(stored)
+                )
+                return Mock(returncode=0, stdout=text, stderr="")
+
+            with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
+                hotkeys.gnome_remove(PurePosixPath("/bin/toggle"), run)
+            self.assertTrue(any(call[0] == "reset-recursively" for call in calls), stored)
+        with patch.object(hotkeys.shutil, "which", return_value="/usr/bin/gsettings"):
+            calls.clear()
+            hotkeys.gnome_remove(
+                PurePosixPath("/bin/toggle"),
+                lambda args, **_: Mock(returncode=0, stdout="'/other'", stderr=""),
+            )
+        self.assertFalse(any(call[0] == "reset-recursively" for call in calls))
 
     def test_presets_start_with_the_default_and_keep_the_previous_default(self):
         self.assertEqual(hotkeys.PRESETS[0], hotkeys.DEFAULT)
+        self.assertIn(hotkeys.Shortcut(("ctrl", "shift"), "D"), hotkeys.PRESETS)
         self.assertIn(hotkeys.Shortcut(("ctrl", "alt"), "D"), hotkeys.PRESETS)
         self.assertEqual(len(set(hotkeys.PRESETS)), len(hotkeys.PRESETS))
 
@@ -691,7 +812,14 @@ class SettingsShortcutTextTests(unittest.TestCase):
         # A reason that already names the log is not repeated.
         again = a.shortcut_test_text(label, False, False, f"Details: {log}", log, "macos")
         self.assertEqual(again.count(log), 1)
-        self.assertEqual(a.shortcut_test_text(label, False, True, "", log, "linux"), "")
+        # Every platform can hear it now (on Linux the desktop's command leaves the note).
+        self.assertEqual(
+            a.shortcut_test_text(label, False, True, "", log, "linux"),
+            "Ready — press ⌃⇧D anywhere to test it",
+        )
+        self.assertIn(
+            "didn’t hear", a.shortcut_test_text(label, False, True, "", log, "linux", "silent")
+        )
 
     def test_the_row_problem_prefers_what_the_tray_recorded(self):
         import app_settings as a

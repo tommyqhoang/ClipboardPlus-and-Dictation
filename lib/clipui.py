@@ -68,6 +68,16 @@ def _same_look(old: clipstore.Item, new: clipstore.Item) -> bool:
     return all(getattr(old, name) == getattr(new, name) for name in fields)
 
 
+CLEAR_POLL_MS = 1000
+CLEAR_POLL_LIMIT = 120  # About two minutes of watching an account clear, then it is left alone.
+CLEAR_PROGRESS = {
+    "done": "Cleared everywhere ✓ Your Clipboard+ account is cleared too.",
+    "working": "Cleared here. Clearing your Clipboard+ account…",
+    "waiting": "Cleared here. Will finish clearing your account when you’re back online.",
+    "reconnect": "Cleared here. Reconnect Clipboard+ in Settings to finish clearing your account.",
+}
+
+
 class ClipboardPage:
     """Owns the widgets of the Clipboard tab. `app` supplies the window and its helpers."""
 
@@ -85,6 +95,9 @@ class ClipboardPage:
         self.pending_search: str | None = None
         self.selected = 0  # The row Enter copies; the arrow keys move it.
         self.deleted: tuple[clipstore.Item, bytes] | None = None
+        self._clear_after: str | None = None  # The poll that reports an account clear.
+        self._clear_polls = 0
+        self._clear_text = ""
         # Decoded once per image and kept while shown (Tk drops unreferenced images).
         self._thumbs: dict[str, tk.PhotoImage | None] = {}
         self._signature: tuple[Any, ...] | None = None
@@ -759,17 +772,12 @@ class ClipboardPage:
         if self.deleted is None:
             return
         item, data = self.deleted
-        restored = (
-            self.store.add_image(data, source=item.source)
-            if item.kind == "image"
-            else self.store.add_text(item.text, source=item.source)
-        )
+        # Back exactly as it was: while the account has not been told of the deletion it is
+        # withdrawn, so nothing is deleted there and nothing uploads twice.
+        restored = self.store.restore(item, data)
         if restored is None:
             self.app.status.set("Couldn’t restore this item.")
             return
-        if item.favorite:
-            self.store.set_favorite(restored.id, True)
-            self.store.set_label(restored.id, item.label)
         self.deleted = None
         self.undo_button.pack_forget()
         self.reload()
@@ -787,10 +795,12 @@ class ClipboardPage:
         return ClearDialog(self.app.root, linked=linked).show()
 
     def clear(self) -> None:
-        choice = self.ask_clear(self.app.service.clipboard_plus_linked())
+        linked = self.app.service.clipboard_plus_linked()
+        choice = self.ask_clear(linked)
         if choice is None:
             return
         everywhere, keep_favorites = choice
+        self.stop_watching()
         self.deleted = None
         self.undo_button.pack_forget()
         count = self.app.service.clear_clipboard(
@@ -800,8 +810,44 @@ class ClipboardPage:
             "clipboard_clear", everywhere=everywhere, keep_favorites=keep_favorites, count=count
         )
         self.reload()
-        where = " here and on your Clipboard+ account" if everywhere else ""
-        self.app.status.set(f"Cleared {count} item{'s' if count != 1 else ''}{where}.")
+        noun = f"{count} item{'s' if count != 1 else ''}"
+        if not everywhere:
+            where = " on this device. Your Clipboard+ account keeps its copy" if linked else ""
+            self._say(f"Cleared {noun}{where}.")
+            return
+        self._say(f"Cleared {noun} here. Clearing your Clipboard+ account…")
+        self._watch_clear()
+
+    # -- reporting an account clear -------------------------------------------
+    def _say(self, text: str) -> None:
+        self._clear_text = text
+        self.app.status.set(text)
+
+    def _watch_clear(self) -> None:
+        """Follow the account clear on the Tk loop (no threads) until it is done."""
+        self.stop_watching()
+        self._clear_polls = 0
+        self._clear_after = self.app.root.after(CLEAR_POLL_MS, self._poll_clear)
+
+    def stop_watching(self) -> None:
+        if self._clear_after is not None:
+            self.app.root.after_cancel(self._clear_after)
+            self._clear_after = None
+
+    def _poll_clear(self) -> None:
+        self._clear_after = None
+        if getattr(self.app, "clipboard_page", self) is not self or self.app.page != "clipboard":
+            return  # The page was left: stop asking.
+        self._clear_polls += 1
+        progress = self.app.service.clipboard_clear_progress(self.store)
+        text = CLEAR_PROGRESS.get(progress, CLEAR_PROGRESS["waiting"])
+        if progress == "working" and self._clear_polls >= CLEAR_POLL_LIMIT:
+            text = "Cleared here. Your Clipboard+ account is still being cleared in the background."
+        # Only replace our own message: the user may have moved on to something else.
+        if self.app.status.get() in ("", self._clear_text):
+            self._say(text)
+        if progress != "done" and self._clear_polls < CLEAR_POLL_LIMIT:
+            self._clear_after = self.app.root.after(CLEAR_POLL_MS, self._poll_clear)
 
     def resume(self) -> None:
         prefs = hotkeys.Preferences(self.app.service.paths)
@@ -906,8 +952,9 @@ class ClearDialog:
         window.resizable(False, False)
         window.transient(parent)  # type: ignore[call-overload]
         window.configure(background=ttk.Style(window).lookup("TFrame", "background"))
-        # The narrower choice is the default: clearing the account too is a deliberate pick.
-        self.scope = tk.StringVar(master=window, value="device")
+        # Signed in, history is one thing: clearing it clears it on the account (and so the
+        # web dashboard) too. Keeping the account's copy is the deliberate, explicit pick.
+        self.scope = tk.StringVar(master=window, value="everywhere" if linked else "device")
         self.keep_favorites = tk.BooleanVar(master=window, value=True)
         body = ttk.Frame(window, padding=22)
         body.pack(fill="both", expand=True)
@@ -919,13 +966,19 @@ class ClearDialog:
         if linked:
             ttk.Radiobutton(
                 body,
-                text="Everywhere: this device and your Clipboard+ account",
+                text="Everywhere: this device and your Clipboard+ account (the web dashboard too)",
                 value="everywhere",
                 variable=self.scope,
             ).pack(anchor="w")
             ttk.Radiobutton(
                 body, text="This device only", value="device", variable=self.scope
-            ).pack(anchor="w", pady=(2, 8))
+            ).pack(anchor="w", pady=(2, 0))
+            ttk.Label(
+                body,
+                text="This device only: your account keeps its copy, so the web dashboard "
+                "still shows it.",
+                wraplength=380,
+            ).pack(anchor="w", padx=(22, 0), pady=(0, 8))
         ttk.Checkbutton(body, text="Keep favorites", variable=self.keep_favorites).pack(
             anchor="w", pady=(0, 14)
         )
@@ -1246,7 +1299,8 @@ class AccountCard:
         )
 
     def sync_now(self) -> None:
-        self.app.service.sync_clipboard_now()
+        # Also checks the account for items deleted on the web, so both sides match now.
+        self.app.service.sync_clipboard_now(reconcile=True)
         self.app.status.set("Syncing…")
 
     def disconnect(self) -> None:

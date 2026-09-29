@@ -5,6 +5,55 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-29
+
+### Changed
+- One default shortcut on every platform, so it works the same everywhere: dictation is
+  **Win+Shift+D** (Windows), **Super+Shift+D** (Linux) and **⇧⌘D** (macOS); clipboard
+  history is the same with F. Ctrl+Shift+D and Ctrl+Shift+F did not work everywhere
+  (browsers, terminals and other apps took them first) and are now one-click presets.
+  A shortcut you already chose is kept. Combinations the system owns (Win+D, ⌘Space,
+  ⌥⌘D which shows the Dock, and similar) are refused in the recorder with a clear reason.
+  Platforms: all.
+- Saving in the shortcut recorder now stays on the page and asks you to press the new
+  shortcut, so you know it works before you leave. Platforms: all.
+- The Linux desktop shortcut (GNOME, KDE, Sway, Hyprland) now runs
+  `dictate-toggle --via-shortcut` / `app.py --clipboard --via-shortcut`. Existing
+  bindings without the marker keep working; the app rewrites its own on start.
+  Platforms: Linux.
+
+### Added
+- **Test it** for every shortcut: in Settings (both rows), after Save in the recorder,
+  on Home when a shortcut has not been heard yet, and in the first-run tutorial. It asks
+  you to press the shortcut and says "It works", or, after 8 seconds, why it was not
+  heard (a clash the desktop reported, a registration that failed, or the likely cause)
+  with one-click buttons that try the next shortcut that can work, ending with the exact
+  steps to set one by hand (and, on Linux, a Copy command button). The result is kept,
+  so Home and Settings stay truthful. Platforms: all; on Linux the press is heard
+  through the `--via-shortcut` marker, on macOS and Windows by the menu bar and tray.
+
+### Fixed
+- Two release runs for the same version can no longer overlap (the draft job recreates
+  the draft release): the release workflow queues them.
+
+### Fixed
+- Clearing the clipboard history with a Clipboard+ account connected now clears the
+  account too, so the web dashboard matches: the dialog's default is "Everywhere: this
+  device and your Clipboard+ account" ("This device only" is an explicit choice and says the
+  web copy stays). The request is saved before anything is cleared here, so a crash or
+  going offline never leaves "cleared here, account never told"; it finishes on its own,
+  and the window says so ("Cleared everywhere ✓", or "Will finish clearing your account
+  when you're back online"). A copy made during the clear is kept and syncs.
+- Deleting or clearing on the web now reaches the desktop even when it happened outside
+  the sync window (a web "clear all", a long-offline computer): the app compares its
+  history with the account's complete listing about every 30 minutes and on Sync now, and
+  removes only items it has confirmed for over 10 minutes, with nothing unsent, that a
+  complete, error-free listing (read twice) no longer holds.
+- Undo after deleting an item no longer deletes or duplicates it on the account, and
+  items removed by the retention limit stay on the account without coming back here.
+  "Delete all clipboard data" stays on this device.
+  Platforms: all (shared code for macOS, Windows and Linux).
+
 ## [1.4.1] - 2026-09-29
 
 ### Fixed

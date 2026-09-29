@@ -888,8 +888,12 @@ class WindowTests(ServiceCase):
             self.gui.hotkeys.Preferences(self.paths).shortcut(),
             self.gui.hotkeys.Shortcut(("ctrl", "alt"), "Space"),
         )
-        self.assertEqual(self.window.page, "closed")
+        # Saving stays on the page to test the shortcut; Done closes the window.
+        self.assertEqual(self.window.page, "shortcut")
         self.assertFalse(capture.exists())
+        self.assertIn("Test your shortcut", self.texts())
+        self.window.shortcut_done()
+        self.assertEqual(self.window.page, "closed")
 
     def both_features(self):
         hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
@@ -916,6 +920,8 @@ class WindowTests(ServiceCase):
         )
         self.assertEqual(hotkeys.Preferences(self.paths).shortcut(), hotkeys.DEFAULT)
         self.assertFalse(history_flag.exists())
+        self.assertEqual(self.window.page, "shortcut")  # Stays to test it.
+        self.finder("TButton", "Done")[0].invoke()
         self.assertEqual(self.window.page, "home")
         self.assertIn("Clipboard history shortcut", self.window.status.get())
 
@@ -1012,7 +1018,7 @@ class WindowTests(ServiceCase):
         self.assertTrue(any("already used by macOS" in t and "menubar.log" in t for t in texts))
         self.assertFalse(any(t.startswith("✓") for t in texts))
 
-    def test_no_test_line_where_the_desktop_runs_the_command_itself(self):
+    def test_linux_settings_also_test_shortcuts_since_the_command_leaves_an_ack(self):
         self.both_features()
         with (
             patch.object(desktop, "platform_name", return_value="linux"),
@@ -1020,8 +1026,9 @@ class WindowTests(ServiceCase):
             patch.object(self.service, "microphones", return_value=["Mic"]),
         ):
             self.window.settings()
-        self.assertEqual(self.window.shortcut_tests, [])
-        self.assertIsNone(self.window.shortcut_poll)
+        self.assertEqual(len(self.window.shortcut_tests), 2)
+        self.assertEqual(len(self.finder("TButton", "Test it")), 2)
+        self.assertIsNotNone(self.window.shortcut_poll)
 
     def test_the_mouse_wheel_scrolls_a_long_page(self):
         seen = []

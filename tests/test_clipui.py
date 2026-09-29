@@ -457,9 +457,9 @@ class PageTests(PageCase):
         self.assertEqual(len(self.page.rows), 1)
         self.assertEqual(self.page.query.get(), "")
 
-    def test_clearing_defaults_to_this_device_only(self):
+    def test_clearing_defaults_to_everywhere_when_linked(self):
         dialog = clipui.ClearDialog(self.root, linked=True)
-        self.assertEqual(dialog.scope.get(), "device")
+        self.assertEqual(dialog.scope.get(), "everywhere")
         dialog.cancel()
 
     def test_unstarring_under_the_favorites_filter_drops_the_row(self):
@@ -628,6 +628,8 @@ class WindowTests(PageCase):
         self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
         self.window.consider_shortcut(hotkeys.Shortcut(("ctrl", "alt"), "K"))
         self.window.save_shortcut()
+        self.assertEqual(self.window.page, "shortcut")  # Stays to test the new one.
+        self.window.shortcut_test_done(hotkeys.Shortcut(("ctrl", "alt"), "K"))
         self.assertEqual(self.window.page, "settings")
         self.assertFalse((self.paths.runtime / "history-shortcut-capture").exists())
         self.assertEqual(
@@ -647,6 +649,8 @@ class WindowTests(PageCase):
             self.assertTrue((self.paths.runtime / "shortcut-capture").exists())
             self.window.captured = hotkeys.Shortcut(("ctrl", "alt"), "K")
             self.window.save_shortcut()
+            self.assertEqual(self.window.page, "shortcut")  # Stays to test the new one.
+            self.window.shortcut_test_done(hotkeys.Shortcut(("ctrl", "alt"), "K"))
         self.assertEqual(self.window.page, "settings")
         self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
         self.assertEqual(hotkeys.Preferences(self.paths).shortcut().key, "K")

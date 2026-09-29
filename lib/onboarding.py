@@ -531,7 +531,7 @@ def goodbye() -> None:
         say(f"Use the Start Menu {hotkeys.APP_NAME} shortcut or {hotkeys.DEFAULT.label()}.")
     else:
         say(
-            f"GNOME installer shortcut: {hotkeys.DEFAULT.label()}. Other desktops: bind dictate-toggle."
+            f"GNOME installer shortcut: {hotkeys.DEFAULT.label()}. Other desktops: bind dictate-toggle --via-shortcut."
         )
 
 
