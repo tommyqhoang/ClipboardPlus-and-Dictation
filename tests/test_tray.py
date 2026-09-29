@@ -714,6 +714,68 @@ class TrayTests(unittest.TestCase):
         self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
         self.assertNotIn(None, self.tray.hotkey.registered)
 
+    def test_the_history_recorder_pauses_both_shortcuts_and_applies_its_choice(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        self.tray.tick()
+        window = tray.desktop.lock(self.paths.runtime / "app.lock")  # The window is open.
+        self.addCleanup(os.close, window)
+        capture = self.paths.runtime / "history-shortcut-capture"
+        capture.write_text("capturing")
+        self.tray.tick()
+        self.assertIsNone(self.tray.hotkey.registered[-1])
+        self.assertIsNone(self.tray.history_key.registered[-1])
+        chosen = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        hotkeys.Preferences(self.paths).save(history_shortcut=chosen)
+        self.tray.tick()  # Still recording: nothing registers behind the recorder's back.
+        self.assertIsNone(self.tray.history_key.registered[-1])
+        capture.unlink()
+        self.tray.tick()
+        self.assertEqual(self.tray.hotkey.registered[-1], self.tray.shortcut)
+        self.assertEqual(self.tray.history_key.registered[-1], chosen)
+        status = hotkeys.shortcut_working(self.paths, hotkeys.HISTORY_STATUS)
+        self.assertTrue(status)
+
+    def test_history_recording_closed_without_a_choice_registers_the_old_one_again(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        self.tray.tick()
+        old = self.tray.history
+        self.assertEqual(old, hotkeys.DEFAULT_HISTORY)
+        window = tray.desktop.lock(self.paths.runtime / "app.lock")
+        self.addCleanup(os.close, window)
+        capture = self.paths.runtime / "history-shortcut-capture"
+        capture.write_text("capturing")
+        self.tray.tick()
+        capture.unlink()
+        self.tray.tick()
+        self.assertEqual(self.tray.history_key.registered[-1], old)
+
+    def test_a_history_capture_left_by_a_closed_window_is_cleared(self):
+        (self.paths.runtime / "history-shortcut-capture").write_text("capturing")
+        self.tray.tick()  # No window holds app.lock: the flag is stale.
+        self.assertFalse((self.paths.runtime / "history-shortcut-capture").exists())
+        self.assertNotIn(None, self.tray.hotkey.registered)
+
+    def test_a_pressed_shortcut_is_acknowledged_for_the_window(self):
+        self.tray.tick()
+        with patch.object(self.tray, "pressed") as pressed:
+            self.tray.hotkey_dictation()
+        pressed.assert_called_once()
+        self.assertTrue(hotkeys.heard_recently(self.paths, "dictation", self.tray.shortcut))
+        self.assertFalse(hotkeys.heard_recently(self.paths, "history", hotkeys.DEFAULT_HISTORY))
+        self.tray.history = hotkeys.DEFAULT_HISTORY
+        with patch.object(self.tray, "open_history") as opened:
+            self.tray.hotkey_history()
+        opened.assert_called_once()
+        self.assertTrue(hotkeys.heard_recently(self.paths, "history", hotkeys.DEFAULT_HISTORY))
+
+    def test_a_press_still_works_when_the_ack_cannot_be_written(self):
+        with (
+            patch.object(hotkeys, "record_heard", side_effect=OSError("full")),
+            patch.object(self.tray, "pressed") as pressed,
+        ):
+            self.tray.hotkey_dictation()
+        pressed.assert_called_once()
+
     def test_registration_result_is_shared_and_explained(self):
         self.tray.hotkey.refuse.add(hotkeys.PRESETS[1])
         with patch.object(tray.desktop, "platform_name", return_value="linux"):

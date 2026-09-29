@@ -95,6 +95,33 @@ class PureLogicTests(unittest.TestCase):
         self.assertFalse(logic.needs_accessibility_explanation(True, False))
         self.assertFalse(logic.needs_accessibility_explanation(None, False))
 
+    def test_registration_failures_are_told_apart(self):
+        self.assertIsNone(logic.registration_failure(0))
+        conflict = logic.registration_failure(-9878)
+        self.assertEqual(conflict.kind, "conflict")
+        self.assertIn("another app", conflict.message("⌃⇧D", "/log"))
+        self.assertEqual(logic.registration_failure(-9879).kind, "invalid")
+        other = logic.registration_failure(-50)
+        self.assertEqual(other.kind, "error")
+        self.assertIn("-50", other.message("⌃⇧D", "/logs/menubar.log"))
+        self.assertIn("/logs/menubar.log", other.message("⌃⇧D", "/logs/menubar.log"))
+        # A handler that could not be installed explains every shortcut, whatever the status.
+        handler = logic.registration_failure(0, -30)
+        self.assertEqual(handler.kind, "handler")
+        self.assertIn("listen for shortcuts", handler.message("⌃⇧D", "/log"))
+
+    def test_a_guarded_callback_logs_the_traceback_and_returns_no_error(self):
+        log = MagicMock()
+
+        def boom():
+            raise ValueError("bad")
+
+        self.assertEqual(logic.guarded(boom, log, "dictation")(), 0)
+        log.exception.assert_called_once()
+        calls = []
+        self.assertEqual(logic.guarded(lambda: calls.append(1), log, "history")(), 0)
+        self.assertEqual(calls, [1])
+
 
 def fake_pyobjc() -> dict[str, types.ModuleType]:
     """Modules that stand in for objc, AppKit and Foundation: every name is a mock, and the
@@ -228,6 +255,202 @@ class MenubarBoundaryTests(unittest.TestCase):
         with patch.object(self.menubar.permissions, "accessibility_trusted", return_value=False):
             self.menubar.Controller.explain_accessibility(me)
         alert.runModal.assert_not_called()
+
+    def hotkey(self, register_status=0, install_status=0):
+        """A GlobalHotKey over a stand-in for the Carbon framework."""
+        import ctypes
+
+        carbon = MagicMock()
+        carbon.InstallEventHandler.return_value = install_status
+        carbon.RegisterEventHotKey.return_value = register_status
+        carbon.UnregisterEventHotKey.return_value = 0
+        carbon.GetEventParameter.return_value = 0
+        patcher = patch.object(ctypes, "CDLL", return_value=carbon)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        calls = []
+        key = self.menubar.GlobalHotKey(lambda: calls.append("dictation"))
+        return key, carbon, calls
+
+    def press(self, key, carbon, hotkey_id, status=0):
+        def fill(_event, _param, _type, _actual, _size, _out, target):
+            target._obj.id = hotkey_id
+            return status
+
+        carbon.GetEventParameter.side_effect = fill
+        return key.handler(None, None, None)
+
+    def test_a_shortcut_that_registers_reports_success(self):
+        key, carbon, _ = self.hotkey()
+        self.assertTrue(key.register(hotkeys.DEFAULT))
+        self.assertEqual(key.last_status, 0)
+        self.assertEqual(key.reason(self.menubar.DICTATION_ID, "⌃⇧D"), "")
+        code, mods = carbon.RegisterEventHotKey.call_args.args[:2]
+        self.assertEqual((code, mods), logic.carbon_hotkey(hotkeys.DEFAULT))
+
+    def test_a_taken_shortcut_is_a_conflict_and_other_errors_are_not(self):
+        key, _, _ = self.hotkey(register_status=-9878)
+        self.assertFalse(key.register(hotkeys.DEFAULT))
+        self.assertEqual(key.last_status, -9878)
+        self.assertIn("another app", key.reason(self.menubar.DICTATION_ID, "⌃⇧D"))
+        key, _, _ = self.hotkey(register_status=-9879)
+        self.assertFalse(key.register(hotkeys.DEFAULT))
+        self.assertIn("doesn’t accept", key.reason(self.menubar.DICTATION_ID, "⌃⇧D"))
+        key, _, _ = self.hotkey(register_status=-50)
+        self.assertFalse(key.register(hotkeys.DEFAULT))
+        reason = key.reason(self.menubar.DICTATION_ID, "⌃⇧D")
+        self.assertNotIn("another app", reason)
+        self.assertIn("menubar.log", reason)
+
+    def test_a_handler_that_will_not_install_is_reported_not_blamed_on_the_keys(self):
+        key, carbon, _ = self.hotkey(install_status=-30)
+        self.assertEqual(key.install_status, -30)
+        self.assertFalse(key.register(hotkeys.DEFAULT))
+        carbon.RegisterEventHotKey.assert_not_called()
+        self.assertIn("listen for shortcuts", key.reason(self.menubar.DICTATION_ID, "⌃⇧D"))
+
+    def test_registering_again_clears_the_old_failure_and_unregisters_first(self):
+        key, carbon, _ = self.hotkey(register_status=-9878)
+        key.register(hotkeys.DEFAULT)
+        carbon.RegisterEventHotKey.return_value = 0
+        self.assertTrue(key.register(hotkeys.DEFAULT))
+        self.assertEqual(key.reason(self.menubar.DICTATION_ID, "⌃⇧D"), "")
+        key.register(hotkeys.DEFAULT)
+        carbon.UnregisterEventHotKey.assert_called()
+
+    def test_each_shortcut_id_reaches_its_own_action(self):
+        key, carbon, calls = self.hotkey()
+        key.on(self.menubar.HISTORY_ID, lambda: calls.append("history"))
+        self.assertEqual(self.press(key, carbon, self.menubar.DICTATION_ID), 0)
+        self.assertEqual(self.press(key, carbon, self.menubar.HISTORY_ID), 0)
+        self.assertEqual(calls, ["dictation", "history"])
+
+    def test_an_error_in_a_shortcut_action_is_logged_and_carbon_gets_no_error(self):
+        key, carbon, _ = self.hotkey()
+
+        def boom():
+            raise RuntimeError("bad")
+
+        with patch.object(self.menubar, "log") as log:
+            key.on(self.menubar.HISTORY_ID, boom)
+            self.assertEqual(self.press(key, carbon, self.menubar.HISTORY_ID), 0)
+        self.assertTrue(log.exception.called)
+
+    def test_an_unreadable_event_still_returns_no_error(self):
+        key, carbon, calls = self.hotkey()
+        with patch.object(self.menubar, "log") as log:
+            self.assertEqual(self.press(key, carbon, 0, status=-50), 0)
+        log.warning.assert_called()
+        self.assertEqual(calls, ["dictation"])  # As before: an unreadable id is dictation.
+        carbon.GetEventParameter.side_effect = RuntimeError("boom")
+        with patch.object(self.menubar, "log") as log:
+            self.assertEqual(key.handler(None, None, None), 0)
+        log.exception.assert_called()
+
+    def test_a_press_is_acknowledged_and_the_work_is_deferred_to_the_run_loop(self):
+        me = self.controller(
+            shortcut=hotkeys.DEFAULT,
+            history=hotkeys.DEFAULT_HISTORY,
+            performSelector_withObject_afterDelay_inModes_=MagicMock(),
+        )
+        self.menubar.Controller.hotkey_pressed(me, "dictation")
+        selector = me.performSelector_withObject_afterDelay_inModes_.call_args.args[0]
+        self.assertEqual(selector, "dictationRequested:")
+        self.menubar.Controller.hotkey_pressed(me, "history")
+        self.assertEqual(
+            me.performSelector_withObject_afterDelay_inModes_.call_args.args[0],
+            "historyRequested:",
+        )
+        for kind, shortcut in (
+            ("dictation", hotkeys.DEFAULT),
+            ("history", hotkeys.DEFAULT_HISTORY),
+        ):
+            self.assertTrue(hotkeys.heard_recently(me.paths, kind, shortcut))
+
+    def test_the_deferred_work_shows_the_alert_only_after_the_callback_returned(self):
+        me = self.controller(pressed=MagicMock(), open_window=MagicMock())
+        self.menubar.Controller.dictationRequested_(me, None)
+        me.pressed.assert_called_once()
+        self.menubar.Controller.historyRequested_(me, None)
+        me.open_window.assert_called_once_with("--clipboard")
+
+    def test_registration_results_are_shared_with_the_window_with_the_reason(self):
+        me = self.controller(hotkey=MagicMock())
+        me.hotkey.reason.return_value = "It is taken."
+        self.menubar.Controller.record_registration(me, "history", hotkeys.DEFAULT_HISTORY, False)
+        self.assertFalse(hotkeys.shortcut_working(me.paths, hotkeys.HISTORY_STATUS))
+        self.assertEqual(hotkeys.shortcut_message(me.paths, hotkeys.HISTORY_STATUS), "It is taken.")
+        self.menubar.Controller.record_registration(me, "history", hotkeys.DEFAULT_HISTORY, True)
+        self.assertTrue(hotkeys.shortcut_working(me.paths, hotkeys.HISTORY_STATUS))
+        self.assertEqual(hotkeys.shortcut_message(me.paths, hotkeys.HISTORY_STATUS), "")
+
+    def follower(self, recording, dictation=True, chosen=None):
+        me = self.controller(
+            capturing=False,
+            history=hotkeys.DEFAULT_HISTORY,
+            shortcut=hotkeys.DEFAULT,
+            hotkey=MagicMock(),
+            hotkey_ok=True,
+            clip=MagicMock(),
+            preferences=MagicMock(),
+            apply_shortcut=MagicMock(),
+            apply_features=MagicMock(),
+            record_registration=MagicMock(),
+            window_is_recording=MagicMock(return_value=recording),
+        )
+        me.hotkey.register.return_value = True
+        me.clip.features.return_value = hotkeys.Features(dictation, True)
+        me.preferences.shortcut.return_value = chosen or hotkeys.DEFAULT
+        return me
+
+    def test_either_recorder_pauses_both_shortcuts_and_the_history_one_returns(self):
+        me = self.follower(True)
+        self.menubar.Controller.follow_window_shortcut(me)
+        me.hotkey.unregister.assert_any_call()
+        me.hotkey.unregister.assert_any_call(self.menubar.HISTORY_ID)
+        self.assertIsNone(me.history)
+        self.assertTrue(me.capturing)
+        me.window_is_recording.return_value = False
+        self.menubar.Controller.follow_window_shortcut(me)
+        self.assertFalse(me.capturing)
+        me.apply_features.assert_called_once()  # Registers the history shortcut's choice.
+        me.record_registration.assert_called_once_with("dictation", me.shortcut, True)
+
+    def test_a_new_dictation_shortcut_is_applied_when_recording_ends(self):
+        chosen = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        me = self.follower(False, chosen=chosen)
+        me.capturing = True
+        self.menubar.Controller.follow_window_shortcut(me)
+        me.apply_shortcut.assert_called_once_with(chosen)
+
+    def test_the_history_shortcut_is_not_registered_while_recording(self):
+        me = self.follower(True)
+        me.capturing = True
+        me.history = None
+        me.dictation_registered = True
+        me.clip.history_shortcut.return_value = hotkeys.DEFAULT_HISTORY
+        me.popover = MagicMock()
+        me.popover.isShown.return_value = False
+        self.menubar.Controller.apply_features(me)
+        me.hotkey.register.assert_not_called()
+
+    def test_a_flag_left_by_a_closed_window_is_cleared(self):
+        me = self.controller(capturing=False)
+        for name in hotkeys.CAPTURE_FLAGS.values():
+            (me.paths.runtime / name).write_text("capturing")
+        self.assertFalse(self.menubar.Controller.window_is_recording(me))
+        self.assertFalse(
+            any((me.paths.runtime / n).exists() for n in hotkeys.CAPTURE_FLAGS.values())
+        )
+
+    def test_a_flag_from_an_open_window_is_honoured(self):
+        import os
+
+        me = self.controller(capturing=False)
+        (me.paths.runtime / "history-shortcut-capture").write_text("capturing")
+        window = self.menubar.desktop.lock(me.paths.runtime / "app.lock")
+        self.addCleanup(os.close, window)
+        self.assertTrue(self.menubar.Controller.window_is_recording(me))
 
 
 if __name__ == "__main__":

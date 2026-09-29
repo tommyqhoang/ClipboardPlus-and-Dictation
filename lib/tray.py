@@ -327,6 +327,25 @@ class Tray:
     def open_window(self, page: str) -> None:
         open_app_window(page)
 
+    def heard(self, kind: str) -> None:
+        """Tell the window a registered shortcut was just pressed (only this process
+        sees that: on GNOME the desktop runs the command itself)."""
+        shortcut = self.shortcut if kind == "dictation" else self.history
+        if shortcut is None:
+            return
+        try:
+            hotkeys.record_heard(self.paths, kind, shortcut)
+        except OSError:
+            log.exception("could not record that the %s shortcut was heard", kind)
+
+    def hotkey_dictation(self) -> None:
+        self.heard("dictation")
+        self.pressed()
+
+    def hotkey_history(self) -> None:
+        self.heard("history")
+        self.open_history()
+
     def open_history(self) -> None:
         if self.clip.features().clipboard:
             self.open_window("--clipboard")
@@ -562,7 +581,7 @@ class Tray:
     def started(self, icon: Any) -> None:
         icon.visible = True
         self.hotkey = (
-            WindowsHotKey(self.pressed)
+            WindowsHotKey(self.hotkey_dictation)
             if desktop.platform_name() == "windows"
             else GnomeHotKey(self.pressed)
         )
@@ -578,7 +597,7 @@ class Tray:
                 if advice:
                     self.notify(advice)
         self.history_key = (
-            WindowsHotKey(self.open_history)
+            WindowsHotKey(self.hotkey_history)
             if desktop.platform_name() == "windows"
             else GnomeHotKey(
                 self.open_history,
@@ -611,6 +630,20 @@ class Tray:
                 telemetry.capture(exc, stage="tray_tick")
             time.sleep(0.5)
 
+    def window_is_recording(self) -> bool:
+        """Whether the window has a shortcut recorder open (either kind)."""
+        flags = [self.paths.runtime / name for name in hotkeys.CAPTURE_FLAGS.values()]
+        present = [flag for flag in flags if flag.exists()]
+        if present and not self.suspended:
+            window = desktop.lock(self.paths.runtime / "app.lock")
+            if window is not None:
+                # A window that crashed on the shortcut page leaves the flag behind.
+                os.close(window)
+                for flag in present:
+                    flag.unlink(missing_ok=True)
+                return False
+        return bool(present)
+
     def sync_dictation_shortcut(self) -> None:
         """Only the dictation feature owns a global shortcut; follow the chosen features."""
         wanted = self.clip.features().dictation
@@ -625,8 +658,8 @@ class Tray:
     def sync_history_shortcut(self) -> None:
         """Register the clipboard history shortcut the user chose (none while Clipboard is off)."""
         wanted = self.clip.history_shortcut()
-        if self.history_synced and wanted == self.history:
-            return
+        if self.suspended or (self.history_synced and wanted == self.history):
+            return  # Recording a new shortcut: registered again when that ends.
         self.history, self.history_synced = wanted, True
         ok = self.history_key.register(wanted)
         conflict = getattr(self.history_key, "conflict", None)
@@ -651,19 +684,13 @@ class Tray:
             (self.paths.runtime / "menubar-quit").unlink(missing_ok=True)
             self.quit()
             return
-        capture = self.paths.runtime / "shortcut-capture"
-        capturing = capture.exists()
-        if capturing and not self.suspended:
-            # A window that crashed on the shortcut page leaves the flag behind.
-            window = desktop.lock(self.paths.runtime / "app.lock")
-            if window is not None:
-                os.close(window)
-                capture.unlink(missing_ok=True)
-                capturing = False
+        capturing = self.window_is_recording()
         changed = self.preferences.stamp() != self.stamp
         if capturing and not self.suspended:
-            # Pressing the old keys while choosing a new shortcut must not record.
+            # Pressing the old keys while choosing a new shortcut must not record or open
+            # anything: either recorder pauses both shortcuts.
             self.hotkey.register(None)
+            self.history_key.register(None)
             self.suspended = True
         elif not capturing and (self.suspended or changed):
             was_suspended, self.suspended = self.suspended, False
@@ -674,6 +701,9 @@ class Tray:
                 # The shortcut window closed without a new choice: use the old one again.
                 self.hotkey_ok = self.hotkey.register(self.shortcut)
                 self.record_dictation()
+            if was_suspended:
+                self.history_synced = False  # Register the history shortcut's (new) choice.
+                self.sync_history_shortcut()
             self.stamp = self.preferences.stamp()
         try:
             current = workflow.snapshot(self.paths)

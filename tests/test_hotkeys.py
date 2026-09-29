@@ -547,5 +547,161 @@ class HotkeyTests(unittest.TestCase):
         self.assertIs(hotkeys.python_for_gui, hotkeys.desktop.python_for_gui)
 
 
+class MacKeyCaptureTests(unittest.TestCase):
+    """What the recorder makes of Tk's events, per platform (Tk Aqua differs from X11)."""
+
+    def test_command_is_meta_on_a_mac_and_option_is_alt(self):
+        self.assertEqual(hotkeys.tk_modifier("Meta_L", "macos"), "cmd")
+        self.assertEqual(hotkeys.tk_modifier("Meta_R", "macos"), "cmd")
+        self.assertEqual(hotkeys.tk_modifier("Alt_L", "macos"), "alt")
+        self.assertEqual(hotkeys.tk_modifier("Option_R", "macos"), "alt")
+        self.assertEqual(hotkeys.tk_modifier("Meta_L", "linux"), "alt")  # X11's Meta is Alt.
+        self.assertEqual(hotkeys.tk_modifier("Super_L", "linux"), "cmd")
+        self.assertEqual(hotkeys.tk_modifier("Win_L", "windows"), "cmd")
+        self.assertEqual(hotkeys.tk_modifier("d", "macos"), "")
+
+    def test_state_masks_per_platform(self):
+        # Tk Aqua: Command is Mod1 (0x8), Option is Mod2 (0x10).
+        self.assertEqual(
+            hotkeys.modifiers_from_state(0x1 | 0x4 | 0x8, "macos"), {"shift", "ctrl", "cmd"}
+        )
+        self.assertEqual(hotkeys.modifiers_from_state(0x10, "macos"), {"alt"})
+        # X11: Alt is Mod1, Super is Mod4; NumLock (Mod2) and CapsLock mean nothing.
+        self.assertEqual(hotkeys.modifiers_from_state(0x8 | 0x40, "linux"), {"alt", "cmd"})
+        self.assertEqual(hotkeys.modifiers_from_state(0x10 | 0x2, "linux"), set())
+        # Windows: Alt is 0x20000, and 0x8 is NumLock, not Alt.
+        self.assertEqual(hotkeys.modifiers_from_state(0x20000 | 0x4, "windows"), {"alt", "ctrl"})
+        self.assertEqual(hotkeys.modifiers_from_state(0x8, "windows"), set())
+        self.assertEqual(hotkeys.modifiers_from_state(0, "macos"), set())
+
+    def test_the_mac_state_decides_even_when_a_release_was_missed(self):
+        # Aqua sometimes never reports a modifier's release: only the mask is trusted.
+        shortcut = hotkeys.from_tk("d", {"cmd", "shift"}, state=0x4 | 0x1, platform="macos")
+        self.assertEqual(shortcut, hotkeys.Shortcut(("ctrl", "shift"), "D"))
+        # With nothing in the mask the tracked keys are all there is.
+        self.assertEqual(
+            hotkeys.from_tk("F5", {"ctrl"}, state=0, platform="macos"),
+            hotkeys.Shortcut(("ctrl",), "F5"),
+        )
+
+    def test_command_and_option_are_recorded_as_pressed(self):
+        command_d = hotkeys.from_tk("d", set(), state=0x8 | 0x1, keycode=2, platform="macos")
+        self.assertEqual(command_d, hotkeys.Shortcut(("shift", "cmd"), "D"))
+        option_space = hotkeys.from_tk("space", set(), state=0x10, keycode=49, platform="macos")
+        self.assertEqual(option_space, hotkeys.Shortcut(("alt",), "Space"))
+
+    def test_other_platforms_merge_tracked_keys_with_the_mask(self):
+        linux = hotkeys.from_tk("d", {"cmd"}, state=0x4, platform="linux")
+        self.assertEqual(linux, hotkeys.Shortcut(("ctrl", "cmd"), "D"))
+        windows = hotkeys.from_tk("d", {"cmd"}, state=0x20000, platform="windows")
+        self.assertEqual(windows, hotkeys.Shortcut(("alt", "cmd"), "D"))
+
+    def test_option_letters_use_the_hardware_key_code(self):
+        # Option+D types "∂" on a Mac; Tk puts the virtual key code in the low 16 bits.
+        keycode = (ord("∂") << 16) | hotkeys.MAC_KEY_CODES["D"]
+        shortcut = hotkeys.from_tk("∂", set(), state=0x10, keycode=keycode, platform="macos")
+        self.assertEqual(shortcut, hotkeys.Shortcut(("alt",), "D"))
+        self.assertEqual(shortcut.problem(), "")
+        # Shift+1 is "exclam" to Tk; the key code still says 1.
+        bang = hotkeys.from_tk("exclam", set(), state=0x1 | 0x4, keycode=18, platform="macos")
+        self.assertEqual(bang, hotkeys.Shortcut(("ctrl", "shift"), "1"))
+        # The keysym still wins when it is a usable key.
+        self.assertEqual(
+            hotkeys.from_tk("d", set(), state=0x4, keycode=99, platform="macos").key, "D"
+        )
+        # An unknown key code leaves the keysym, which then fails validation.
+        odd = hotkeys.from_tk("∂", set(), state=0x10, keycode=0xFFF, platform="macos")
+        self.assertNotEqual(odd.problem(), "")
+        # Only a Mac has this fallback.
+        linux = hotkeys.from_tk("∂", set(), state=0x8, keycode=2, platform="linux")
+        self.assertEqual(linux.key, "∂")
+
+    def test_a_shortcut_the_other_feature_owns_is_refused(self):
+        mine = hotkeys.Shortcut(("ctrl", "shift"), "D")
+        self.assertIn("clipboard history", hotkeys.choice_problem(mine, mine, "history"))
+        self.assertIn("dictation", hotkeys.choice_problem(mine, mine, "dictation"))
+        self.assertEqual(hotkeys.choice_problem(mine, None, "history"), "")
+        self.assertEqual(
+            hotkeys.choice_problem(mine, hotkeys.Shortcut(("ctrl",), "F5"), "history"), ""
+        )
+        self.assertNotEqual(hotkeys.choice_problem(hotkeys.Shortcut((), "D"), None, "history"), "")
+
+
+class HeardTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        folder = Path(temporary.name)
+        environment = patch.dict(
+            os.environ,
+            {"XDG_CONFIG_HOME": str(folder / "config"), "XDG_RUNTIME_DIR": str(folder / "run")},
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.paths = d.Paths()
+        self.shortcut = hotkeys.Shortcut(("ctrl", "shift"), "D")
+
+    def test_a_press_is_written_atomically_and_read_back(self):
+        hotkeys.record_heard(self.paths, "dictation", self.shortcut, now=1000.0)
+        data = json.loads((self.paths.runtime / "shortcut-heard-dictation").read_text())
+        self.assertEqual(data["at"], 1000.0)
+        self.assertTrue(hotkeys.heard_recently(self.paths, "dictation", self.shortcut, now=1010.0))
+        self.assertFalse(hotkeys.heard_recently(self.paths, "history", self.shortcut, now=1010.0))
+
+    def test_an_old_or_other_shortcuts_press_is_not_heard(self):
+        hotkeys.record_heard(self.paths, "history", self.shortcut, now=1000.0)
+        later = 1000.0 + hotkeys.HEARD_SECONDS + 1
+        self.assertFalse(hotkeys.heard_recently(self.paths, "history", self.shortcut, now=later))
+        other = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        self.assertFalse(hotkeys.heard_recently(self.paths, "history", other, now=1001.0))
+
+    def test_missing_or_broken_files_mean_not_heard(self):
+        self.assertFalse(hotkeys.heard_recently(self.paths, "dictation", self.shortcut))
+        d.private_dir(self.paths.runtime)
+        (self.paths.runtime / "shortcut-heard-dictation").write_text("not json")
+        self.assertFalse(hotkeys.heard_recently(self.paths, "dictation", self.shortcut))
+        (self.paths.runtime / "shortcut-heard-dictation").write_text('{"at": "x"}')
+        self.assertFalse(hotkeys.heard_recently(self.paths, "dictation", self.shortcut))
+
+    def test_capture_flags_and_status_names_cover_both_kinds(self):
+        self.assertEqual(set(hotkeys.CAPTURE_FLAGS), set(hotkeys.KINDS))
+        self.assertEqual(hotkeys.CAPTURE_FLAGS["history"], "history-shortcut-capture")
+        self.assertEqual(hotkeys.STATUS_NAMES["history"], hotkeys.HISTORY_STATUS)
+
+    def test_the_log_location_names_a_file(self):
+        self.assertTrue(hotkeys.log_location("menubar").endswith("menubar.log"))
+
+
+class SettingsShortcutTextTests(unittest.TestCase):
+    def test_test_line_says_ready_then_heard_then_why_not(self):
+        import app_settings as a
+
+        label, log = "⌃⇧D", "/logs/menubar.log"
+        self.assertEqual(
+            a.shortcut_test_text(label, False, True, "", log, "macos"),
+            "Ready — press ⌃⇧D anywhere to test it",
+        )
+        self.assertEqual(
+            a.shortcut_test_text(label, True, True, "", log, "windows"), "✓ Heard ⌃⇧D just now"
+        )
+        failed = a.shortcut_test_text(label, False, False, "It is taken.", log, "macos")
+        self.assertIn("It is taken.", failed)
+        self.assertIn(log, failed)
+        self.assertIn(log, a.shortcut_test_text(label, False, False, "", log, "macos"))
+        # A reason that already names the log is not repeated.
+        again = a.shortcut_test_text(label, False, False, f"Details: {log}", log, "macos")
+        self.assertEqual(again.count(log), 1)
+        self.assertEqual(a.shortcut_test_text(label, False, True, "", log, "linux"), "")
+
+    def test_the_row_problem_prefers_what_the_tray_recorded(self):
+        import app_settings as a
+
+        self.assertEqual(a.shortcut_problem("X", "macos", "Because.", "cmd"), "Because.")
+        self.assertIn("cmd", a.shortcut_problem("X", "linux", "", "cmd"))
+        self.assertIn("already uses X", a.shortcut_problem("X", "windows", "", "cmd"))
+        title, text = a.home_text("X", None, False, "macos", "macOS says no.")
+        self.assertIn("macOS says no.", text)
+
+
 if __name__ == "__main__":
     unittest.main()

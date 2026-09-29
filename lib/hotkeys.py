@@ -89,7 +89,7 @@ TK_MODIFIERS = {
     "Alt_R": "alt",
     "Option_L": "alt",
     "Option_R": "alt",
-    "Meta_L": "alt",
+    "Meta_L": "alt",  # X11's Meta is Alt; macOS differs, see tk_modifier.
     "Meta_R": "alt",
     "Shift_L": "shift",
     "Shift_R": "shift",
@@ -100,6 +100,22 @@ TK_MODIFIERS = {
     "Command_L": "cmd",
     "Command_R": "cmd",
 }
+# Tk's Aqua port reports the Command key as Meta_L/Meta_R and Option as Alt_L/Alt_R.
+TK_MODIFIERS_MACOS = {**TK_MODIFIERS, "Meta_L": "cmd", "Meta_R": "cmd"}
+# Bits of a Tk key event's `state`, per platform. Tk Aqua: Command is Mod1, Option is Mod2.
+# X11: Alt is Mod1, Super is Mod4 (Mod2 is usually NumLock). Windows: only these three
+# (Mod1 is NumLock there); the Windows key is never in `state`, so it is tracked by keysym.
+TK_STATE_MASKS = {
+    "macos": {"shift": 0x1, "ctrl": 0x4, "cmd": 0x8, "alt": 0x10},
+    "linux": {"shift": 0x1, "ctrl": 0x4, "alt": 0x8, "cmd": 0x40},
+    "windows": {"shift": 0x1, "ctrl": 0x4, "alt": 0x20000},
+}
+KINDS = ("dictation", "history")
+KIND_NAMES = {"dictation": "dictation", "history": "clipboard history"}
+# Files in the runtime folder that the window and the tray or menu bar share.
+CAPTURE_FLAGS = {"dictation": "shortcut-capture", "history": "history-shortcut-capture"}
+HEARD_SECONDS = 30.0  # How long "heard it" stays true after a press.
+
 CLIPBOARD_PLUS = "https://clipboardplus.apercallc.com"
 # The macOS bundle identity; setup-desktop.py's Info.plist CFBundleIdentifier stays
 # the same value (kept here so both files migrate it together).
@@ -248,12 +264,52 @@ def from_mac_event(key_code: int, flags: int, characters: str) -> Shortcut:
     return Shortcut(canonical(n for n in EVENT_FLAGS if flags & EVENT_FLAGS[n]), key)
 
 
-def from_tk(keysym: str, held: set[str]) -> Shortcut | None:
-    """A shortcut from a Tk key press, or None while only modifiers are held."""
-    if keysym in TK_MODIFIERS:
+def tk_modifier(keysym: str, platform: str | None = None) -> str:
+    """The modifier a Tk keysym stands for on this platform, or an empty string."""
+    platform = platform or desktop.platform_name()
+    table = TK_MODIFIERS_MACOS if platform == "macos" else TK_MODIFIERS
+    return table.get(keysym, "")
+
+
+def modifiers_from_state(state: int, platform: str | None = None) -> set[str]:
+    """The modifiers a Tk key event's `state` bit mask says are down."""
+    masks = TK_STATE_MASKS.get(platform or desktop.platform_name(), TK_STATE_MASKS["linux"])
+    return {name for name, mask in masks.items() if state & mask}
+
+
+def from_tk(
+    keysym: str,
+    held: set[str],
+    state: int = 0,
+    keycode: int = 0,
+    platform: str | None = None,
+) -> Shortcut | None:
+    """A shortcut from a Tk key press, or None while only modifiers are held.
+
+    Modifiers are the keys tracked as held plus the event's `state` mask (Tk's Aqua port
+    misses modifier releases, so on macOS the mask alone decides when it has anything).
+    The key comes from the keysym; when that is not a usable key (Option+D types "∂" on
+    a Mac) the hardware key code decides.
+    """
+    platform = platform or desktop.platform_name()
+    if tk_modifier(keysym, platform):
         return None
+    from_state = modifiers_from_state(state, platform)
+    modifiers = (from_state or held) if platform == "macos" else (from_state | held)
     key = TK_NAMES.get(keysym) or (keysym.upper() if len(keysym) == 1 else keysym)
-    return Shortcut(canonical(held), key)
+    if key not in KEYS and platform == "macos":
+        key = MAC_KEY_NAMES.get(keycode & 0xFFFF, key)  # Aqua: virtual key code, low 16 bits.
+    return Shortcut(canonical(modifiers), key)
+
+
+def choice_problem(shortcut: Shortcut, other: Shortcut | None, other_kind: str) -> str:
+    """Why this cannot be chosen (unusable, or already the other feature's), else empty."""
+    problem = shortcut.problem()
+    if problem or other is None or other != shortcut:
+        return problem
+    return (
+        f"{shortcut.label()} already belongs to {KIND_NAMES[other_kind]}. Choose a different one."
+    )
 
 
 @dataclass(frozen=True)
@@ -603,6 +659,7 @@ def _migrate_former_agents(home: Path | None, run: Any) -> None:
 
 
 HISTORY_STATUS = "history-shortcut-status"
+STATUS_NAMES = {"dictation": "shortcut-status", "history": HISTORY_STATUS}
 
 
 @dataclass(frozen=True)
@@ -1064,6 +1121,41 @@ def shortcut_message(paths: d.Paths, name: str = "shortcut-status") -> str:
     except OSError as exc:
         log.debug("could not read the shortcut message: %s", exc)
         return ""
+
+
+def record_heard(paths: d.Paths, kind: str, shortcut: Shortcut, now: float | None = None) -> None:
+    """Note that the registered shortcut was just pressed, for the window to show."""
+    d.private_dir(paths.runtime)
+    payload = {"at": time.time() if now is None else now, "shortcut": shortcut.label()}
+    d.atomic(paths.runtime / f"shortcut-heard-{kind}", json.dumps(payload))
+
+
+def heard_recently(
+    paths: d.Paths,
+    kind: str,
+    shortcut: Shortcut,
+    now: float | None = None,
+    within: float = HEARD_SECONDS,
+) -> bool:
+    """Whether this very shortcut was pressed in the last `within` seconds."""
+    try:
+        data = json.loads((paths.runtime / f"shortcut-heard-{kind}").read_text(encoding="utf-8"))
+        when, label = float(data["at"]), str(data["shortcut"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.debug("no shortcut ack: %s", exc)
+        return False
+    age = (time.time() if now is None else now) - when
+    return label == shortcut.label() and -2.0 <= age <= within
+
+
+def log_location(name: str) -> str:
+    """Where a component's log file is, for messages that send the user there."""
+    try:
+        import logsetup
+
+        return str(logsetup.log_dir() / f"{name}.log")
+    except (ImportError, OSError):
+        return f"the {name}.log file in the app's logs folder"
 
 
 def open_link(url: str = CLIPBOARD_PLUS) -> None:

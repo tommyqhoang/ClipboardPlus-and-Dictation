@@ -78,6 +78,16 @@ class HistoryShortcutTests(ControlCase):
         self.assertTrue(control.changed())
         self.assertIsNone(control.history_shortcut())
 
+    def test_a_new_history_shortcut_chosen_in_the_window_is_noticed(self):
+        self.enable()
+        control = self.control()
+        control.changed()
+        chosen = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        self.prefs.save(history_shortcut=chosen)
+        self.assertTrue(control.changed())  # The menu bar and tray re-register on this.
+        self.assertEqual(control.history_shortcut(), chosen)
+        self.assertFalse(control.changed())
+
 
 class SupervisionTests(ControlCase):
     def test_the_service_is_started_once_while_it_runs(self):

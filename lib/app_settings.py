@@ -94,6 +94,35 @@ def home_text(
         )
     return (
         f"{shortcut} is taken",
-        f"Another app already uses {shortcut}. Choose a different shortcut below. "
-        "Until then, record from here.",
+        (detail or f"Another app already uses {shortcut}. Choose a different shortcut below.")
+        + " Until then, record from here.",
     )
+
+
+def shortcut_problem(label: str, platform: str, detail: str, command: str) -> str:
+    """Why a shortcut is not working, for its row in Settings. `detail` is what the tray or
+    menu bar recorded; `command` is what to assign by hand on a desktop with no service."""
+    if detail:
+        return detail
+    if platform == "linux":
+        return (
+            "This desktop can’t set shortcuts automatically. In your keyboard settings, "
+            f"assign {label} to: {command}"
+        )
+    return f"Another app already uses {label}. Choose another."
+
+
+def shortcut_test_text(
+    label: str, heard: bool, working: bool, reason: str, log_path: str, platform: str
+) -> str:
+    """The line under a shortcut in Settings: how to test it, that it was just heard, or
+    why it can't be. Only macOS and Windows can hear it (on Linux the desktop runs the
+    command itself), so other platforms get an empty string."""
+    if platform not in ("macos", "windows"):
+        return ""
+    if not working:
+        why = reason or "Clipboard+ couldn’t register it."
+        return why if log_path in why else f"{why} Log: {log_path}"
+    if heard:
+        return f"✓ Heard {label} just now"
+    return f"Ready — press {label} anywhere to test it"

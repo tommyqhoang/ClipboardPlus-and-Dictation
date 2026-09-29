@@ -8,6 +8,7 @@ codes, whether to explain Accessibility) lives here so it is tested on every sys
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -112,3 +113,57 @@ def needs_accessibility_explanation(trusted: bool | None, already_told: bool) ->
     """Whether to explain Accessibility before dictating: only when macOS says it is off
     (None, meaning unknown, is not a reason to interrupt) and the user hasn't been told."""
     return trusted is False and not already_told
+
+
+EVENT_HOTKEY_EXISTS = -9878  # eventHotKeyExistsErr: another app (or macOS) owns the keys.
+EVENT_HOTKEY_INVALID = -9879  # eventHotKeyInvalidErr: not a shortcut macOS accepts.
+
+
+@dataclass(frozen=True)
+class HotKeyFailure:
+    """Why Carbon would not give us a shortcut: which kind of failure, and its OSStatus."""
+
+    kind: str  # "conflict", "invalid", "handler" or "error".
+    status: int
+
+    def message(self, label: str, log_path: str) -> str:
+        """Plain words for the window, naming the log for anything not the user's doing."""
+        if self.kind == "conflict":
+            return f"{label} is already used by another app or by macOS. Choose a different one."
+        if self.kind == "invalid":
+            return (
+                f"macOS doesn’t accept {label} as a shortcut (error {self.status}). Choose another."
+            )
+        if self.kind == "handler":
+            return (
+                f"macOS wouldn’t let Clipboard+ listen for shortcuts (error {self.status}), so "
+                f"{label} can’t work. Quit and reopen Clipboard+. Details: {log_path}"
+            )
+        return f"macOS refused {label} (error {self.status}). Details: {log_path}"
+
+
+def registration_failure(status: int, handler_status: int = 0) -> HotKeyFailure | None:
+    """Classify the OSStatus of InstallEventHandler and RegisterEventHotKey; None is success."""
+    if handler_status != 0:
+        return HotKeyFailure("handler", handler_status)
+    if status == 0:
+        return None
+    if status == EVENT_HOTKEY_EXISTS:
+        return HotKeyFailure("conflict", status)
+    if status == EVENT_HOTKEY_INVALID:
+        return HotKeyFailure("invalid", status)
+    return HotKeyFailure("error", status)
+
+
+def guarded(action: Callable[[], Any], log: Any, name: str) -> Callable[[], int]:
+    """Wrap a Carbon callback: ctypes swallows a Python exception raised inside one, so
+    log it with its traceback and still return noErr (0) to Carbon."""
+
+    def call() -> int:
+        try:
+            action()
+        except Exception:  # noqa: BLE001 - nothing may escape into Carbon.
+            log.exception("the %s shortcut handler failed", name)
+        return 0
+
+    return call
