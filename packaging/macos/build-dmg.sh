@@ -19,6 +19,14 @@ cp -R "$DIST"/* "$APP/Contents/MacOS/"
 # Resources (sealed as resources, each Mach-O still signed below) and leave a
 # symlink so the executables find _internal next to themselves.
 mv "$APP/Contents/MacOS/_internal" "$APP/Contents/Resources/_internal"
+# Likewise any plain file PyInstaller left beside the executables (LICENSE and the
+# notices are already in Resources): codesign expects code, and only code, in MacOS.
+for entry in "$APP/Contents/MacOS"/*; do
+  [[ -L "$entry" ]] && continue
+  if [[ -d "$entry" ]] || ! file -b "$entry" | grep -q 'Mach-O'; then
+    rm -rf -- "$entry"
+  fi
+done
 ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"
 
 # --- Ad-hoc code signing ----------------------------------------------------

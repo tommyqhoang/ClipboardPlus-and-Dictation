@@ -41,6 +41,8 @@ class MacBundleSigningTests(unittest.TestCase):
         # codesign rejects PyInstaller's _internal folder inside Contents/MacOS, so it
         # lives in Resources with a symlink left behind.
         self.assertIn('ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"', script)
+        # Only executables may remain in Contents/MacOS; data files there fail codesign.
+        self.assertIn("grep -q 'Mach-O'", script)
         bundle_sign_pos = script.index('sign "$APP"')
         verify_pos = script.index("codesign --verify")
         self.assertLess(bundle_sign_pos, verify_pos, "verification must follow bundling signing")
