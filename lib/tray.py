@@ -26,6 +26,7 @@ import desktop
 import dictation as d
 import hotkeys
 import telemetry
+import traymenu
 import updates
 import workflow
 from app_service import Service
@@ -164,6 +165,7 @@ class Tray:
         def clipboard_on(_: Any) -> bool:
             return self.clip.features().clipboard
 
+        self.row_items: dict[int, int] = {}  # id(menu item) -> row index, for thumbnails.
         recent = [
             item(
                 lambda _, index=index: self.row_text(index),
@@ -172,6 +174,7 @@ class Tray:
             )
             for index in range(MENU_ROWS)
         ]
+        self.row_items = {id(row): index for index, row in enumerate(recent)}
 
         presets = [
             item(
@@ -282,6 +285,8 @@ class Tray:
             ),
         )
         self.steady_icon_files()
+        # Linux only (GTK/AppIndicator): image rows get their thumbnail; text elsewhere.
+        self.thumbnails = traymenu.install(self.icon, self.row_thumb)
 
     def steady_icon_files(self) -> None:
         """One fixed file per tray image, never deleted.
@@ -541,6 +546,14 @@ class Tray:
 
     def row_text(self, index: int) -> str:
         return clipcontrol.preview_text(self.rows[index]) if index < len(self.rows) else ""
+
+    def row_thumb(self, descriptor: Any) -> Path | None:
+        """The thumbnail file for the menu row `descriptor`, when it shows an image clip."""
+        index = self.row_items.get(id(descriptor), -1)
+        if not 0 <= index < len(self.rows) or self.store is None:
+            return None
+        clip = self.rows[index]
+        return self.store.thumb_path(clip) if clip.kind == "image" else None
 
     def copy_row(self, index: int) -> None:
         if not self.clip.features().clipboard or index >= len(self.rows) or self.store is None:

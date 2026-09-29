@@ -843,8 +843,33 @@ class TrayTests(unittest.TestCase):
 
         self.assertEqual(clipcontrol.preview_text(make("  hello   world  ")), "hello world")
         self.assertEqual(clipcontrol.preview_text(make("x" * 80)), "x" * 60 + "…")
-        self.assertEqual(clipcontrol.preview_text(make("", kind="image")), "Image (640×480)")
+        self.assertEqual(clipcontrol.preview_text(make("", kind="image")), "Image 640×480")
         self.assertEqual(clipcontrol.preview_text(make("raw", label=" My Label ")), "My Label")
+
+    def test_image_rows_look_up_their_thumbnail(self):
+        thumb = Path(self.tray.paths.runtime) / "thumb.png"
+        thumb.write_bytes(b"png")
+        picture = dataclasses.replace(ITEM, kind="image", thumb_file="t.png", width=8, height=4)
+        self.tray.rows = [picture, ITEM]
+        self.tray.store = MagicMock()
+        self.tray.store.thumb_path.return_value = thumb
+        rows = [entry for entry in self.items() if id(entry) in self.tray.row_items]
+        self.assertEqual(len(rows), tray.MENU_ROWS)
+        self.assertEqual(self.tray.row_thumb(rows[0]), thumb)
+        self.assertIsNone(self.tray.row_thumb(rows[1]))  # Text clip.
+        self.assertIsNone(self.tray.row_thumb(rows[5]))  # Beyond the list.
+        self.assertIsNone(self.tray.row_thumb(object()))  # Not a recent row.
+        self.assertEqual(rows[0].text(None), "Image 8×4")  # Text stays as the fallback.
+        self.tray.store.thumb_path.return_value = None  # The thumbnail file is gone.
+        self.assertIsNone(self.tray.row_thumb(rows[0]))
+
+    def test_fake_backend_keeps_text_rows(self):
+        self.assertFalse(self.tray.thumbnails)  # Only pystray's GTK backends draw pictures.
+
+    def test_image_label_wording(self):
+        picture = dataclasses.replace(ITEM, kind="image", width=1280, height=720)
+        self.assertEqual(clipcontrol.image_label(picture), "Image 1280×720")
+        self.assertEqual(clipcontrol.image_label(dataclasses.replace(picture, width=0)), "Image")
 
     def test_second_launch_shows_the_running_apps_window(self):
         # Clicking the launcher while the tray runs must surface the window, not do nothing.

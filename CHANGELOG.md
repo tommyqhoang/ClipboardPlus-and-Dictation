@@ -5,6 +5,27 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-09-29
+
+### Fixed
+- macOS: recording a shortcut saved Command as Option and Option+letter as an invalid
+  key, so the shortcut you pressed was not the one registered. Modifiers now come from
+  the key event's state and Option combos use the hardware key code. Registration
+  failures report their real reason, errors in the shortcut handler are logged, and the
+  handler never blocks. Settings shows "Ready" and "Heard" so you can test a shortcut.
+  Platforms: all (the recorder), macOS (the Carbon handler).
+
+### Changed
+- The clipboard history shortcut uses the same recorder as dictation (change it to any
+  keys, turn it off, presets as quick picks) on macOS, Windows and Linux.
+
+### Added
+- Image clips in the recent copies now read "Image 1280×720" on macOS, Windows and Linux,
+  and the Linux tray shows their thumbnail (as macOS already did). Platforms: Linux and
+  macOS show the picture; the Windows tray cannot draw pictures in menus, so it is text.
+- A parity test keeps the macOS menu bar and the Linux/Windows tray from drifting apart,
+  and a pull request checklist item asks which platforms a change covers.
+
 ## [1.4.0] - 2026-09-29
 
 ### Added

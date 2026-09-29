@@ -42,7 +42,7 @@ KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybinding
 
 APP_LIB="${HOME}/.local/lib/whisper-dictation"
 LEGACY_LIB="${HOME}/.local/lib" # Where versions before the app's own folder lived.
-MODULES="telemetry dictation desktop onboarding rewriting workflow app app_service browserauth permissions cues app_styles app_settings menubar_logic logsetup hotkeys menubar tray clipboardplus clipstore clipwatch clipwatch_linux clipwatch_macos clipwatch_windows clipservice clipsync clipcontrol clipui overlay updates engine"
+MODULES="telemetry dictation desktop onboarding rewriting workflow app app_service browserauth permissions cues app_styles app_settings menubar_logic logsetup hotkeys menubar tray traymenu clipboardplus clipstore clipwatch clipwatch_linux clipwatch_macos clipwatch_windows clipservice clipsync clipcontrol clipui overlay updates engine"
 
 # Old versions used the shared ~/.local/lib folder. Its generic names may now
 # belong to another application, so remove them only when the old layout is ours.

@@ -28,13 +28,14 @@ CRASH_LIMIT = 3
 PREVIEW_CHARS = 60  # One line of a clip in the menu bar popover or the tray menu.
 
 
+def image_label(item: clipstore.Item) -> str:
+    """How an image clip reads in every menu (macOS, Windows, Linux): "Image 1280×720"."""
+    return f"Image {item.width}×{item.height}" if item.width and item.height else "Image"
+
+
 def preview_text(item: clipstore.Item, width: int = PREVIEW_CHARS) -> str:
     """One line for a clip in a menu: its label, text or image size, kept to `width`."""
-    text = (
-        item.label
-        or item.text
-        or (f"Image ({item.width}×{item.height})" if item.kind == "image" else "")
-    )
+    text = item.label or item.text or (image_label(item) if item.kind == "image" else "")
     flat = " ".join(text.split())
     return flat if len(flat) <= width else flat[:width] + "…"
 

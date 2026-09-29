@@ -118,6 +118,7 @@ MODULES = (
     "hotkeys.py",
     "menubar.py",
     "tray.py",
+    "traymenu.py",
     "clipboardplus.py",
     "browserauth.py",
     "clipstore.py",

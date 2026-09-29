@@ -392,7 +392,8 @@ class Controller(NSObject):  # type: ignore[misc]
     def build_popover(self) -> None:
         """A Maccy-style quick view: clicking the icon shows recent clips, a search
         field and Clear History, plus a slim dictation header/footer. Everything else
-        (shortcut presets, Open at Login, pausing capture) lives in Settings now."""
+        (shortcut presets, Open at Login) lives in Settings now; pausing capture is
+        tray-only for now (see tests/test_platform_parity.py)."""
         self.popover = NSPopover.alloc().init()
         self.popover.setBehavior_(NSPopoverBehaviorTransient)
         self.popover.setContentSize_(NSMakeSize(POPOVER_WIDTH, POPOVER_HEIGHT))
