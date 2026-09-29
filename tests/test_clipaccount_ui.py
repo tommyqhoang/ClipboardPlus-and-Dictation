@@ -117,12 +117,13 @@ class StateTests(AccountCase):
     def test_not_connected_offers_an_account_or_a_key(self):
         text = self.joined()
         self.assertIn("Not connected", text)
-        for label in ("Create account", "Sign in", "Use an API key instead", "Get Clipboard+"):
+        for label in ("Continue in browser", "Use email and password", "Use an API key instead"):
             self.assertTrue(self.has_button(label), label)
-        self.assertEqual(len(self.widgets("TEntry")), 2)  # Email and password.
+        self.assertEqual(len(self.widgets("TEntry")), 0)  # Browser sign-in needs no fields.
         self.assertNotIn("Connected as", text)
 
     def test_the_password_is_hidden_as_it_is_typed(self):
+        self.window.account.switch("account")
         hidden = [w for w in self.widgets("TEntry") if str(w.cget("show"))]
         self.assertEqual(len(hidden), 1)
 
@@ -146,7 +147,7 @@ class StateTests(AccountCase):
         self.window.account.render()
         text = self.joined()
         self.assertIn("Reconnect needed", text)
-        self.assertTrue(self.has_button("Sign in"))
+        self.assertTrue(self.has_button("Continue in browser"))
         self.assertFalse(self.has_button("Create account"))  # There is an account already.
         self.assertTrue(self.has_button("Disconnect"))
         self.assertFalse(self.has_button("Sync now"))
@@ -193,6 +194,7 @@ class StateTests(AccountCase):
 
 class SignInTests(AccountCase):
     def fill(self, email="me@example.com", password=PASSWORD):
+        self.window.account.switch("account")
         self.window.account.email.set(email)
         self.window.account.password.set(password)
 
@@ -234,13 +236,13 @@ class SignInTests(AccountCase):
         self.assertIn("Connected as me@example.com", self.joined())
         self.assertIn("Connected to Clipboard+", self.window.status.get())
 
-    def test_a_google_account_is_offered_the_key_form(self):
+    def test_a_google_account_is_offered_browser_sign_in(self):
         cp = app_service.clipboardplus
         self.fill()
         self.run_with(
             self.patched(login=cp.AuthError(cp.GOOGLE_ONLY)), lambda: self.press("Sign in")
         )
-        self.assertEqual(self.window.account.mode, "key")
+        self.assertEqual(self.window.account.mode, "browser")
         self.assertIn(cp.GOOGLE_ONLY, self.joined())
 
     def test_signing_in_uses_login_not_register(self):
@@ -261,7 +263,7 @@ class SignInTests(AccountCase):
         self.assertEqual(self.window.account.password.get(), "")
         self.assertEqual(self.window.account.email.get(), "me@example.com")  # Kept to retry.
         self.assertFalse(self.service.clipboard_plus_linked())
-        self.assertTrue(self.has_button("Sign in"))
+        self.assertTrue(self.has_button("Continue in browser"))
 
     def test_the_error_goes_away_on_the_next_attempt(self):
         cp = app_service.clipboardplus
@@ -311,7 +313,7 @@ class KeyTests(AccountCase):
     def test_a_key_can_be_used_instead_and_the_field_is_cleared(self):
         self.to_key_mode()
         self.assertTrue(self.has_button("Connect"))
-        self.assertTrue(self.has_button("Use email and password instead"))
+        self.assertTrue(self.has_button("Continue in browser instead"))
         self.assertFalse(self.has_button("Create account"))
         self.window.account.key.set(KEY)
         with patch.object(app_service.clipboardplus, "verify", return_value="ok"):
@@ -335,8 +337,33 @@ class KeyTests(AccountCase):
 
     def test_switching_back_shows_the_account_form_again(self):
         self.to_key_mode()
-        self.press("Use email and password instead")
+        self.press("Continue in browser instead")
+        self.press("Use email and password")
         self.assertTrue(self.has_button("Create account"))
+
+
+class BrowserTests(AccountCase):
+    def test_browser_sign_in_links_the_account_without_password_or_key_entry(self):
+        with patch.object(
+            clipui.browserauth.BrowserSignIn, "run", return_value=(KEY, "me@example.com")
+        ):
+            self.press("Continue in browser")
+            self.finish()
+        self.assertTrue(self.service.clipboard_plus_linked())
+        self.assertIn("Connected as me@example.com", self.joined())
+
+    def test_cancel_stays_enabled_and_does_not_link_an_account(self):
+        def run(flow):
+            flow.cancelled.wait(3)
+            raise app_service.clipboardplus.AuthError("Sign-in cancelled.")
+
+        with patch.object(clipui.browserauth.BrowserSignIn, "run", run):
+            self.press("Continue in browser")
+            self.assertNotIn("disabled", self.button("Cancel sign-in").state())
+            self.press("Cancel sign-in")
+            self.finish()
+        self.assertFalse(self.service.clipboard_plus_linked())
+        self.assertIn("cancelled", self.joined())
 
 
 class ActionTests(AccountCase):
@@ -420,7 +447,7 @@ class WhereItAppearsTests(AccountCase):
     def test_the_clipboard_setup_finish_offers_the_account(self):
         self.window.tutorial_clipboard()
         self.assertIn("Clipboard+ account", self.joined())
-        self.assertTrue(self.has_button("Create account"))
+        self.assertTrue(self.has_button("Continue in browser"))
 
     def test_settings_for_both_modes_show_it_once(self):
         self.prefs.save(features=hotkeys.Features(True, True))

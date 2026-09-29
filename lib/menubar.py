@@ -62,6 +62,10 @@ from AppKit import (  # type: ignore[import-not-found]
     NSViewWidthSizable,
 )
 from Foundation import (  # type: ignore[import-not-found]
+    NSDate,
+    NSDateFormatter,
+    NSDateFormatterMediumStyle,
+    NSDateFormatterShortStyle,
     NSIndexSet,
     NSMutableIndexSet,
     NSObject,
@@ -350,7 +354,7 @@ class Controller(NSObject):  # type: ignore[misc]
         root.addSubview_(self.search_field)
 
         self.scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(8, 44, POPOVER_WIDTH - 16, 292)
+            NSMakeRect(8, 68, POPOVER_WIDTH - 16, 268)
         )
         self.scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self.scroll.setHasVerticalScroller_(True)
@@ -371,6 +375,13 @@ class Controller(NSObject):  # type: ignore[misc]
         self.table.hover_callback = self.on_hover_row
         self.scroll.setDocumentView_(self.table)
         root.addSubview_(self.scroll)
+
+        # Hover details appear immediately, without the system tooltip wait.
+        self.detail_label = self.framed(
+            NSTextField.labelWithString_(""), NSMakeRect(8, 42, POPOVER_WIDTH - 16, 24)
+        )
+        self.detail_label.setTextColor_(NSColor.secondaryLabelColor())
+        root.addSubview_(self.detail_label)
 
         # A transient "Copied" toast, centered over the list; hidden until a click copies.
         self.toast_label = self.framed(
@@ -735,6 +746,8 @@ class Controller(NSObject):  # type: ignore[misc]
         except (sqlite3.Error, OSError):
             self.rows = []
             store = None
+        self.hovered_row = self.table.hover_row = -1
+        self.detail_label.setStringValue_("")
         self.table.reloadData()
         self.selected = 0
         if self.rows:
@@ -796,6 +809,9 @@ class Controller(NSObject):  # type: ignore[misc]
     def on_hover_row(self, row: int) -> None:
         """Repaint only the rows whose hover state actually changed."""
         previous, self.hovered_row = self.hovered_row, row
+        self.detail_label.setStringValue_(
+            self.row_detail(self.rows[row]) if 0 <= row < len(self.rows) else ""
+        )
         changed = {r for r in (previous, row) if 0 <= r < len(self.rows)}
         if not changed:
             return
@@ -812,7 +828,10 @@ class Controller(NSObject):  # type: ignore[misc]
         source = {"desktop": "Desktop", "dictation": "Dictation", "cloud": "Cloud"}.get(
             item.source, item.source
         )
-        stamp = time.strftime("%b %d, %Y at %H:%M", time.localtime(item.created_at))
+        formatter = NSDateFormatter.alloc().init()
+        formatter.setDateStyle_(NSDateFormatterMediumStyle)
+        formatter.setTimeStyle_(NSDateFormatterShortStyle)
+        stamp = formatter.stringFromDate_(NSDate.dateWithTimeIntervalSince1970_(item.created_at))
         return f"{kind} · {source} · {stamp}"
 
     @objc.python_method
@@ -841,7 +860,6 @@ class Controller(NSObject):  # type: ignore[misc]
             if row == self.hovered_row
             else NSColor.clearColor().CGColor()
         )
-        view.setToolTip_(self.row_detail(item))
         text_x = 8.0
         if item.kind == "image":
             thumb_path = self.store.thumb_path(item) if self.store is not None else None

@@ -175,22 +175,17 @@ class Shortcut:
 
 
 def default_shortcut(platform: str) -> Shortcut:
-    """A shortcut no Chrome shortcut uses (checked against Chrome's published list).
-
-    Chrome takes Alt/Ctrl/Ctrl+Shift/⌘/⌘⇧ + D and has no Win/Super or ⌃⌥ combinations,
-    so Windows and Linux use Super+Shift+D and macOS, which has no Super key, uses ⌃⌥⇧D.
-    """
-    if platform == "macos":
-        return Shortcut(("ctrl", "alt", "shift"), "D")
-    return Shortcut(("shift", "cmd"), "D")
+    """The same Control+Shift+D shortcut on every desktop."""
+    return Shortcut(("ctrl", "shift"), "D")
 
 
 DEFAULT = default_shortcut(desktop.platform_name())
-# Deduplicated: on macOS the default is also the Ctrl+Alt+Shift+D preset.
+# Keep earlier defaults available as alternatives.
 PRESETS = tuple(
     dict.fromkeys(
         (
             DEFAULT,
+            Shortcut(("shift", "cmd"), "D"),
             # Alt+Space opens the window menu on GNOME and Windows, so only macOS offers it.
             *((Shortcut(("alt",), "Space"),) if desktop.platform_name() == "macos" else ()),
             Shortcut(("ctrl", "alt"), "Space"),
@@ -403,7 +398,7 @@ def bundle_login_command(bundle: str) -> list[str]:
     `open`, which returns at once) so launchd supervises the app and KeepAlive can
     restart it after a crash. The executable name comes from the bundle's own
     Info.plist (a packaged build names it "menubar"; the source-install wrapper
-    names it "WhisperDictation") rather than a single hardcoded guess."""
+    names it "Clipboard+") rather than a single hardcoded guess."""
     name = "WhisperDictation"
     try:
         info = plistlib.loads((Path(bundle) / "Contents/Info.plist").read_bytes())
@@ -412,6 +407,19 @@ def bundle_login_command(bundle: str) -> list[str]:
         pass
     executable = Path(bundle) / "Contents/MacOS" / name
     return [str(executable)] if executable.is_file() else ["/usr/bin/open", bundle]
+
+
+def login_bundle_id(command: list[str]) -> str:
+    """Source installs and packaged releases have distinct registered bundle IDs."""
+    if command and Path(command[0]).parent.name == "MacOS":
+        try:
+            info = plistlib.loads((Path(command[0]).parent.parent / "Info.plist").read_bytes())
+            identifier = info.get("CFBundleIdentifier")
+            if identifier in (BUNDLE_ID, "com.apercallc.clipboardplus"):
+                return str(identifier)
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            pass
+    return BUNDLE_ID
 
 
 def set_login_item(
@@ -457,6 +465,7 @@ def set_login_item(
     if platform == "macos":
         agent = {
             "Label": AGENT_LABEL,
+            "AssociatedBundleIdentifiers": [login_bundle_id(command)],
             "ProgramArguments": command,
             "RunAtLoad": True,
             "ProcessType": "Interactive",

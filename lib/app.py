@@ -131,6 +131,7 @@ class App:
             yscrollincrement=20,
         )
         self.scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
+        self.touchpad_pixels = 0
         self.scrollbar_shown_at = 0.0  # time.monotonic() when it last appeared.
         self.scrollbar_recheck: str | None = None
         self.canvas.configure(yscrollcommand=self.scroll)
@@ -142,10 +143,18 @@ class App:
         # Windows and macOS send <MouseWheel>; X11 sends buttons 4 and 5.
         for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.root.bind_all(sequence, self.wheel, add="+")
+        # Tk 8.7/9 delivers precision trackpad gestures separately from MouseWheel.
+        # Older Tk versions reject the event name; keep their MouseWheel path.
+        wheel_sequences: tuple[str, ...] = ("MouseWheel", "Button-4", "Button-5")
+        try:
+            self.root.bind_all("<TouchpadScroll>", self.touchpad, add="+")
+            wheel_sequences += ("TouchpadScroll",)
+        except tk.TclError:
+            pass
         # Tk's dropdowns, spinboxes and sliders change value under the wheel, so
         # scrolling the page past one silently changed a setting. The wheel only scrolls.
         for widget_class in ("TCombobox", "TSpinbox", "Spinbox", "TScale", "Scale"):
-            for sequence in ("MouseWheel", "Button-4", "Button-5"):
+            for sequence in wheel_sequences:
                 for modifier in ("", "Shift-"):
                     self.root.unbind_class(widget_class, f"<{modifier}{sequence}>")
         command = "Command" if sys.platform == "darwin" else "Control"
@@ -580,6 +589,27 @@ class App:
     def recheck_scrollbar(self) -> None:
         self.scrollbar_recheck = None
         self.scroll(*self.canvas.yview())
+
+    def touchpad(self, event: tk.Event[Any]) -> None:
+        """Tk packs signed X/Y pixel deltas into the high/low 16 bits."""
+        widget = event.widget
+        if (
+            not self.scrollbar.winfo_manager()
+            or not isinstance(widget, tk.Misc)
+            or isinstance(widget, (tk.Text, tk.Listbox))
+            or widget.winfo_toplevel() is not self.root
+        ):
+            return
+        delta = int(event.delta) & 0xFFFF
+        if delta >= 0x8000:
+            delta -= 0x10000
+        # The canvas scrolls in 20px rows. Keep sub-row gestures until they add
+        # up, otherwise slow two-finger movement is rounded away on every event.
+        self.touchpad_pixels -= delta
+        steps = int(self.touchpad_pixels / 20)
+        if steps:
+            self.touchpad_pixels -= steps * 20
+            self.canvas.yview_scroll(steps, "units")
 
     def wheel(self, event: tk.Event[Any]) -> None:
         """Scroll the page with the mouse wheel or trackpad, wherever the pointer is."""

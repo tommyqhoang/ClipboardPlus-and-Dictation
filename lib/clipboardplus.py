@@ -43,9 +43,7 @@ MAX_REPLY = 16 * 1024 * 1024
 MAX_CREATED_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 SCOPES = ["clipboard:read", "clipboard:write"]
-GOOGLE_ONLY = (
-    "This account signs in with Google. Get a key from the website and paste it here instead."
-)
+GOOGLE_ONLY = "This account signs in with Google. Choose Continue in browser to sign in."
 TROUBLE = "Clipboard+ is having trouble right now. Try again shortly."
 OFFLINE = "Couldn’t reach Clipboard+. Check your internet connection and try again."
 
@@ -260,6 +258,40 @@ def _account(
     if status == 429:
         raise AuthError("Too many attempts. Wait a few minutes and try again.")
     raise AuthError(refused.get(status, TROUBLE))
+
+
+def exchange_desktop(code: str, verifier: str, redirect: str, api: str = API) -> tuple[str, str]:
+    status, raw = _send(
+        "",
+        "POST",
+        "/api/desktop-auth/exchange",
+        {
+            "code": code,
+            "verifier": verifier,
+            "redirectUri": redirect,
+        },
+        api,
+        timeout=15.0,
+    )
+    if status != 200:
+        if status is None:
+            raise AuthError(OFFLINE)
+        if status == 409:
+            raise AuthError("Remove an unused key from your Clipboard+ account and try again.")
+        if status == 404:
+            raise AuthError(
+                "Browser sign-in is not available on the service yet. Use an API key for now."
+            )
+        raise AuthError("Couldn’t finish browser sign-in. Please try again.")
+    data = _document(raw) or {}
+    try:
+        key = clean_key(data.get("token", ""))
+        email = data.get("email", "")
+        if not isinstance(email, str) or not _EMAIL.fullmatch(email):
+            raise ValueError("Invalid account")
+    except (ValueError, AttributeError):
+        raise AuthError(TROUBLE) from None
+    return key, email
 
 
 def _session(route: str, email: str, password: str, api: str, refused: dict[int, str]) -> str:

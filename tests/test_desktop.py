@@ -488,18 +488,17 @@ class DesktopTests(unittest.TestCase):
                 setup.install_app_launcher(prefix)
                 bundle = root / "Applications/Clipboard+.app"
                 # The executable itself, so launchd supervises it (KeepAlive).
-                login.assert_called_once_with(
-                    True, [str(bundle / "Contents/MacOS/WhisperDictation")]
-                )
+                login.assert_called_once_with(True, [str(bundle / "Contents/MacOS/Clipboard+")])
                 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
                 self.assertEqual(info["CFBundleIdentifier"], setup.hotkeys.BUNDLE_ID)
                 self.assertIn("Record speech only", info["NSMicrophoneUsageDescription"])
                 self.assertEqual(info["CFBundleIconFile"], "AppIcon")
                 self.assertEqual(info["CFBundleDisplayName"], setup.hotkeys.APP_NAME)
                 self.assertEqual(info["CFBundleName"], setup.hotkeys.APP_NAME)
+                self.assertEqual(info["CFBundleExecutable"], setup.hotkeys.APP_NAME)
                 self.assertTrue((bundle / "Contents/Resources/AppIcon.icns").is_file())
                 self.assertTrue(info["LSUIElement"])
-                executable = bundle / "Contents/MacOS/WhisperDictation"
+                executable = bundle / "Contents/MacOS/Clipboard+"
                 self.assertIn("/venv/bin/python", executable.read_text())
                 self.assertIn("menubar.py", executable.read_text())
                 self.assertIn(
@@ -751,7 +750,7 @@ class DesktopTests(unittest.TestCase):
         agent = Path(folder.name) / "agent.plist"
         bundle = setup.app_bundle(prefix)
         for program, removed in (
-            ([str(bundle / "Contents/MacOS/WhisperDictation")], True),  # Current versions.
+            ([str(bundle / "Contents/MacOS/Clipboard+")], True),  # Current versions.
             (["/usr/bin/open", str(bundle)], True),  # Older versions.
             (["/usr/bin/open", str(bundle) + " copy.app"], False),  # Someone else's.
         ):

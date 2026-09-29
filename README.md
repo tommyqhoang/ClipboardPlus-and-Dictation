@@ -15,7 +15,7 @@ separately or together:
 
 The same icon, menu and workflow on every platform: the app lives in the macOS
 menu bar, the Windows system tray, or the Linux top bar and starts at login.
-Press **Super+Shift+D** (**Win+Shift+D** on Windows, **⌃⌥⇧D** on a Mac) in any app, talk, press it again, and
+Press **Ctrl+Shift+D** (**⌃⇧D** on a Mac) in any app, talk, press it again, and
 notifications tell you it is recording, transcribing, and then ready to paste.
 
 Linux remains the original platform. macOS and Windows support is newer.
@@ -105,12 +105,12 @@ seconds and keeps nothing).
 
 ### Everyday use (all platforms)
 
-- **Super+Shift+D** (Win+Shift+D on Windows, ⌃⌥⇧D on macOS) starts recording from any app. Press it again
+- **Ctrl+Shift+D** (Ctrl+Shift+D on Windows, ⌃⇧D on macOS) starts recording from any app. Press it again
   to stop. A small bar at the top of the screen shows your voice level while
   it listens, then *Transcribing…* and *Copied*; paste with Ctrl+V (⌘V). Click
   its ■ to stop or ✕ to cancel. The icon turns red while recording. (Set
   `"overlay": false` in `config.json` for plain notifications instead.)
-- **Super+Shift+F** (Win+Shift+F on Windows, ⌃⌥⇧F on macOS) opens the clipboard
+- **Ctrl+Shift+F** (Ctrl+Shift+F on Windows, ⌃⇧F on macOS) opens the clipboard
   history with the search box ready, from any app. Choose another shortcut or turn
   it off in *Settings → Keyboard shortcuts*.
 - In the window, Ctrl+F (⌘F) searches the clipboard history, Ctrl+, (⌘,) opens
@@ -189,11 +189,14 @@ Connect an account in Settings (or during setup) and the history is mirrored wit
 your Clipboard+ account, so the website and the browser extension show the same
 items without duplicates.
 
-- **Create account** or **Sign in** with email and password. The app uses them for
-  one request to create a key limited to clipboard read and write, then discards
-  the password and the session; only the key is kept, as `clipboard-plus-key`
-  (readable only by you), plus the address for display. Accounts that use Google
-  sign-in can paste a key made on the website (**Use an API key instead**).
+- **Continue in browser** opens the Clipboard+ website. Sign in with Google or
+  email, then approve **Connect desktop app**. No password or key needs to be
+  copied into the app. A single-use code protected by PKCE returns through a
+  loopback callback; only a clipboard read/write credential and your account
+  email are saved privately on this computer. You can cancel or retry sign-in.
+  The Clipboard+ web and API deployments must include desktop browser sign-in.
+- Email/password and **Use an API key instead** remain available as alternatives.
+  Keys created manually on the website follow the website's access policy.
 - Text and links are sent (up to 50,000 bytes each); images and audio never are.
   Requests go over HTTPS only and redirects are never followed, so the key cannot
   be forwarded elsewhere.
@@ -216,9 +219,9 @@ items without duplicates.
 
 | Platform | Dictation shortcut | Clipboard history shortcut |
 | --- | --- | --- |
-| Linux | Super+Shift+D (GNOME keybinding) | Super+Shift+F (GNOME keybinding) |
-| Windows | Win+Shift+D | Win+Shift+F |
-| macOS | ⌃⌥⇧D | ⌃⌥⇧F |
+| Linux | Ctrl+Shift+D (GNOME keybinding) | Ctrl+Shift+F (GNOME keybinding) |
+| Windows | Ctrl+Shift+D | Ctrl+Shift+F |
+| macOS | ⌃⇧D | ⌃⇧F |
 
 These were checked against Chrome's published shortcut list, which uses Alt, Ctrl,
 Ctrl+Shift and (on a Mac) ⌘ combinations with D but no Win/Super or ⌃⌥ ones. That
@@ -303,7 +306,7 @@ Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 
 The installer detects your package manager (apt, dnf, pacman or zypper), installs only the dependencies that are missing (asking for administrator access only then), downloads the base English model,
 builds whisper.cpp if necessary, adds Clipboard+ to the application menu,
-and requests the optional GNOME shortcut Super+Shift+D. Open the app to complete
+and requests the optional GNOME shortcut Ctrl+Shift+D. Open the app to complete
 the graphical walkthrough. Check the shortcut setup output; headless installations
 skip GNOME registration, and with no desktop session (over SSH, or in a container)
 the installer says so and the app opens at your next login instead. Use

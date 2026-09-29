@@ -113,6 +113,7 @@ MODULES = (
     "menubar.py",
     "tray.py",
     "clipboardplus.py",
+    "browserauth.py",
     "clipstore.py",
     "clipwatch.py",
     "clipwatch_linux.py",
@@ -414,13 +415,15 @@ def applications_root(prefix: Path) -> Path:
 def ours(prefix: Path, bundle: Path) -> bool:
     """Whether `bundle` is this installation's app bundle (under any name or bundle id)."""
     info = bundle / "Contents/Info.plist"
-    launcher = bundle / "Contents/MacOS/WhisperDictation"
+    launchers = [bundle / "Contents/MacOS" / name for name in ("Clipboard+", "WhisperDictation")]
     try:
         return plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") in (
             hotkeys.BUNDLE_ID,
             *hotkeys.FORMER_BUNDLE_IDS,
         ) and any(
             str(prefix / folder / "menubar.py") in launcher.read_text()
+            for launcher in launchers
+            if launcher.is_file()
             for folder in (LIB, LEGACY_LIB)
         )
     except (OSError, plistlib.InvalidFileException, ValueError):
@@ -467,7 +470,7 @@ def install_app_launcher(prefix: Path) -> None:
             raise dictation.DictationError(
                 f"An unrelated app already uses the name of {hotkeys.APP_NAME}'s app bundle."
             )
-        executable = bundle / "Contents/MacOS/WhisperDictation"
+        executable = bundle / "Contents/MacOS/Clipboard+"
         executable.parent.mkdir(parents=True, exist_ok=True)
         python = gui_environment(prefix)
         dictation.atomic(
@@ -477,7 +480,7 @@ def install_app_launcher(prefix: Path) -> None:
                     "CFBundleIdentifier": hotkeys.BUNDLE_ID,
                     "CFBundleName": hotkeys.APP_NAME,
                     "CFBundleDisplayName": hotkeys.APP_NAME,
-                    "CFBundleExecutable": "WhisperDictation",
+                    "CFBundleExecutable": hotkeys.APP_NAME,
                     "CFBundlePackageType": "APPL",
                     "CFBundleIconFile": "AppIcon",
                     "CFBundleVersion": "3",
@@ -498,6 +501,9 @@ def install_app_launcher(prefix: Path) -> None:
             f"{shlex.quote(str(module.with_name('menubar.py')))}\n",
         )
         executable.chmod(0o755)
+        former = bundle / "Contents/MacOS/WhisperDictation"
+        if former.is_file() and str(prefix / LIB / "menubar.py") in former.read_text():
+            former.unlink()
         icon = REPOSITORY / "assets/AppIcon.icns"
         if icon.is_file():
             resources = bundle / "Contents/Resources"
@@ -541,7 +547,7 @@ def launch(prefix: Path) -> bool:
     if desktop.platform_name() == "macos":
         stop_menubar(dictation.Paths())
         bundle = app_bundle(prefix)
-        if not (bundle / "Contents/MacOS/WhisperDictation").is_file():
+        if not (bundle / "Contents/MacOS/Clipboard+").is_file():
             raise dictation.DictationError(
                 f"{hotkeys.APP_NAME} was installed, but its macOS app bundle is missing. "
                 "Run the installer again."
@@ -671,7 +677,8 @@ def uninstall(prefix: Path) -> None:
             hotkeys.BUNDLE_ID,
             *hotkeys.FORMER_BUNDLE_IDS,
         ):
-            (bundle / "Contents/MacOS/WhisperDictation").unlink(missing_ok=True)
+            for name in ("Clipboard+", "WhisperDictation"):
+                (bundle / "Contents/MacOS" / name).unlink(missing_ok=True)
             (bundle / "Contents/Resources/AppIcon.icns").unlink(missing_ok=True)
             info.unlink()
             # Remove only known, now-empty directories. Never recursively erase a bundle.

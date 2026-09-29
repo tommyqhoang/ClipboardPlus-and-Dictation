@@ -899,6 +899,16 @@ class WindowTests(ServiceCase):
         self.window.wheel(SimpleNamespace(widget="popdown", num=5, delta=0))
         self.assertEqual(len(seen), 2)  # A combobox list scrolls itself.
 
+    def test_touchpad_scroll_decodes_vertical_pixels_and_ignores_horizontal(self):
+        self.window.scroll(0.0, 0.5)
+        steps = []
+        self.window.canvas.yview_scroll = lambda amount, _: steps.append(amount)
+        for delta in (10, 10, (-10 & 0xFFFF), 25 << 16, (25 << 16) | (-10 & 0xFFFF)):
+            self.window.touchpad(SimpleNamespace(widget=self.window.frame, delta=delta))
+        self.assertEqual(steps, [-1, 1])
+        self.window.touchpad(SimpleNamespace(widget="popdown", delta=20))
+        self.assertEqual(len(steps), 2)
+
     def test_the_mouse_wheel_never_changes_a_dropdown(self):
         # Scrolling the page past a setting must not change it.
         for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):

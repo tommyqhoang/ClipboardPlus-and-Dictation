@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import browserauth
 import clipboardplus
 import clipservice
 import clipstore
@@ -206,6 +207,15 @@ class Service:
                 "Couldn’t save the Clipboard+ key. Check that your settings folder is writable."
             ) from exc
         self.sync_clipboard_now()
+
+    def browser_sign_in(self, flow: browserauth.BrowserSignIn) -> None:
+        try:
+            key, email = flow.run()
+        except clipboardplus.AuthError as exc:
+            raise d.DictationError(str(exc)) from None
+        if flow.cancelled.is_set():
+            raise d.DictationError("Sign-in cancelled.")
+        self._link_clipboard_plus(key, email)
 
     def sign_in_clipboard_plus(self, email: str, password: str, *, create: bool) -> None:
         """Create an account or sign in, then keep only a clipboard read/write key.

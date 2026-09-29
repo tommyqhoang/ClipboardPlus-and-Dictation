@@ -109,7 +109,7 @@ class AccountTests(Network):
     def test_account_errors_have_plain_messages(self):
         cases = (
             (cp.register, failure(409, {"code": "ACCOUNT_EXISTS"}), "already has an account"),
-            (cp.register, failure(409, {"code": "GOOGLE_ACCOUNT_EXISTS"}), "key from the website"),
+            (cp.register, failure(409, {"code": "GOOGLE_ACCOUNT_EXISTS"}), "Continue in browser"),
             (
                 cp.register,
                 failure(400, {"error": "Password must be at least 8 characters"}),
@@ -120,7 +120,7 @@ class AccountTests(Network):
                 failure(401, {"error": "Invalid email or password"}),
                 "Wrong email or password",
             ),
-            (cp.login, failure(401, {"code": "GOOGLE_ACCOUNT_ONLY"}), "key from the website"),
+            (cp.login, failure(401, {"code": "GOOGLE_ACCOUNT_ONLY"}), "Continue in browser"),
             (cp.login, failure(429), "Too many attempts"),
             (cp.login, failure(500), "trouble"),
             (cp.login, urllib.error.URLError("offline"), "Couldn’t reach"),

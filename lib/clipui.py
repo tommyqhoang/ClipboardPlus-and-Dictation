@@ -10,6 +10,7 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 from typing import Any
 
+import browserauth
 import clipboardplus
 import clipservice
 import clipstore
@@ -991,7 +992,8 @@ class AccountCard:
         self.email = tk.StringVar(master=app.root)
         self.password = tk.StringVar(master=app.root)
         self.key = tk.StringVar(master=app.root)
-        self.mode = "account"  # or "key": paste an API key instead
+        self.mode = "browser"
+        self.browser_flow: browserauth.BrowserSignIn | None = None
         self.error = ""
         self._buttons: list[ttk.Button] = []
         self._signature: tuple[Any, ...] | None = None
@@ -1057,7 +1059,16 @@ class AccountCard:
             )
         else:
             self._label("Not connected", "CardHeading.TLabel")
-        if self.mode == "key":
+        if self.mode == "browser":
+            self._label("Sign in securely in your browser, with Google or your email.", pady=(4, 4))
+            rows = [
+                (("Continue in browser", self.sign_in_browser),),
+                (
+                    ("Use an API key instead", lambda: self.switch("key")),
+                    ("Use email and password", lambda: self.switch("account")),
+                ),
+            ]
+        elif self.mode == "key":
             self._label(
                 "Click Get a key, create a key for the desktop app on your "
                 "Clipboard+ Account page, then paste the key here.",
@@ -1070,7 +1081,7 @@ class AccountCard:
             rows = [
                 (("Connect", self.connect_key),),
                 (
-                    ("Use email and password instead", lambda: self.switch("account")),
+                    ("Continue in browser instead", lambda: self.switch("browser")),
                     ("Get a key", lambda: hotkeys.open_link(clipboardplus.ACCOUNT_URL)),
                 ),
             ]
@@ -1080,7 +1091,7 @@ class AccountCard:
             email.bind("<Return>", lambda _: password.focus_set())
             password.bind("<Return>", lambda _: self.sign_in(create=False))
             self._label(
-                "Signed up with Google, or have no password? Use an API key instead.",
+                "You can also sign in with Google in your browser.",
                 "CardHint.TLabel",
                 pady=(6, 0),
             )
@@ -1095,7 +1106,7 @@ class AccountCard:
                 ),
                 (
                     ("Use an API key instead", lambda: self.switch("key")),
-                    ("Get Clipboard+", lambda: hotkeys.open_link()),
+                    ("Continue in browser", lambda: self.switch("browser")),
                 ),
             ]
         if reconnect:
@@ -1153,12 +1164,13 @@ class AccountCard:
             return ""
 
         def done(problem: str) -> None:
+            self.browser_flow = None
             self.password.set("")  # Never left on screen, whatever happened.
             if not self.area.winfo_exists():
                 return
             self.error = problem
             if problem == clipboardplus.GOOGLE_ONLY:
-                self.mode = "key"  # Google accounts have no password here: show the key form.
+                self.mode = "browser"  # Google accounts authenticate on the website.
             telemetry.event(f"account_{what or 'change'}", ok=not problem)
             if not problem:
                 self.key.set("")  # The key is saved privately.
@@ -1167,6 +1179,20 @@ class AccountCard:
             self.render()
 
         self.app.submit(run, done, message)
+
+    def sign_in_browser(self) -> None:
+        if self.app.pending is not None:
+            return
+        flow = self.browser_flow = browserauth.BrowserSignIn()
+        self._attempt(
+            lambda: self.app.service.browser_sign_in(flow),
+            "Finish signing in in your browser…",
+            "Connected to Clipboard+.",
+            "signed_in",
+        )
+        # This button remains enabled while the background operation is pending.
+        cancel = ttk.Button(self.area, text="Cancel sign-in", command=flow.cancelled.set)
+        cancel.pack(anchor="w", pady=(8, 0))
 
     def sign_in(self, *, create: bool) -> None:
         email, password = self.email.get(), self.password.get()
