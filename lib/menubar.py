@@ -8,6 +8,7 @@ Requires PyObjC (installed into the app's private environment by setup).
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import sqlite3
 import subprocess
@@ -21,7 +22,9 @@ import clipstore
 import desktop
 import dictation as d
 import hotkeys
+import menubar_logic
 import objc  # type: ignore[import-not-found]
+import permissions
 import telemetry
 import updates
 import workflow
@@ -72,6 +75,13 @@ from Foundation import (  # type: ignore[import-not-found]
     NSTimer,
 )
 
+try:
+    import logsetup
+
+    log = logsetup.get_logger("menubar")
+except ImportError:
+    log = logging.getLogger(__name__)
+
 HERE = Path(__file__).resolve().parent
 POPOVER_WIDTH = 380.0
 POPOVER_HEIGHT = 420.0
@@ -83,7 +93,7 @@ TOAST_SECONDS = 0.9  # How long "Copied" shows over the list before the popover 
 
 
 def fourcc(code: str) -> int:
-    return int.from_bytes(code.encode("ascii"), "big")
+    return menubar_logic.fourcc(code)
 
 
 class EventTypeSpec(ctypes.Structure):
@@ -165,9 +175,10 @@ class GlobalHotKey:
     def register(self, shortcut: hotkeys.Shortcut, hotkey_id: int = DICTATION_ID) -> bool:
         self.unregister(hotkey_id)
         ref = ctypes.c_void_p()
+        key_code, modifiers = menubar_logic.carbon_hotkey(shortcut)
         status = self.carbon.RegisterEventHotKey(
-            shortcut.mac_key_code(),
-            shortcut.carbon_modifiers(),
+            key_code,
+            modifiers,
             EventHotKeyID(fourcc("WDct"), hotkey_id),
             self.target,
             0,
@@ -443,7 +454,40 @@ class Controller(NSObject):  # type: ignore[misc]
         if not self.service.ready():
             self.open_window("--setup")
             return
+        self.explain_accessibility()
         self.run_engine()
+
+    @objc.python_method
+    @objc.python_method
+    def explain_accessibility(self) -> None:
+        """Before the first paste, say why macOS will ask for Accessibility (once).
+
+        Auto-paste presses Command+V in the app you are using, which macOS allows
+        only after Accessibility is turned on for Clipboard+. Without this, the first
+        paste just silently fails.
+        """
+        try:
+            wants_paste = d.read_json(self.paths.config).get("auto_paste", True) is not False
+        except (d.DictationError, OSError) as exc:
+            log.debug("could not read the auto-paste setting: %s", exc)
+            wants_paste = True
+        marker = self.paths.cache / "accessibility-explained"
+        if not wants_paste or not menubar_logic.needs_accessibility_explanation(
+            permissions.accessibility_trusted(), marker.exists()
+        ):
+            return
+        try:
+            marker.write_text("1", encoding="utf-8")
+        except OSError as exc:
+            log.debug("could not remember the Accessibility explanation: %s", exc)
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Allow Clipboard+ to paste for you")
+        alert.setInformativeText_(permissions.accessibility_explanation())
+        alert.addButtonWithTitle_("Open System Settings")
+        alert.addButtonWithTitle_("Not now")
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        if alert.runModal() == NSAlertFirstButtonReturn:
+            permissions.open_settings(permissions.ACCESSIBILITY_URL)
 
     @objc.python_method
     @objc.python_method
@@ -527,6 +571,7 @@ class Controller(NSObject):  # type: ignore[misc]
             try:
                 found = updates.check(self.paths)
             except Exception:  # noqa: BLE001 - a failed check must never touch the menu bar.
+                log.exception("update check failed")
                 found = None
             self.update_result = found  # Picked up by refresh_, on the main thread.
             self.update_done = True
@@ -645,15 +690,9 @@ class Controller(NSObject):  # type: ignore[misc]
         if view != self.view:
             self.view = view
             button = self.item.button()
-            if phase == "recording":
-                button.setImage_(self.recording_image)
-                button.setTitle_(f" {elapsed // 60}:{elapsed % 60:02d}")
-            elif active:
-                button.setImage_(self.idle_image)
-                button.setTitle_(" …")
-            else:
-                button.setImage_(self.idle_image)
-                button.setTitle_("")
+            image, title = menubar_logic.status_button(phase, active, elapsed)
+            button.setImage_(self.recording_image if image == "recording" else self.idle_image)
+            button.setTitle_(title)
         if self.popover.isShown():
             self.refresh_popover_header()
 
@@ -706,26 +745,18 @@ class Controller(NSObject):  # type: ignore[misc]
         active = bool(current["active"])
         phase = str(current["phase"]) if active else "idle"
         elapsed = int(current.get("elapsed_seconds", 0))
-        label = self.shortcut.label()
-        self.cancel_button.setHidden_(phase != "recording")
-        if phase == "recording":
-            self.header_status.setStringValue_(f"Recording… {elapsed // 60}:{elapsed % 60:02d}")
-            self.header_button.setTitle_("Stop")
-            self.header_button.setEnabled_(True)
-        elif active:
-            self.header_status.setStringValue_("Transcribing…")
-            self.header_button.setTitle_("…")
-            self.header_button.setEnabled_(False)
-        else:
-            self.header_status.setStringValue_(
-                "Finish setup to start"
-                if not self.ready()
-                else f"Press {label} anywhere to dictate"
-                if self.hotkey_ok
-                else f"{label} is taken — choose another shortcut"
-            )
-            self.header_button.setTitle_("Start")
-            self.header_button.setEnabled_(True)
+        header = menubar_logic.popover_header(
+            phase,
+            active,
+            elapsed,
+            self.ready(),
+            self.hotkey_ok,
+            self.shortcut.label(),
+        )
+        self.cancel_button.setHidden_(not header.show_cancel)
+        self.header_status.setStringValue_(header.status)
+        self.header_button.setTitle_(header.button)
+        self.header_button.setEnabled_(header.enabled)
 
     @objc.python_method
     @objc.python_method
@@ -741,6 +772,7 @@ class Controller(NSObject):  # type: ignore[misc]
     @objc.python_method
     def run_query(self, query: str) -> None:
         store = self.open_store()
+        query = menubar_logic.normalize_query(query)
         try:
             self.rows = store.list(query=query, limit=POPOVER_ROWS) if store is not None else []
         except (sqlite3.Error, OSError):
@@ -754,13 +786,7 @@ class Controller(NSObject):  # type: ignore[misc]
             self.empty_label.setHidden_(True)
             self.select_row(0)
         else:
-            self.empty_label.setStringValue_(
-                "Clipboard history isn’t available."
-                if store is None
-                else "No matches."
-                if query
-                else "Nothing copied yet."
-            )
+            self.empty_label.setStringValue_(menubar_logic.empty_message(store is not None, query))
             self.empty_label.setHidden_(False)
 
     @objc.python_method
@@ -773,7 +799,7 @@ class Controller(NSObject):  # type: ignore[misc]
     def select_row(self, row: int) -> None:
         if not self.rows:
             return
-        row = max(0, min(row, len(self.rows) - 1))
+        row = menubar_logic.next_selection(row, 0, len(self.rows))
         self.selected = row
         self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(row), False)
         self.table.scrollRowToVisible_(row)
@@ -781,7 +807,7 @@ class Controller(NSObject):  # type: ignore[misc]
     @objc.python_method
     @objc.python_method
     def move_selection(self, delta: int) -> None:
-        self.select_row(self.selected + delta)
+        self.select_row(menubar_logic.next_selection(self.selected, delta, len(self.rows)))
 
     @objc.python_method
     @objc.python_method
@@ -824,15 +850,11 @@ class Controller(NSObject):  # type: ignore[misc]
     @objc.python_method
     def row_detail(self, item: clipstore.Item) -> str:
         """What hovering shows: kind, where it came from, and when it was copied."""
-        kind = f"Image {item.width}×{item.height}" if item.kind == "image" else "Text"
-        source = {"desktop": "Desktop", "dictation": "Dictation", "cloud": "Cloud"}.get(
-            item.source, item.source
-        )
         formatter = NSDateFormatter.alloc().init()
         formatter.setDateStyle_(NSDateFormatterMediumStyle)
         formatter.setTimeStyle_(NSDateFormatterShortStyle)
         stamp = formatter.stringFromDate_(NSDate.dateWithTimeIntervalSince1970_(item.created_at))
-        return f"{kind} · {source} · {stamp}"
+        return menubar_logic.row_detail(item, stamp)
 
     @objc.python_method
     @objc.python_method
@@ -896,17 +918,16 @@ class Controller(NSObject):  # type: ignore[misc]
     def control_textView_doCommandBySelector_(
         self, _control: Any, _text_view: Any, selector: str
     ) -> bool:
-        if selector == "moveDown:":
+        action = menubar_logic.key_action(selector)
+        if action == "down":
             self.move_selection(1)
-        elif selector == "moveUp:":
+        elif action == "up":
             self.move_selection(-1)
-        elif selector == "insertNewline:":
+        elif action == "activate":
             self.activate_selected()
-        elif selector == "cancelOperation:":
+        elif action == "close":
             self.popover.close()
-        elif selector == "moveToBeginningOfParagraph:":
-            # macOS's default Emacs-style binding for Ctrl+A just moves the caret;
-            # override it to select-all, matching every other platform's Ctrl+A.
+        elif action == "select_all":
             _text_view.selectAll_(None)
         else:
             return False

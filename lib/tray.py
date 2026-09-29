@@ -8,9 +8,12 @@ Requires pystray and Pillow (installed into the app's private environment).
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
+import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -26,6 +29,13 @@ import telemetry
 import updates
 import workflow
 from app_service import Service
+
+try:
+    import logsetup
+
+    log = logsetup.get_logger("tray")
+except ImportError:
+    log = logging.getLogger(__name__)
 
 HERE = Path(__file__).resolve().parent
 WM_HOTKEY, WM_APP = 0x0312, 0x8000
@@ -99,11 +109,19 @@ class GnomeHotKey:
         )
         self.path, self.name = path, name
         self.conflict: hotkeys.Conflict | None = None  # Who else has these keys.
+        self.message = ""  # Why the last registration failed, and what to do.
+        self.result: hotkeys.RegisterResult | None = None
 
     def register(self, shortcut: hotkeys.Shortcut | None) -> bool:
-        bound = hotkeys.gnome_shortcut(shortcut, self.command, path=self.path, name=self.name)
-        self.conflict = hotkeys.gnome_conflict(shortcut, self.path) if bound and shortcut else None
-        return bound or shortcut is None
+        result = hotkeys.register_shortcut(shortcut, self.command, path=self.path, name=self.name)
+        self.result = result
+        self.message = result.message
+        self.conflict = (
+            hotkeys.gnome_conflict(shortcut, self.path)
+            if result.ok and result.backend == "gnome" and shortcut
+            else None
+        )
+        return result.ok or shortcut is None
 
 
 class Tray:
@@ -351,10 +369,18 @@ class Tray:
         self.stamp = self.preferences.stamp()
         self.icon.update_menu()
 
+    def hotkey_message(self, hotkey: Any, ok: bool) -> str:
+        """What to tell the user about a shortcut: why it failed, or how to make it stick."""
+        message = str(getattr(hotkey, "message", "") or "")
+        if message and not ok:
+            log.warning("shortcut registration: %s", message)
+        return message
+
     def record_dictation(self) -> None:
         """Tell the window whether the shortcut works, and who else uses its keys."""
         conflict = getattr(self.hotkey, "conflict", None)
         hotkeys.record_status(self.paths, self.hotkey_ok, conflict=conflict)
+        hotkeys.record_message(self.paths, self.hotkey_message(self.hotkey, self.hotkey_ok))
         announced, self.announced = self.announced, conflict
         if conflict is not None and conflict != announced:
             telemetry.event("shortcut_conflict", kind="custom" if conflict.path else "desktop")
@@ -399,6 +425,7 @@ class Tray:
             except updates.UpdateError as exc:
                 found = exc
             except Exception:  # noqa: BLE001 - a failed check must never touch the tray.
+                log.exception("update check failed")
                 found = updates.UpdateError("Couldn’t check for updates. Try again shortly.")
             self.update_result = found  # Picked up by tick(), on the tray's thread.
             self.update_done = True
@@ -439,7 +466,8 @@ class Tray:
         self.notify(f"Updating to {found['version']}… Clipboard+ stays usable while it downloads.")
         try:
             updates.start_updater(found["version"], found["url"])
-        except OSError:
+        except OSError as exc:
+            log.warning("could not start the updater: %s", exc)
             self.update = found
             self.notify("The update could not start. Try again, or re-run the installer.")
 
@@ -454,8 +482,9 @@ class Tray:
     def notify(self, message: str) -> None:
         try:
             self.icon.notify(message, hotkeys.APP_NAME)
-        except (NotImplementedError, OSError):
-            pass
+        except (NotImplementedError, OSError) as exc:
+            # No notification service here: the message still reaches the log.
+            log.info("tray notification not shown (%s): %s", exc, message)
 
     # -- recent copies -----------------------------------------------------
     def open_store(self) -> clipstore.Store | None:
@@ -487,7 +516,8 @@ class Tray:
             self.rows = store.list(limit=MENU_ROWS)
             self.rows_stamp = stamp
             return True
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            log.debug("history read failed: %s", exc)
             return False  # A busy or briefly missing database is not worth a crash.
 
     def row_text(self, index: int) -> str:
@@ -542,6 +572,11 @@ class Tray:
             self.record_dictation()
             if not self.hotkey_ok and desktop.platform_name() == "windows":
                 self.notify(f"{self.shortcut.label()} is in use by another app. Pick another.")
+            elif desktop.platform_name() != "windows":
+                # Not registered, or only until the next restart: say how to make it work.
+                advice = str(getattr(self.hotkey, "message", "") or "")
+                if advice:
+                    self.notify(advice)
         self.history_key = (
             WindowsHotKey(self.open_history)
             if desktop.platform_name() == "windows"
@@ -572,6 +607,7 @@ class Tray:
             try:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 - one failed tick must not freeze the icon.
+                log.exception("tray tick failed")
                 telemetry.capture(exc, stage="tray_tick")
             time.sleep(0.5)
 
@@ -595,6 +631,9 @@ class Tray:
         ok = self.history_key.register(wanted)
         conflict = getattr(self.history_key, "conflict", None)
         hotkeys.record_status(self.paths, ok, hotkeys.HISTORY_STATUS, conflict)
+        hotkeys.record_message(
+            self.paths, self.hotkey_message(self.history_key, ok), hotkeys.HISTORY_STATUS
+        )
         if not ok and wanted is not None and desktop.platform_name() == "windows":
             self.notify(f"{wanted.label()} is in use by another app. Choose another in Settings.")
 
@@ -638,7 +677,8 @@ class Tray:
             self.stamp = self.preferences.stamp()
         try:
             current = workflow.snapshot(self.paths)
-        except (d.DictationError, OSError, ValueError):
+        except (d.DictationError, OSError, ValueError) as exc:
+            log.debug("could not read the session state: %s", exc)
             current = {"phase": "idle", "active": False}
         phase = str(current["phase"]) if current["active"] else "idle"
         elapsed = int(current.get("elapsed_seconds", 0))
@@ -662,6 +702,81 @@ class Tray:
         )
         if changed:
             self.icon.update_menu()
+
+
+APPINDICATOR_STEPS = (
+    "GNOME hides tray icons unless the AppIndicator extension is on. Install it "
+    "(Ubuntu: sudo apt install gnome-shell-extension-appindicator; Fedora: sudo dnf "
+    "install gnome-shell-extension-appindicator; Arch: gnome-shell-extension-appindicator), "
+    "run: gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com, then log out "
+    "and back in."
+)
+
+
+def tray_available() -> bool:
+    """Whether something on this desktop will actually show a tray icon.
+
+    Windows always has a notification area. On Linux, GNOME shows no icon unless the
+    AppIndicator extension is running, which is visible as an owner of the
+    StatusNotifierWatcher name on the session bus. When that can't be checked
+    the tray is assumed to work.
+    """
+    if desktop.platform_name() != "linux":
+        return True
+    current = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    if "gnome" not in current and "unity" not in current:
+        return True  # KDE, Xfce, Cinnamon, MATE... have their own tray.
+    tool = shutil.which("gdbus")
+    if tool is None:
+        return True
+    try:
+        answer = subprocess.run(
+            [
+                tool,
+                "call",
+                "--session",
+                "--dest",
+                "org.freedesktop.DBus",
+                "--object-path",
+                "/org/freedesktop/DBus",
+                "--method",
+                "org.freedesktop.DBus.NameHasOwner",
+                "org.kde.StatusNotifierWatcher",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("could not ask the session bus about a tray: %s", exc)
+        return True
+    if answer.returncode:
+        return True
+    return "true" in answer.stdout.lower()
+
+
+def announce_missing_tray(paths: d.Paths) -> None:
+    """Explain the missing tray icon and keep the app usable: open its window.
+
+    Told once per login session (the runtime folder is cleared at logout) so a
+    restart doesn't nag, but the window always opens the first time.
+    """
+    message = "There is no tray icon on this desktop. " + APPINDICATOR_STEPS
+    print(message, file=sys.stderr)
+    log.warning("tray unavailable: no StatusNotifierWatcher")
+    marker = paths.runtime / "tray-unavailable-told"
+    if marker.exists():
+        return
+    d.notify(None, f"{hotkeys.APP_NAME} is running without a tray icon. {APPINDICATOR_STEPS}")
+    try:
+        marker.write_text("1", encoding="utf-8")
+    except OSError as exc:
+        log.debug("could not remember the tray notice: %s", exc)
+    try:
+        open_app_window()
+    except OSError as exc:
+        log.warning("could not open the app window: %s", exc)
 
 
 def open_app_window(page: str = "") -> None:
@@ -701,6 +816,8 @@ def main() -> int:
         from PIL import Image  # type: ignore[import-not-found, unused-ignore]
 
         (paths.runtime / "menubar-quit").unlink(missing_ok=True)
+        if not tray_available():
+            announce_missing_tray(paths)
         tray = Tray(pystray, Image)
         tray.icon.run(setup=tray.started)
     finally:

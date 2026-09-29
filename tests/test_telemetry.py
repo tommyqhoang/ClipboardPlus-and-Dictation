@@ -35,21 +35,54 @@ class TelemetryTests(unittest.TestCase):
             clear=False,
         )
 
-    def test_disabled_by_environment_and_preference(self) -> None:
+    def test_opt_in_only_and_environment_can_still_forbid(self) -> None:
         with patch.dict(os.environ, {"DO_NOT_TRACK": "1"}, clear=False):
             self.assertFalse(telemetry.allowed())
         (self.root / "menubar.json").unlink()
         with self.enabled():
+            self.assertFalse(telemetry.has_consent())
             self.assertFalse(telemetry.allowed())  # No choice made yet: nothing is sent.
-        (self.root / "menubar.json").write_text('{"features": {}}', encoding="utf-8")
-        with self.enabled():
-            self.assertFalse(telemetry.allowed())  # Setup (and its switch) not seen yet.
         (self.root / "welcome.json").write_text('{"complete": true}', encoding="utf-8")
         with self.enabled():
-            self.assertTrue(telemetry.allowed())  # On by default once setup is done.
-        (self.root / "menubar.json").write_text('{"share_usage": false}', encoding="utf-8")
+            self.assertFalse(telemetry.allowed())  # Finishing setup is not consent.
+        telemetry.set_consent(True)
         with self.enabled():
+            self.assertTrue(telemetry.has_consent())
+            self.assertTrue(telemetry.allowed())
+        with patch.dict(os.environ, {"DICTATION_TELEMETRY": "0"}, clear=False):
             self.assertFalse(telemetry.allowed())
+        (self.root / "menubar.json").write_text('{"share_usage": "yes"}', encoding="utf-8")
+        with self.enabled():
+            self.assertFalse(telemetry.allowed())  # Only an explicit true counts.
+
+    def test_withdrawing_consent_discards_the_installation_id(self) -> None:
+        with self.enabled():
+            first = telemetry.client_id()
+            self.assertTrue((self.root / "telemetry-id").exists())
+            telemetry.set_consent(False)
+            self.assertFalse((self.root / "telemetry-id").exists())
+            self.assertFalse(telemetry.allowed())
+            telemetry.set_consent(True)
+            self.assertNotEqual(telemetry.client_id(), first)
+            # A switch that only saved the preference is caught too.
+            (self.root / "menubar.json").write_text('{"share_usage": false}', encoding="utf-8")
+            self.assertFalse(telemetry.allowed())
+            self.assertFalse((self.root / "telemetry-id").exists())
+
+    def test_set_consent_keeps_other_preferences(self) -> None:
+        (self.root / "menubar.json").write_text('{"open_at_login": false}', encoding="utf-8")
+        telemetry.set_consent(True)
+        saved = json.loads((self.root / "menubar.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"open_at_login": False, "share_usage": True})
+
+    def test_the_api_host_can_be_overridden_only_with_https(self) -> None:
+        import clipboardplus
+
+        with patch.dict(os.environ, {"CLIPBOARDPLUS_API": "https://staging.example.test/"}):
+            self.assertEqual(clipboardplus._api(), "https://staging.example.test")
+        for bad in ("http://staging.example.test", "https://", "staging"):
+            with patch.dict(os.environ, {"CLIPBOARDPLUS_API": bad}):
+                self.assertEqual(clipboardplus._api(), clipboardplus.DEFAULT_API)
 
     def test_usage_goes_to_the_same_api_as_the_account(self) -> None:
         import clipboardplus
@@ -107,14 +140,26 @@ class TelemetryTests(unittest.TestCase):
     def test_scrub_removes_personal_data_before_anything_is_sent(self) -> None:
         home = str(Path.home())
         text = (
-            f"{home}/notes.txt jane.doe@example.com https://x.test/p?token=abc#frag "
-            "key cp_live_ABCDEF123456 and " + "a" * 40
+            f"{home}/notes.txt jane.doe@example.com https://u:pw@x.test/p/q?token=abc#frag "
+            "key cp_live_ABCDEF123456 and " + "a" * 40 + " at 192.168.1.20 in /srv/private/data.db"
+            " jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"
         )
         cleaned = telemetry.scrub(text)
         self.assertIn("~/notes.txt", cleaned)
         self.assertIn("[email]", cleaned)
-        self.assertIn("https://x.test/p", cleaned)
-        for leaked in (home, "jane.doe", "token=abc", "cp_live_ABCDEF123456", "a" * 40):
+        self.assertIn("https://x.test", cleaned)
+        for leaked in (
+            home,
+            "jane.doe",
+            "token=abc",
+            "u:pw",
+            "/p/q",
+            "cp_live_ABCDEF123456",
+            "a" * 40,
+            "192.168.1.20",
+            "/srv/private",
+            "eyJhbGci",
+        ):
             self.assertNotIn(leaked, cleaned)
         self.assertEqual(len(telemetry.scrub("word " * 1000)), 1000)  # Capped.
 

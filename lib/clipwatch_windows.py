@@ -13,6 +13,7 @@ import ctypes
 import io
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Protocol
 
 import clipstore
@@ -61,6 +62,7 @@ class WindowsWatcher:
         dib_to_png: Callable[[bytes], bytes],
         *,
         poll: float = 0.25,
+        owner: Callable[[], str] = lambda: "",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         max_text: int = clipstore.MAX_TEXT_BYTES,
@@ -68,6 +70,7 @@ class WindowsWatcher:
     ) -> None:
         self._win32 = win32
         self._dib_to_png = dib_to_png
+        self._owner = owner  # Executable name of the clipboard's owner, when known.
         self._poll = poll
         self._clock = clock
         self._sleep = sleep
@@ -107,6 +110,16 @@ class WindowsWatcher:
         return win32.dword(HISTORY_FORMAT) == 0 or win32.dword(CLOUD_FORMAT) == 0
 
     def _read(self) -> Clip | _Busy:
+        outcome = self._read_content()
+        if isinstance(outcome, _Busy):
+            return outcome
+        try:
+            source = self._owner()
+        except Exception:  # noqa: BLE001 - not knowing the app must never lose the copy
+            source = ""
+        return replace(outcome, source_app=source) if source else outcome
+
+    def _read_content(self) -> Clip | _Busy:
         if not self._open():
             return _BUSY
         win32 = self._win32
@@ -236,5 +249,34 @@ class Win32Clipboard:
         return int.from_bytes(raw[:4], "little") if raw and len(raw) >= 4 else None
 
 
+def clipboard_owner_process() -> str:
+    """The executable name of the program that owns the clipboard, or "" when unknown."""
+    try:
+        from ctypes import wintypes
+
+        windll: Any = getattr(ctypes, "windll")  # noqa: B009 - absent off Windows
+        user32, kernel32 = windll.user32, windll.kernel32
+        user32.GetClipboardOwner.restype = wintypes.HWND
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        window = user32.GetClipboardOwner()
+        if not window:
+            return ""
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+        handle = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(1024)
+            buffer = ctypes.create_unicode_buffer(1024)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return buffer.value.replace("\\", "/").rsplit("/", 1)[-1]
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
 def create() -> WindowsWatcher:
-    return WindowsWatcher(Win32Clipboard(), dib_to_png)
+    return WindowsWatcher(Win32Clipboard(), dib_to_png, owner=clipboard_owner_process)

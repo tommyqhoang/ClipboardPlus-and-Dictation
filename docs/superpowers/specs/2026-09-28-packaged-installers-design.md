@@ -1,5 +1,15 @@
 # Packaged installers for macOS, Windows, and Linux
 
+> **Historical design record, not the current spec.** Where this document
+> differs from what ships, the code and `packaging/README.md` win. Known
+> differences: code signing is now conditional (Developer ID + notarization on
+> macOS and Azure Trusted Signing / signtool on Windows when release secrets
+> exist; ad-hoc/unsigned otherwise); in-app self-update for packaged installs
+> is disabled in v1; the AppImage is assembled by `build-appimage.sh` and
+> `appimagetool` (linuxdeploy is not used); Linux dictation needs the system
+> `arecord` (alsa-utils); only the three main installers are built (macOS
+> Apple Silicon, Windows x86_64, Linux x86_64).
+
 Status: approved for planning
 Decided with the user: no code signing (budget is $0), real downloadable
 installers per OS, and a fully self-contained bundle (no system package

@@ -6,6 +6,7 @@ import concurrent.futures
 import dataclasses
 import functools
 import json
+import logging
 import os
 import shlex
 import sqlite3
@@ -16,18 +17,44 @@ import time
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, font, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Literal
 
+import app_settings
+import app_styles
 import clipstore
 import clipui
+import cues
 import desktop
 import dictation as d
 import hotkeys
+import permissions
 import telemetry
 import updates
 import workflow
 from app_service import PROVIDERS, MicrophoneTest, Remote, Service
+from app_styles import (  # noqa: F401 - the palette, kept importable from here
+    ACCENT,
+    ACCENT_ACTIVE,
+    ACCENT_SOFT,
+    BACKGROUND,
+    BORDER,
+    DANGER,
+    DANGER_ACTIVE,
+    HOVER,
+    IDLE,
+    MUTED,
+    SURFACE,
+    TEXT,
+    WARNING,
+)
+
+try:
+    import logsetup
+
+    log = logsetup.get_logger("app")
+except ImportError:
+    log = logging.getLogger(__name__)
 
 ICON = Path(__file__).with_name("whisper-dictation.png")
 MODES = (
@@ -36,20 +63,6 @@ MODES = (
     ("both", "Both", "Dictation and clipboard history, together."),
 )
 
-# One palette for every surface; the generated Clipboard+ icon is used everywhere.
-BACKGROUND = "#f6f4f0"
-SURFACE = "#ffffff"
-BORDER = "#e5e0d8"
-TEXT = "#1c1a17"
-MUTED = "#6b645a"
-ACCENT = "#b45309"  # The logo's amber, darkened to read on white.
-ACCENT_ACTIVE = "#92400e"
-ACCENT_SOFT = "#fef6e7"
-DANGER = "#c93a2e"
-DANGER_ACTIVE = "#a82e24"
-WARNING = "#c98a12"
-IDLE = "#a39b90"
-HOVER = "#faf5ec"  # A list row under the pointer.
 # How long the scrollbar stays once shown, so a page at the window's height cannot
 # make it appear and disappear forever.
 SCROLLBAR_SETTLE = 0.4
@@ -63,6 +76,19 @@ TAB_PAGES = ("home", "clipboard", "settings")
 
 class App:
     def __init__(self, root: tk.Tk, service: Service, page: str = "") -> None:
+        self.init_state(root, service)
+        self.size_window()
+        self.build_chrome()
+        self.build_scroller()
+        self.bind_events()
+        self.init_variables(page)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        # The tray/menu bar app owns everyday use; this window is for setup.
+        self.tray = True
+        self.show_first_page(page)
+        self.timer = self.root.after(150, self.poll)
+
+    def init_state(self, root: tk.Tk, service: Service) -> None:
         self.root, self.service = root, service
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Quiet lookups (microphones) that must not lock the page like `submit` does.
@@ -83,6 +109,9 @@ class App:
         self.bottom_timer: str | None = None
         self.gutter = 0  # Extra side space around the centered column on wide windows.
         self.toolbar_padding = (PAD, 12, PAD, 8)
+
+    def size_window(self) -> None:
+        """Fit the window to this screen, or to the size the user left it at."""
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         usable_width, usable_height = screen_width - 80, screen_height - 100
@@ -96,8 +125,8 @@ class App:
                 visible = NSScreen.mainScreen().visibleFrame()
                 usable_width = int(visible.size.width) - 40
                 usable_height = int(visible.size.height) - 40
-            except Exception:  # noqa: BLE001 - falls back to the guess below.
-                pass
+            except Exception as exc:  # noqa: BLE001 - falls back to the guess below.
+                log.info("could not ask AppKit for the visible screen: %s", exc)
         width = min(780, max(360, usable_width))
         height = min(640, max(360, usable_height))
         saved = self.saved_size()
@@ -108,6 +137,9 @@ class App:
         self.wraplength = max(260, width - 2 * PAD - 30)
         self.root.geometry(f"{width}x{height}")
         self.root.minsize(min(480, width), min(400, height))
+
+    def build_chrome(self) -> None:
+        """The fixed parts: icon, styles, header, bottom bar and the toast."""
         self.root.configure(background=BACKGROUND)
         self.icon = self.load_icon()
         if self.icon is not None:
@@ -119,9 +151,12 @@ class App:
         self.header()
         self.bottom_bar()
         self.toast_label = ttk.Label(self.root, textvariable=self.toast, style="Toast.TLabel")
+
+    def build_scroller(self) -> None:
+        """The toolbar and the scrolling page: canvas, scrollbar and content frame."""
         # Fixed controls above the scrolling page (the clipboard search stays in view).
-        self.toolbar = ttk.Frame(root)
-        container = self.container = ttk.Frame(root)
+        self.toolbar = ttk.Frame(self.root)
+        container = self.container = ttk.Frame(self.root)
         container.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(
             container,
@@ -140,6 +175,9 @@ class App:
         self.frame_window = self.canvas.create_window((0, 0), window=self.frame, anchor="nw")
         self.frame.bind("<Configure>", self.resize_scroll_region)
         self.canvas.bind("<Configure>", self.resize_content)
+
+    def bind_events(self) -> None:
+        """Mouse wheel, touchpad and keyboard shortcuts for the whole window."""
         # Windows and macOS send <MouseWheel>; X11 sends buttons 4 and 5.
         for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.root.bind_all(sequence, self.wheel, add="+")
@@ -149,8 +187,8 @@ class App:
         try:
             self.root.bind_all("<TouchpadScroll>", self.touchpad, add="+")
             wheel_sequences += ("TouchpadScroll",)
-        except tk.TclError:
-            pass
+        except tk.TclError as exc:  # Older Tk versions have no touchpad event.
+            log.debug("no TouchpadScroll event in this Tk: %s", exc)
         # Tk's dropdowns, spinboxes and sliders change value under the wheel, so
         # scrolling the page past one silently changed a setting. The wheel only scrolls.
         for widget_class in ("TCombobox", "TSpinbox", "Spinbox", "TScale", "Scale"):
@@ -171,6 +209,9 @@ class App:
             self.root.bind_all(
                 f"<{key}>", functools.partial(self.scroll_key, amount, what), add="+"
             )
+
+    def init_variables(self, page: str) -> None:
+        """The form variables and page state that every screen shares."""
         self.default_button: ttk.Button | None = None
         # The dictation fields as last saved, to catch leaving Settings with edits.
         self.settings_snapshot: tuple[str, ...] | None = None
@@ -195,27 +236,26 @@ class App:
         # Opened by the history shortcut or menu: Esc (with no search typed) closes it.
         self.quick = page in ("clipboard", "clipboard-clear")
         self.clipboard_store: clipstore.Store | None = None
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
-        # The tray/menu bar app owns everyday use; this window is for setup.
-        self.tray = True
+
+    def show_first_page(self, page: str) -> None:
+        """Open the page asked for, or the home page, or the first-run welcome."""
         if page == "shortcut":
             self.shortcut_page()
         elif (
-            service.completed()
+            self.service.completed()
             and page in ("clipboard", "clipboard-clear")
             and self.features().clipboard
         ):
             self.clipboard()
-        elif service.completed() and page == "settings":
+        elif self.service.completed() and page == "settings":
             self.settings()
-        elif service.completed() and not self.features().dictation:
+        elif self.service.completed() and not self.features().dictation:
             # Clipboard-only: there is no dictation page to show.
             self.clipboard()
-        elif service.completed():
+        elif self.service.completed():
             self.home()
         else:
             self.welcome()
-        self.timer = self.root.after(150, self.poll)
 
     def size_file(self) -> Path:
         return self.service.paths.config.parent / "window.json"
@@ -223,7 +263,8 @@ class App:
     def saved_size(self) -> tuple[int, int] | None:
         try:
             raw = d.read_json(self.size_file())
-        except (d.DictationError, OSError, ValueError):
+        except (d.DictationError, OSError, ValueError) as exc:
+            log.debug("no saved window size: %s", exc)
             return None
         width, height = raw.get("width"), raw.get("height")
         if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
@@ -235,7 +276,8 @@ class App:
             if self.root.state() == "zoomed" or int(self.root.attributes("-fullscreen")):
                 return True  # Zoomed on Windows and macOS.
             return sys.platform.startswith("linux") and bool(int(self.root.attributes("-zoomed")))
-        except (tk.TclError, ValueError):
+        except (tk.TclError, ValueError) as exc:
+            log.debug("could not tell whether the window is maximized: %s", exc)
             return False
 
     def save_size(self) -> None:
@@ -247,232 +289,21 @@ class App:
         try:
             d.private_dir(self.size_file().parent)
             d.atomic(self.size_file(), json.dumps({"width": width, "height": height}))
-        except OSError:
+        except OSError as exc:
+            log.debug("could not save the window size: %s", exc)
             pass  # Only a convenience.
 
     def load_icon(self) -> tk.PhotoImage | None:
         try:
             return tk.PhotoImage(master=self.root, file=str(ICON))
-        except tk.TclError:
+        except tk.TclError as exc:
+            log.debug("could not load the icon: %s", exc)
             return None
 
     def styles(self) -> None:
-        system = font.nametofont("TkDefaultFont").actual()
-        family = str(system["family"])
-        # Follow the desktop's own text size (and its display scaling) instead of fixed,
-        # oversized points: 13 on a Mac, about 10 on Linux and 9 on Windows.
-        base = max(9, min(13, abs(int(system["size"])) or 10))
-        self.fonts: dict[str, tuple[str, int, str]] = {
-            "title": (family, base + 5, "bold"),
-            "heading": (family, base + 1, "bold"),
-            "body": (family, base, "normal"),
-            "small": (family, max(8, base - 1), "normal"),
-            "brand": (family, base + 1, "bold"),
-            "badge": (family, base, "bold"),
-            "record": (family, base + 2, "bold"),
-            "icon": (family, base + 3, "normal"),
-        }
-        # For widgets drawn outside ttk (the clipboard list), whose rows change on hover.
-        self.colors = {
-            "surface": SURFACE,
-            "hover": HOVER,
-            "selected": ACCENT_SOFT,  # The row Enter copies.
-            "border": BORDER,
-            "text": TEXT,
-            "muted": MUTED,
-            "accent": ACCENT,
-            "danger": DANGER,
-            "star": WARNING,
-        }
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-        style.configure(".", background=BACKGROUND, foreground=TEXT, font=self.fonts["body"])
-        style.configure("TFrame", background=BACKGROUND)
-        style.configure("Card.TFrame", background=SURFACE)
-        style.configure("Header.TFrame", background=SURFACE)
-        style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
-        style.configure("Title.TLabel", font=self.fonts["title"])
-        style.configure("Hint.TLabel", foreground=MUTED, font=self.fonts["small"])
-        style.configure(
-            "Toast.TLabel",
-            background=TEXT,
-            foreground=SURFACE,
-            font=self.fonts["small"],
-            padding=(12, 8),
-        )
-        style.configure("Error.TLabel", foreground=DANGER, font=self.fonts["small"])
-        style.configure("Subtitle.TLabel", foreground=MUTED, font=self.fonts["body"])
-        style.configure("Card.TLabel", background=SURFACE)
-        style.configure("CardHeading.TLabel", background=SURFACE, font=self.fonts["heading"])
-        style.configure(
-            "CardHint.TLabel", background=SURFACE, foreground=MUTED, font=self.fonts["small"]
-        )
-        style.configure(
-            "CardError.TLabel", background=SURFACE, foreground=DANGER, font=self.fonts["body"]
-        )
-        style.configure("Brand.TLabel", background=SURFACE, font=self.fonts["brand"])
-        style.configure(
-            "Step.TLabel", background=SURFACE, foreground=MUTED, font=self.fonts["small"]
-        )
-        style.configure(
-            "Card.TRadiobutton",
-            background=SURFACE,
-            foreground=TEXT,
-            font=self.fonts["body"],
-            indicatorcolor=SURFACE,
-            indicatorbackground=SURFACE,
-        )
-        style.map(
-            "Card.TRadiobutton",
-            background=[("active", SURFACE)],
-            indicatorcolor=[("selected", ACCENT)],
-        )
-        style.configure(
-            "TCombobox",
-            fieldbackground=SURFACE,
-            background=SURFACE,
-            bordercolor=BORDER,
-            lightcolor=SURFACE,
-            darkcolor=SURFACE,
-            arrowcolor=MUTED,
-            padding=4,
-        )
-        style.map("TCombobox", fieldbackground=[("readonly", SURFACE)])
-        style.configure(
-            "TEntry",
-            fieldbackground=SURFACE,
-            bordercolor=BORDER,
-            lightcolor=SURFACE,
-            darkcolor=SURFACE,
-            padding=5,
-        )
-        style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
-        buttons = {
-            "TButton": (SURFACE, TEXT, "#d8d1c6", "#f4efe7", SURFACE),
-            "Primary.TButton": (ACCENT, "white", ACCENT, ACCENT_ACTIVE, "#e3bf95"),
-            "Danger.TButton": (DANGER, "white", DANGER, DANGER_ACTIVE, "#e0a39d"),
-        }
-        for name, (fill, ink, edge, active, muted) in buttons.items():
-            style.configure(
-                name,
-                background=fill,
-                foreground=ink,
-                bordercolor=edge,
-                lightcolor=fill,
-                darkcolor=fill,
-                focuscolor=fill,
-                relief="solid",
-                borderwidth=1,
-                padding=(12, 5),
-                font=self.fonts["body"],
-            )
-            style.map(
-                name,
-                background=[("disabled", muted), ("pressed", active), ("active", active)],
-                lightcolor=[("disabled", muted), ("pressed", active), ("active", active)],
-                darkcolor=[("disabled", muted), ("pressed", active), ("active", active)],
-                bordercolor=[("disabled", BORDER if fill == SURFACE else muted)],
-                foreground=[("disabled", "#b3aa9d" if fill == SURFACE else "white")],
-            )
-        # Compact buttons for dense lists (clipboard rows, filters).
-        # The theme's buttons are at least 11 characters wide; small ones fit their words.
-        for name in ("Small.TButton", "Small.Primary.TButton", "Small.Danger.TButton"):
-            style.configure(name, padding=(10, 2), font=self.fonts["small"], width=-6)
-        # Idle Record is neutral: the shortcut, not this button, is the main way in.
-        for name in ("", "Primary.", "Danger."):
-            style.configure(f"Record.{name}TButton", padding=(18, 10), font=self.fonts["record"])
-        # Header tabs: quiet text, the current one filled.
-        style.configure(
-            "Tab.TButton",
-            background=SURFACE,
-            foreground=MUTED,
-            bordercolor=SURFACE,
-            lightcolor=SURFACE,
-            darkcolor=SURFACE,
-            focuscolor=SURFACE,
-            relief="flat",
-            padding=(12, 4),
-            font=self.fonts["body"],
-        )
-        style.map(
-            "Tab.TButton",
-            background=[("active", ACCENT_SOFT)],
-            lightcolor=[("active", ACCENT_SOFT)],
-            darkcolor=[("active", ACCENT_SOFT)],
-            bordercolor=[("active", ACCENT_SOFT)],
-            foreground=[("active", ACCENT)],
-        )
-        style.configure(
-            "Tab.Current.TButton",
-            background=ACCENT_SOFT,
-            foreground=ACCENT,
-            bordercolor=ACCENT_SOFT,
-            lightcolor=ACCENT_SOFT,
-            darkcolor=ACCENT_SOFT,
-            focuscolor=ACCENT_SOFT,
-            relief="flat",
-            padding=(12, 4),
-            font=self.fonts["body"],
-        )
-        style.map(
-            "Tab.Current.TButton",
-            background=[("active", ACCENT_SOFT)],
-            lightcolor=[("active", ACCENT_SOFT)],
-            darkcolor=[("active", ACCENT_SOFT)],
-            bordercolor=[("active", ACCENT_SOFT)],
-            foreground=[("active", ACCENT_ACTIVE)],
-        )
-        style.configure("Toolbar.TFrame", background=BACKGROUND)
-        style.configure(
-            "Card.TCheckbutton",
-            background=SURFACE,
-            foreground=TEXT,
-            font=self.fonts["body"],
-            indicatorbackground=SURFACE,
-        )
-        style.map(
-            "Card.TCheckbutton",
-            background=[("active", SURFACE)],
-            indicatorcolor=[("selected", ACCENT)],
-        )
-        style.configure(
-            "Placeholder.TLabel", background=SURFACE, foreground=IDLE, font=self.fonts["body"]
-        )
-        style.configure(
-            "Link.TButton",
-            background=BACKGROUND,
-            foreground=ACCENT,
-            bordercolor=BACKGROUND,
-            lightcolor=BACKGROUND,
-            darkcolor=BACKGROUND,
-            focuscolor=BACKGROUND,
-            relief="flat",
-            padding=(4, 6),
-        )
-        style.map(
-            "Link.TButton",
-            foreground=[("disabled", IDLE), ("active", ACCENT_ACTIVE)],
-            background=[("active", BACKGROUND)],
-        )
-        style.configure(
-            "Vertical.TScrollbar",
-            background="#d9d2c7",
-            troughcolor=BACKGROUND,
-            bordercolor=BACKGROUND,
-            lightcolor="#d9d2c7",
-            darkcolor="#d9d2c7",
-            arrowcolor=MUTED,
-            relief="flat",
-        )
-        style.configure(
-            "TProgressbar",
-            background=ACCENT,
-            troughcolor="#ece7df",
-            bordercolor="#ece7df",
-            lightcolor=ACCENT,
-            darkcolor=ACCENT,
-            thickness=6,
-        )
+        self.fonts = app_styles.make_fonts()
+        self.colors = app_styles.make_colors()
+        app_styles.apply(self.root, self.fonts)
 
     def header(self) -> None:
         """Brand on the left; the tabs (or the setup step) on the right. Always in view."""
@@ -935,9 +766,27 @@ class App:
             style="CardHint.TLabel",
             wraplength=self.wraplength - 50,
         ).pack(anchor="w")
+        # An explicit, optional choice, off until ticked (nothing is sent before this step).
+        self.welcome_consent = tk.BooleanVar(master=self.root, value=False)
+        ttk.Checkbutton(
+            privacy,
+            text="Share anonymous crash reports and usage statistics (optional)",
+            variable=self.welcome_consent,
+            style="Card.TCheckbutton",
+        ).pack(anchor="w", pady=(10, 0))
+        ttk.Label(
+            privacy,
+            text="Never clipboard contents, transcripts, audio or keys. Change it anytime in Settings.",
+            style="CardHint.TLabel",
+            wraplength=self.wraplength - 50,
+        ).pack(anchor="w", padx=(26, 0))
         self.button("Get started", self.begin_setup, True, self.actions(), "right")
 
     def begin_setup(self) -> None:
+        record = getattr(telemetry, "set_consent", None)
+        choice = getattr(self, "welcome_consent", None)
+        if record is not None and choice is not None:
+            record(bool(choice.get()))
         self.choose_features()
 
     def choose_features(self, note: str = "") -> None:
@@ -1047,6 +896,53 @@ class App:
                 command=lambda: self.apply_mode(self.settings_mode.get()),
             ).pack(anchor="w", pady=(6, 0))
 
+    def sound_cues_row(self, parent: ttk.Frame, config: d.Config, setup: bool) -> None:
+        """Choose the audible cues (start, stop, error): saved as soon as it is picked."""
+        ttk.Label(parent, text="Sound cues", style="Card.TLabel").pack(anchor="w", pady=(14, 0))
+        labels = dict(app_settings.SOUND_CHOICES)
+        shown = tk.StringVar(master=self.root, value=labels.get(config.s("sounds"), ""))
+        picker = ttk.Combobox(
+            parent, textvariable=shown, state="readonly", values=tuple(labels.values())
+        )
+        picker.pack(fill="x", pady=(6, 0))
+
+        def save(_: object = None) -> None:
+            mode = next((key for key, text in labels.items() if text == shown.get()), "errors")
+            try:
+                self.service.set_sounds(mode)
+            except (d.DictationError, OSError) as exc:
+                self.status.set(str(exc))
+                return
+            telemetry.event("setting_changed", setting="notifications", on=mode != "off")
+            cues.play(
+                "error" if mode != "off" else "start", mode
+            )  # A sample of what it sounds like.
+            self.saved("Saved. It applies to your next recording.")
+
+        if not setup:
+            picker.bind("<<ComboboxSelected>>", save)
+
+    def permissions_card(self) -> None:
+        """What macOS still needs allowed (Accessibility, microphone), each with its Settings link."""
+        needed = self.service.permission_help()
+        if not needed:
+            return
+        card = self.card("Allow access", "Clipboard+ can’t do everything until macOS allows it.")
+        for title, why, url in needed:
+            ttk.Label(
+                card, text=why, style="CardHint.TLabel", wraplength=self.wraplength - 80
+            ).pack(anchor="w", pady=(8, 4))
+            self.button(
+                title,
+                functools.partial(self.open_privacy_settings, url),
+                parent=card,
+                side="left",
+            )
+
+    def open_privacy_settings(self, url: str) -> None:
+        if not permissions.open_settings(url):
+            self.status.set(f"Open this in your browser or Settings: {url}")
+
     def general_card(self) -> None:
         if desktop.platform_name() != "macos":
             return  # Windows and Linux toggle this from the tray icon's menu.
@@ -1073,15 +969,25 @@ class App:
     def privacy_card(self) -> None:
         card = self.card(
             "Privacy",
-            "Optional crash reports and feature counts help improve the app. "
-            "Reports never include clipboard contents, transcripts, audio or account keys.",
+            "Off unless you turn it on: optional crash reports and feature counts help "
+            "improve the app. Reports never include clipboard contents, transcripts, audio "
+            "or account keys.",
         )
         prefs = hotkeys.Preferences(self.service.paths)
-        self.share_usage = tk.BooleanVar(master=self.root, value=prefs.share_usage())
+        # telemetry's opt-in consent API when this build has it; the saved preference otherwise.
+        consented = getattr(telemetry, "has_consent", None)
+        self.share_usage = tk.BooleanVar(
+            master=self.root, value=bool(consented()) if consented else prefs.share_usage()
+        )
 
         def save() -> None:
-            prefs.save(share_usage=self.share_usage.get())
-            self.saved("Privacy preference saved.")
+            agree = self.share_usage.get()
+            record = getattr(telemetry, "set_consent", None)
+            if record is not None:
+                record(agree)
+            else:
+                prefs.save(share_usage=agree)
+            self.saved("Privacy preference saved." if agree else "Sharing is off.")
 
         ttk.Checkbutton(
             card,
@@ -1393,6 +1299,7 @@ class App:
             self.features_card()
             self.shortcuts_card()
             self.general_card()
+            self.permissions_card()
         self.clipboard_options_card()
         self.clipboard_plus_card()
         self.privacy_card()
@@ -1459,9 +1366,32 @@ class App:
                 "right",
             )
             return
-        self.language.set(
-            "English" if config.s("language") == "en" else "Multilingual / auto-detect"
-        )
+        self.load_settings(config)
+        remote = config.s("backend") == "http"
+        self.voice_card(config, setup)
+        self.ai_card(config, setup, remote)
+        if not setup:  # During setup the choice was just made; changing it here strands it.
+            self.features_card()
+            self.shortcuts_card()
+            self.general_card()
+            self.permissions_card()
+        if self.features().clipboard:
+            self.clipboard_options_card()
+        self.clipboard_plus_card()
+        if not setup:
+            self.privacy_card()
+            self.update_card()
+        if setup:
+            self.button("Continue", self.prepare, True, self.actions(), "right")
+            self.button("Back", self.choose_features, parent=self.actions(), side="left")
+        else:
+            self.settings_snapshot = self.settings_values()
+        # Discovery only lists devices; it never opens the microphone.
+        self.root.after_idle(self.find_microphones)
+
+    def load_settings(self, config: d.Config) -> None:
+        """Put the saved dictation settings into the form variables."""
+        self.language.set(app_settings.language_label(config.s("language")))
         self.device.set(config.s("device"))
         existing = config.s("model") if os.path.isfile(config.s("model")) else ""
         self.model.set(existing)
@@ -1470,23 +1400,17 @@ class App:
         self.endpoint.set(config.s("endpoint"))
         self.api_model.set(config.s("api_model"))
         self.api_key.set("")
-        self.provider.set(
-            next(
-                (
-                    name
-                    for name, (url, _) in PROVIDERS.items()
-                    if url and url == config.s("endpoint")
-                ),
-                list(PROVIDERS)[-1] if remote else next(iter(PROVIDERS)),
-            )
-        )
+        self.provider.set(app_settings.provider_name(config.s("endpoint"), remote, PROVIDERS))
+
+    def voice_card(self, config: d.Config, setup: bool) -> None:
+        """Language, microphone (with Test) and the dictation switches."""
         voice = self.card("Dictation")
         ttk.Label(voice, text="Language", style="Card.TLabel").pack(anchor="w")
         language = ttk.Combobox(
             voice,
             textvariable=self.language,
             state="readonly",
-            values=("English", "Multilingual / auto-detect"),
+            values=app_settings.LANGUAGES,
         )
         language.pack(fill="x", pady=(6, 16))
         ttk.Label(voice, text="Microphone", style="Card.TLabel").pack(anchor="w")
@@ -1503,12 +1427,7 @@ class App:
         self.mic_button = self.button("Test", self.test_microphone, parent=row, side="right")
         # A live level meter while testing (hidden otherwise).
         self.meter = tk.Canvas(voice, height=10, background=SURFACE, highlightthickness=0)
-        for key, text in (
-            ("auto_paste", "Automatically paste into the app I am using"),
-            ("overlay", "Show the recording bar (voice levels, then “Copied”)"),
-            ("live", "Show a live draft while recording (uses more processing)"),
-            ("notifications", "Also show desktop notifications (always on without the bar)"),
-        ):
+        for key, text in app_settings.VOICE_SWITCHES:
             switch = tk.BooleanVar(master=self.root, value=config.b(key))
             ttk.Checkbutton(
                 voice,
@@ -1517,21 +1436,13 @@ class App:
                 style="Card.TCheckbutton",
                 command=functools.partial(self.set_option, key, switch),
             ).pack(anchor="w", pady=(10 if key == "overlay" else 4, 0))
+        self.sound_cues_row(voice, config, setup)
+
+    def ai_card(self, config: d.Config, setup: bool, remote: bool) -> None:
+        """Where transcription runs: on-device, a model file, or an AI service."""
         ai = self.card("Transcription AI", "What turns your voice into text.")
         self.choices: dict[str, tuple[ttk.Frame, ttk.Widget]] = {}
-        for value, title, hint in (
-            (
-                "download",
-                "Free on-device AI (recommended)",
-                "Private: audio never leaves this computer. One-time 148 MB download.",
-            ),
-            ("file", "A Whisper model file I already have", ""),
-            (
-                "service",
-                "My own AI service",
-                "Fast on any computer. Audio is sent to the service you choose, which may charge.",
-            ),
-        ):
+        for value, title, hint in app_settings.MODEL_CHOICES:
             anchor: ttk.Widget = ttk.Radiobutton(
                 ai,
                 text=title,
@@ -1597,26 +1508,9 @@ class App:
                 self.traces.append(
                     (variable, variable.trace_add("write", lambda *_: self.after_edit()))
                 )
-        if not setup:  # During setup the choice was just made; changing it here strands it.
-            self.features_card()
-            self.shortcuts_card()
-            self.general_card()
-        if self.features().clipboard:
-            self.clipboard_options_card()
-        self.clipboard_plus_card()
-        if not setup:
-            self.privacy_card()
-            self.update_card()
-        if setup:
-            self.button("Continue", self.prepare, True, self.actions(), "right")
-            self.button("Back", self.choose_features, parent=self.actions(), side="left")
-        else:
-            self.settings_snapshot = self.settings_values()
-        # Discovery only lists devices; it never opens the microphone.
-        self.root.after_idle(self.find_microphones)
 
     def save_voice(self) -> None:
-        language = "en" if self.language.get() == "English" else "auto"
+        language = app_settings.language_code(self.language.get())
         device = self.device_ids.get(self.device.get(), self.device.get())
         try:
             self.service.set_voice(language, device)
@@ -1756,7 +1650,7 @@ class App:
         self.status.set(f"{found} Pick the one you’ll speak into.")
 
     def prepare(self) -> None:
-        language = "en" if self.language.get() == "English" else "auto"
+        language = app_settings.language_code(self.language.get())
         device = self.device_ids.get(self.device.get(), self.device.get())
         source = self.model_source.get()
         model = self.model.get() if source == "file" else ""
@@ -1893,6 +1787,13 @@ class App:
         if self.features().clipboard or self.service.clipboard_plus_linked():
             self.account = clipui.AccountCard(self)
 
+    def sharing_usage(self) -> bool:
+        """Whether the user has agreed to share reports (the consent API when this build has one)."""
+        consented = getattr(telemetry, "has_consent", None)
+        if consented is not None:
+            return bool(consented())
+        return hotkeys.Preferences(self.service.paths).share_usage()
+
     def finish_setup(self) -> None:
         features = self.features()
         telemetry.event(
@@ -1900,7 +1801,7 @@ class App:
             mode=self.setup_mode or "both",
             dictation=features.dictation,
             clipboard=features.clipboard,
-            share_usage=hotkeys.Preferences(self.service.paths).share_usage(),
+            share_usage=self.sharing_usage(),
         )
         self.submit(self.service.complete, lambda _: self.leave(), "Saving your setup…")
 
@@ -1989,37 +1890,24 @@ class App:
             back()  # Leaving the page ends the capture.
 
     def home(self) -> None:
-        shortcut = hotkeys.Preferences(self.service.paths).shortcut().label()
-        platform = desktop.platform_name()
-        paste = "Command\u00a0+\u00a0V" if platform == "macos" else "Ctrl\u00a0+\u00a0V"
-        if platform == "linux":
-            paste += " (Ctrl\u00a0+\u00a0Shift\u00a0+\u00a0V in a terminal)"
-        conflict = hotkeys.shortcut_conflict(self.service.paths)
-        if conflict is not None:
-            title = f"{shortcut} is taken by something else"
-            subtitle = (
-                f"{conflict.name[0].upper() + conflict.name[1:]} also uses {shortcut} and gets it "
-                "first, so dictation doesn’t start. Until you fix it, record from here."
-            )
-        elif hotkeys.shortcut_working(self.service.paths):
-            title = f"Press {shortcut} to dictate"
-            subtitle = (
-                f"It works in any app: press it, speak, press it again, then paste with {paste}. "
-                "You don’t need this window."
-            )
-        elif platform == "linux":
-            title = "Set up your shortcut"
-            subtitle = (
-                "This desktop can’t set shortcuts automatically. In your keyboard settings, "
-                f"assign {shortcut} to ~/.local/bin/dictate-toggle. Until then, record from here."
-            )
-        else:
-            title = f"{shortcut} is taken"
-            subtitle = (
-                f"Another app already uses {shortcut}. Choose a different shortcut below. "
-                "Until then, record from here."
-            )
+        paths = self.service.paths
+        shortcut = hotkeys.Preferences(paths).shortcut().label()
+        conflict = hotkeys.shortcut_conflict(paths)
+        title, subtitle = app_settings.home_text(
+            shortcut,
+            conflict,
+            hotkeys.shortcut_working(paths),
+            desktop.platform_name(),
+            hotkeys.shortcut_message(paths),
+        )
         self.reset("home", title, subtitle)
+        self.home_fixes(shortcut, conflict, title)
+        self.home_record_controls()
+        self.home_status_line()
+        self.home_transcript_actions()
+
+    def home_fixes(self, shortcut: str, conflict: hotkeys.Conflict | None, title: str) -> None:
+        """Buttons that fix a shortcut that isn't working."""
         if conflict is None and title == f"{shortcut} is taken":
             fixes = ttk.Frame(self.frame)
             fixes.pack(fill="x", pady=(0, 12))
@@ -2047,6 +1935,9 @@ class App:
                 parent=fixes,
                 side="left",
             )
+
+    def home_record_controls(self) -> None:
+        """The optional Record and Cancel buttons."""
         ttk.Label(
             self.frame,
             text="Optional: record from here instead",
@@ -2067,6 +1958,9 @@ class App:
         )
         self.cancel.pack(side="left", fill="y", padx=(10, 0))
         self.buttons.extend([self.record, self.cancel])
+
+    def home_status_line(self) -> None:
+        """The status dot and text, then the transcript box."""
         line = ttk.Frame(self.frame)
         line.pack(fill="x", pady=(14, 8))
         self.indicator = tk.Canvas(
@@ -2096,6 +1990,9 @@ class App:
         self.transcript.tag_configure("placeholder", foreground=IDLE)
         self.transcript.pack(fill="both", expand=True)
         self.show_transcript("")
+
+    def home_transcript_actions(self) -> None:
+        """Copy, Make concise, Retry and Discard, shown only when they apply."""
         row = ttk.Frame(self.frame)
         row.pack(fill="x")
         self.copy = ttk.Button(row, text="Copy transcript", command=lambda: self.action("copy"))
@@ -2416,6 +2313,7 @@ class App:
                 else "Something went wrong. Check microphone permissions, connections, and free disk space, then retry."
             )
         except Exception as exc:  # noqa: BLE001 - never let one failure stop the window updating.
+            log.exception("window update failed")
             telemetry.capture(exc, page=self.page)
             self.status.set("Something went wrong. Please try again.")
         if self.page != "closed":

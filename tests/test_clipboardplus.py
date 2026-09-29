@@ -25,6 +25,108 @@ def response(status: int) -> Mock:
     return reply
 
 
+class FakeKeyring:
+    """The slice of the `keyring` package the app uses, kept in a dict."""
+
+    def __init__(self, broken: bool = False) -> None:
+        self.items: dict[tuple[str, str], str] = {}
+        self.broken = broken
+
+    def set_password(self, service, name, value):
+        if self.broken:
+            raise RuntimeError("No recommended backend was available.")
+        self.items[(service, name)] = value
+
+    def get_password(self, service, name):
+        if self.broken:
+            raise RuntimeError("No recommended backend was available.")
+        return self.items.get((service, name))
+
+    def delete_password(self, service, name):
+        if self.broken:
+            raise RuntimeError("No recommended backend was available.")
+        del self.items[(service, name)]
+
+
+class KeychainTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name) / "config"
+        self.keyring = FakeKeyring()
+        patcher = patch.object(cp, "_keyring", side_effect=lambda: self.keyring)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_key_lives_in_the_keychain_and_the_file_is_only_a_marker(self):
+        cp.save_key(self.folder, KEY)
+        self.assertEqual(list(self.keyring.items.values()), [KEY])
+        self.assertEqual(cp.key_path(self.folder).read_text(), cp.KEYRING_MARKER)
+        self.assertNotIn(KEY, cp.key_path(self.folder).read_text())
+        self.assertEqual(cp.read_key(self.folder), KEY)
+        self.assertTrue(cp.linked(self.folder))
+        cp.remove_key(self.folder)
+        self.assertEqual(self.keyring.items, {})
+        self.assertFalse(cp.linked(self.folder))
+        self.assertFalse(cp.key_path(self.folder).exists())
+
+    def test_a_plaintext_key_from_an_older_version_is_migrated_once_and_wiped(self):
+        self.folder.mkdir(parents=True)
+        cp.key_path(self.folder).write_text(KEY + "\n")
+        self.assertEqual(cp.read_key(self.folder), KEY)
+        self.assertEqual(list(self.keyring.items.values()), [KEY])
+        self.assertEqual(cp.key_path(self.folder).read_text(), cp.KEYRING_MARKER)
+        self.assertEqual(cp.read_key(self.folder), KEY)  # Now read from the keychain.
+        leftovers = [p for p in self.folder.iterdir() if p.name != cp.key_path(self.folder).name]
+        self.assertEqual(leftovers, [])
+
+    def test_a_missing_keychain_entry_means_not_linked(self):
+        cp.save_key(self.folder, KEY)
+        self.keyring.items.clear()
+        self.assertEqual(cp.read_key(self.folder), "")
+
+    def test_a_keychain_that_fails_falls_back_to_a_private_file(self):
+        self.keyring.broken = True
+        cp.save_key(self.folder, KEY)
+        self.assertEqual(cp.key_path(self.folder).read_text(), KEY)
+        self.assertEqual(cp.read_key(self.folder), KEY)
+        if sys.platform != "win32":
+            self.assertEqual(stat.S_IMODE(cp.key_path(self.folder).stat().st_mode), 0o600)
+        cp.remove_key(self.folder)  # A broken keychain must not stop removal.
+        self.assertFalse(cp.key_path(self.folder).exists())
+
+    def test_a_failed_migration_keeps_the_file_and_tightens_it(self):
+        self.keyring.broken = True
+        self.folder.mkdir(parents=True)
+        path = cp.key_path(self.folder)
+        path.write_text(KEY)
+        if sys.platform != "win32":
+            path.chmod(0o644)
+        self.assertEqual(cp.read_key(self.folder), KEY)
+        self.assertEqual(path.read_text(), KEY)
+        if sys.platform != "win32":
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_keychain_is_off_under_the_test_runner_and_by_switch(self):
+        patch.stopall()
+        self.assertIsNone(cp._keyring())  # unittest is loaded and no test opt-in is set.
+        with patch.dict(
+            os.environ, {"CLIPBOARDPLUS_KEYRING_TESTS": "1", "CLIPBOARDPLUS_KEYRING": "0"}
+        ):
+            self.assertIsNone(cp._keyring())
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
+    def test_the_fallback_file_is_never_group_or_world_readable_even_with_umask_zero(self):
+        self.keyring.broken = True
+        previous = os.umask(0)
+        try:
+            cp.save_key(self.folder, KEY)
+        finally:
+            os.umask(previous)
+        self.assertEqual(stat.S_IMODE(cp.key_path(self.folder).stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.folder.stat().st_mode), 0o700)
+
+
 class KeyStorageTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

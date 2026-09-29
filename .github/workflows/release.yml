@@ -1,11 +1,66 @@
 name: Release
+# Releasing is automatic: change APP_VERSION in lib/desktop.py (tools/bump_version.py
+# does it consistently) and merge to main. If v<APP_VERSION> has not been released
+# yet, the tests run, all three installers are built, and the release (with its
+# tag) is published only once everything succeeded. Re-running on the same version
+# is a no-op. "Run workflow" rebuilds a version whose release does not exist yet.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["lib/desktop.py"]
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Decide whether this version still needs a release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(python3 -c "import sys; sys.path.insert(0, 'lib'); import desktop; print(desktop.APP_VERSION)")"
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx false ||
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag is already released; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  tests:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/quality.yml
+
+  # A draft release collects the files; it becomes public (and the tag appears)
+  # only in the final job, so nobody ever sees a half-built release.
+  draft:
+    needs: [plan, tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or reset the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "Clipboard+ ${TAG#v}" --generate-notes
+
   build:
+    needs: [plan, draft]
     strategy:
       fail-fast: false
       matrix:
@@ -27,32 +82,31 @@ jobs:
       # Same pin as install.sh's source-install build — keep them in sync.
       WHISPER_VERSION: v1.8.7
       WHISPER_COMMIT: 48f628a84833905ee4a0658ee6d4a5c915ce1997
+      # Supply chain: exact versioned URLs, each verified against a SHA-256 below.
+      # Bump the URL and hash together (sha256sum the download; gyan.dev also
+      # publishes the Windows hash next to the archive as <name>.sha256).
+      FFMPEG_LINUX_URL: https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz
+      FFMPEG_LINUX_SHA256: abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67
+      FFMPEG_WINDOWS_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip
+      FFMPEG_WINDOWS_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
+      APPIMAGETOOL_VERSION: "1.9.1"
+      APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
-      - run: python -m pip install -r requirements-dev.txt pyinstaller
-      # The tray/menu-bar entry point needs the same GUI toolkit setup-desktop.py
-      # installs into its private venv for a source install — PyInstaller can
-      # only bundle what's actually importable while it analyzes the code.
-      - name: Install GUI runtime deps (macOS)
-        if: runner.os == 'macOS'
-        run: python -m pip install "pyobjc-framework-Cocoa==12.2.2" "Pillow==12.3.0"
-      - name: Install GUI runtime deps (Linux)
-        if: runner.os == 'Linux'
-        run: python -m pip install "pystray==0.19.5" "Pillow==12.3.0" "python-xlib==0.33"
-      - name: Install GUI runtime deps (Windows)
-        if: runner.os == 'Windows'
-        run: python -m pip install "pystray==0.19.5" "Pillow==12.3.0"
+      # Dev tooling, the GUI toolkit (the tray/menu-bar entry points need it while
+      # PyInstaller analyzes them) and the pinned PyInstaller: one place each.
+      - run: python -m pip install -r requirements-release.txt
       - run: pyinstaller ${{ matrix.spec }}
       - name: Bundle ffmpeg + whisper.cpp (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -e
-          curl -fsSL -o /tmp/ffmpeg-static.tar.xz \
-            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          curl -fsSL -o /tmp/ffmpeg-static.tar.xz "$FFMPEG_LINUX_URL"
+          echo "$FFMPEG_LINUX_SHA256  /tmp/ffmpeg-static.tar.xz" | sha256sum -c -
           mkdir -p /tmp/ffmpeg-static
           tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp/ffmpeg-static --strip-components=1
           cp /tmp/ffmpeg-static/ffmpeg dist/clipboardplus/ffmpeg
@@ -97,7 +151,10 @@ jobs:
           # on an end user's Mac — copy it in and let dylibbundler pull its
           # dependency tree into a sibling libs/ folder, rewriting load paths
           # to find it there instead of under /opt/homebrew.
+          # (Homebrew bottles are checksum-verified by brew itself but float with
+          # the formula version; the exact version is logged for the record.)
           brew install ffmpeg dylibbundler
+          ffmpeg -version | head -1
           cp "$(brew --prefix ffmpeg)/bin/ffmpeg" dist/clipboardplus/ffmpeg
           dylibbundler -od -b \
             -x dist/clipboardplus/ffmpeg \
@@ -108,7 +165,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Invoke-WebRequest -Uri $env:FFMPEG_WINDOWS_URL -OutFile ffmpeg.zip
+          $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:FFMPEG_WINDOWS_SHA256) {
+            throw "ffmpeg.zip SHA-256 mismatch: expected $($env:FFMPEG_WINDOWS_SHA256), got $actual"
+          }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extract
           $ffmpegExe = Get-ChildItem -Path ffmpeg-extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           Copy-Item $ffmpegExe.FullName dist\clipboardplus\ffmpeg.exe
@@ -123,6 +184,21 @@ jobs:
           $server = Get-ChildItem -Path whisper.cpp-src\build -Recurse -Filter whisper-server.exe | Select-Object -First 1
           Copy-Item $cli.FullName dist\clipboardplus\whisper-cli.exe
           Copy-Item $server.FullName dist\clipboardplus\whisper-server.exe
+      - name: Bundle license notices
+        shell: bash
+        run: cp LICENSE THIRD-PARTY-NOTICES.md dist/clipboardplus/
+      - name: Detect signing credentials
+        id: signing
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          [ -n "$APPLE_CERTIFICATE" ] && echo "apple=true" >> "$GITHUB_OUTPUT" || true
+          [ -n "$AZURE_CLIENT_SECRET" ] && echo "azure=true" >> "$GITHUB_OUTPUT" || true
+          [ -n "$WINDOWS_CERTIFICATE" ] && echo "pfx=true" >> "$GITHUB_OUTPUT" || true
+          echo "Unsigned fallbacks apply for any platform without secrets (see packaging/README.md)."
       - name: Smoke-launch every bundled entry point
         shell: bash
         run: |
@@ -136,26 +212,198 @@ jobs:
       - name: Wrap (Linux)
         if: runner.os == 'Linux'
         run: |
-          curl -fsSL -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          curl -fsSL -o /usr/local/bin/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          echo "$APPIMAGETOOL_SHA256  /usr/local/bin/appimagetool" | sha256sum -c -
           chmod +x /usr/local/bin/appimagetool
           bash ${{ matrix.wrap }}
+      - name: Import Developer ID certificate (macOS)
+        if: runner.os == 'macOS' && steps.signing.outputs.apple == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -e
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
       - name: Wrap (macOS)
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          # Empty when unset: build-dmg.sh then falls back to the ad-hoc identity.
+          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.apple == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
         run: |
           bash ${{ matrix.wrap }}
           mv dist/Clipboard+.dmg "${{ matrix.asset }}"
+      - name: Notarize and staple (macOS)
+        if: runner.os == 'macOS' && steps.signing.outputs.apple == 'true'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -e
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "${{ matrix.asset }}"
+          xcrun notarytool submit "${{ matrix.asset }}" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
+          xcrun stapler staple "${{ matrix.asset }}"
+          xcrun stapler validate "${{ matrix.asset }}"
+      - name: Sign bundled executables (Windows, Azure Trusted Signing)
+        if: runner.os == 'Windows' && steps.signing.outputs.azure == 'true'
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\clipboardplus\Clipboard+.exe,${{ github.workspace }}\dist\clipboardplus\app.exe,${{ github.workspace }}\dist\clipboardplus\dictation.exe,${{ github.workspace }}\dist\clipboardplus\engine.exe,${{ github.workspace }}\dist\clipboardplus\overlay.exe,${{ github.workspace }}\dist\clipboardplus\updates.exe,${{ github.workspace }}\dist\clipboardplus\clipservice.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Sign bundled executables (Windows, PFX certificate)
+        if: runner.os == 'Windows' && steps.signing.outputs.azure != 'true' && steps.signing.outputs.pfx == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\codesign.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          foreach ($name in "Clipboard+", "app", "dictation", "engine", "overlay", "updates", "clipservice") {
+            & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f "$env:RUNNER_TEMP\codesign.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD "dist\clipboardplus\$name.exe"
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $name" }
+          }
       - name: Wrap (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install innosetup -y
+          choco install innosetup --version=6.4.3 -y
           $version = python -c "import sys; sys.path.insert(0, 'lib'); import desktop; print(desktop.APP_VERSION)"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging\windows\clipboardplus.iss
+      - name: Sign installer (Windows, Azure Trusted Signing)
+        if: runner.os == 'Windows' && steps.signing.outputs.azure == 'true'
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\Clipboard+-Setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Sign installer (Windows, PFX certificate)
+        if: runner.os == 'Windows' && steps.signing.outputs.azure != 'true' && steps.signing.outputs.pfx == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f "$env:RUNNER_TEMP\codesign.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD "dist\Clipboard+-Setup.exe"
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for the installer" }
+          Remove-Item "$env:RUNNER_TEMP\codesign.pfx" -Force
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      - name: Inspect the built installer (Linux AppImage)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          cd "$RUNNER_TEMP"
+          cp "$GITHUB_WORKSPACE/${{ matrix.asset }}" ./inspect.AppImage
+          chmod +x inspect.AppImage
+          ./inspect.AppImage --appimage-extract >/dev/null
+          for f in AppRun usr/bin/tray usr/bin/ffmpeg usr/bin/whisper-cli usr/bin/whisper-server \
+            usr/share/doc/clipboardplus/LICENSE usr/share/doc/clipboardplus/THIRD-PARTY-NOTICES.md \
+            usr/share/clipboardplus/uninstall-appimage.sh clipboardplus.desktop; do
+            test -e "squashfs-root/$f" || { echo "::error::AppImage is missing $f"; exit 1; }
+          done
+          test -x squashfs-root/usr/bin/ffmpeg
+          squashfs-root/usr/bin/ffmpeg -version | head -1
+          squashfs-root/usr/bin/whisper-cli --help >/dev/null 2>&1 || true
+      - name: Inspect the built installer (macOS DMG)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          mount="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$mount"
+          hdiutil attach "${{ matrix.asset }}" -mountpoint "$mount" -nobrowse -readonly
+          trap 'hdiutil detach "$mount" -force || true' EXIT
+          app="$mount/Clipboard+.app"
+          test -d "$app"
+          test -f "$mount/Install Clipboard+.command"
+          test -f "$mount/Uninstall Clipboard+.command"
+          test -f "$app/Contents/Resources/LICENSE"
+          test -x "$app/Contents/MacOS/ffmpeg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if [ "${{ steps.signing.outputs.apple }}" = "true" ]; then
+            spctl --assess --type execute --verbose=2 "$app"
+            xcrun stapler validate "${{ matrix.asset }}"
+          fi
+          plutil -lint "$app/Contents/Info.plist"
+      - name: Inspect the built installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $target = Join-Path $env:RUNNER_TEMP "clipboardplus-install-check"
+          $proc = Start-Process -FilePath "dist\Clipboard+-Setup.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=$target" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "installer exited with $($proc.ExitCode)" }
+          foreach ($f in "Clipboard+.exe", "ffmpeg.exe", "whisper-cli.exe", "LICENSE", "THIRD-PARTY-NOTICES.md", "unins000.exe") {
+            if (-not (Test-Path (Join-Path $target $f))) { throw "installed folder is missing $f" }
+          }
+          $un = Start-Process -FilePath (Join-Path $target "unins000.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait -PassThru
+          if ($un.ExitCode -ne 0) { throw "uninstaller exited with $($un.ExitCode)" }
       - name: Checksum
         run: python packaging/checksum.py "${{ matrix.asset }}"
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          files: |
-            ${{ matrix.asset }}
-            ${{ matrix.asset }}.sha256
+      - name: Upload to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: gh release upload "$TAG" "${{ matrix.asset }}" "${{ matrix.asset }}.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+
+  # The updater and bootstrap scripts verify downloads against SHA256SUMS, so
+  # publish the source archives and one manifest covering every release file.
+  publish-manifest:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Build source archives, upload SHA256SUMS, publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+          mkdir out && cd out
+          git -C .. archive --format=tar.gz --prefix="clipboardplus-${tag}/" -o "$PWD/clipboardplus-source-${tag}.tar.gz" "$GITHUB_SHA"
+          git -C .. archive --format=zip --prefix="clipboardplus-${tag}/" -o "$PWD/clipboardplus-source-${tag}.zip" "$GITHUB_SHA"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256'
+          cat ./*.sha256 > SHA256SUMS.installers
+          rm ./*.sha256
+          sha256sum "clipboardplus-source-${tag}.tar.gz" "clipboardplus-source-${tag}.zip" > SHA256SUMS.source
+          cat SHA256SUMS.installers SHA256SUMS.source > SHA256SUMS
+          rm SHA256SUMS.installers SHA256SUMS.source
+          cat SHA256SUMS
+          gh release upload "$tag" SHA256SUMS "clipboardplus-source-${tag}.tar.gz" "clipboardplus-source-${tag}.zip" --repo "$GITHUB_REPOSITORY" --clobber
+          # Publishing creates the tag at the commit the draft targeted.
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest

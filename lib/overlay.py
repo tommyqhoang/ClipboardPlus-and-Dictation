@@ -10,7 +10,9 @@ the desktop notifications rather than replacing them.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -22,10 +24,18 @@ from dataclasses import dataclass
 from tkinter import font
 from typing import Any
 
+import cues
 import desktop
 import dictation as d
 import hotkeys
 import telemetry
+
+try:
+    import logsetup
+
+    log = logsetup.get_logger("overlay")
+except ImportError:
+    log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT, DRAFT_HEIGHT = 480, 76, 104
 MARGIN = 200  # Below the top edge: clear of the top bar and notification banners.
@@ -62,6 +72,30 @@ def primary_monitor(listing: str) -> tuple[int, int, int, int] | None:
             return x, y, width, height
         first = first or (x, y, width, height)
     return first
+
+
+# Exit codes for the worker: it falls back to notifications for either.
+EXIT_NO_DISPLAY = 3
+EXIT_UNSUPPORTED = 4
+
+
+def pill_unsupported(environ: dict[str, str] | None = None) -> str:
+    """Why the floating pill can't work here, or "" when it should.
+
+    Tk draws through X11 (XWayland on Wayland). Tiling Wayland compositors (Sway,
+    Hyprland) tile that window instead of floating it, and there is no layer-shell to
+    ask for a floating overlay, so notifications and sounds carry the session there.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("DICTATION_PILL") == "0":
+        return "the pill is turned off (DICTATION_PILL=0)"
+    if desktop.platform_name() != "linux":
+        return ""
+    if not env.get("DISPLAY"):
+        return "there is no X11 or XWayland display for the pill"
+    if env.get("SWAYSOCK") or env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return "this Wayland compositor would tile the pill instead of floating it"
+    return ""
 
 
 def elapsed(seconds: float) -> str:
@@ -118,6 +152,11 @@ class Overlay:
         self.draft = ""
         self._last_state = 0.0
         self.closed = False
+        self.sounds = cues.DEFAULT_MODE
+        try:
+            self.sounds = cues.mode_from(d.Config(paths).s("sounds"))
+        except d.DictationError as exc:
+            log.info("using the default sound cues: %s", exc)
         self._next: str | None = None  # The one scheduled frame.
         self._drawn_mode = ""  # What the canvas currently shows (see tick's use of _settled).
         self._drawn_settled = False
@@ -140,8 +179,8 @@ class Overlay:
         try:
             root.attributes("-topmost", True)
             root.attributes("-alpha", 0.0)
-        except tk.TclError:
-            pass
+        except tk.TclError as exc:
+            log.info("no transparency or always-on-top here: %s", exc)
         self.canvas = tk.Canvas(
             root,
             width=WIDTH,
@@ -253,8 +292,51 @@ class Overlay:
             self.ended_at = now
         if current.mode == "error" and self.mode != "error":
             self._place(DRAFT_HEIGHT)  # Room for the whole message.
+        if current.mode != self.mode:
+            self._cue(current.mode)
         self.mode, self.message = current.mode, current.message
+        self._name_window()
         self._read_draft()
+
+    def _cue(self, mode: str) -> None:
+        """The sound for a change of state (start, stop or error), if the setting asks."""
+        kind = {
+            "recording": "start",
+            "copied": "stop",
+            "empty": "stop",
+            "cancelled": "stop",
+            "error": "error",
+        }.get(mode)
+        if kind:
+            cues.play(kind, self.sounds)
+
+    @property
+    def accessible_name(self) -> str:
+        """One sentence a screen reader can announce for the pill's current state."""
+        mode = self.mode
+        if mode == "recording":
+            clock = elapsed(self._since_start(self._clock()))
+            text = f"recording, {clock}. {self.hint}"
+        elif mode in ("transcribing", "starting"):
+            text = "transcribing your recording" if mode == "transcribing" else "starting"
+        elif mode == "copied":
+            text = "done, the transcript is copied"
+        elif mode == "empty":
+            text = "no speech detected"
+        elif mode == "cancelled":
+            text = "recording cancelled"
+        elif mode == "error":
+            text = "stopped. " + (self.message or "Something went wrong.")
+        else:
+            text = mode
+        return f"{hotkeys.APP_NAME} dictation: {text}"
+
+    def _name_window(self) -> None:
+        """Give the window that name: assistive tools read a window's title."""
+        try:
+            self.root.title(self.accessible_name)
+        except tk.TclError as exc:
+            log.debug("could not name the pill window: %s", exc)
 
     def _since_start(self, now: float) -> float:
         return now - self.started_at if self.started_at is not None else 0.0
@@ -262,7 +344,7 @@ class Overlay:
     def _read_draft(self) -> None:
         try:
             text = self.paths.preview.read_text(encoding="utf-8").strip()
-        except OSError:
+        except OSError:  # No draft yet.
             text = ""
         draft = " ".join(text.split())[-64:]
         if draft != self.draft:
@@ -277,7 +359,8 @@ class Overlay:
                 size = audio.seek(0, 2)
                 audio.seek(max(0, size - WINDOW_SAMPLES * 2) // 2 * 2)
                 return d.audio_level(audio.read(WINDOW_SAMPLES * 2))
-        except OSError:
+        except OSError as exc:
+            log.debug("could not read the audio level: %s", exc)
             return 0.0
 
     def _targets(self, now: float) -> list[float]:
@@ -304,8 +387,9 @@ class Overlay:
         now = self._clock()
         try:
             self._read_state()
-        except (d.DictationError, OSError):
-            pass  # Mid-replace (Windows) or briefly unreadable: keep the last view.
+        except (d.DictationError, OSError) as exc:
+            # Mid-replace (Windows) or briefly unreadable: keep the last view.
+            log.debug("pill could not read the session state: %s", exc)
         for i, target in enumerate(self._targets(now)):
             # Rise quickly with the voice, fall back gently.
             speed = 0.6 if target > self.heights[i] else 0.18
@@ -349,8 +433,8 @@ class Overlay:
             fade = max(0.0, 1.0 - max(0.0, now - self.ended_at - hold) / 0.35)
         try:
             self.root.attributes("-alpha", 0.96 * min(appear, fade))
-        except tk.TclError:
-            pass
+        except tk.TclError as exc:
+            log.debug("could not fade the pill: %s", exc)
 
     def draw(self, now: float) -> None:
         canvas = self.canvas
@@ -482,10 +566,15 @@ def main() -> int:
         print("usage: overlay.py TOKEN", file=sys.stderr)
         return 2
     telemetry.install("pill")
+    reason = pill_unsupported()
+    if reason:
+        log.info("no recording pill: %s", reason)
+        return EXIT_UNSUPPORTED  # Notifications and sounds still tell the story.
     try:
         root = tk.Tk(className="dictation-overlay")
-    except tk.TclError:
-        return 3  # No display: the notifications still tell the story.
+    except tk.TclError as exc:
+        log.info("no recording pill: %s", exc)
+        return EXIT_NO_DISPLAY  # No display: the notifications still tell the story.
     telemetry.watch_tk(root)
     overlay = Overlay(root, d.Paths(), sys.argv[1])
     root.update_idletasks()

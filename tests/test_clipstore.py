@@ -35,6 +35,89 @@ class StoreCase(unittest.TestCase):
         self.addCleanup(self.store.close)
 
 
+class PermissionTests(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
+    def test_everything_is_owner_only_from_creation_even_with_a_permissive_umask(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder) / "clipboard"
+            previous = os.umask(0)
+            try:
+                store = clipstore.Store(directory)
+                store.add_text("hello", now=1.0)
+                store.add_image(make_png(), now=2.0)
+            finally:
+                os.umask(previous)
+            try:
+                for path in (directory, directory / "images", directory / "thumbs"):
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, path)
+                names = {p.name for p in directory.iterdir() if p.is_file()}
+                self.assertIn("clips.db", names)
+                for path in [p for p in directory.rglob("*") if p.is_file()]:
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path)
+            finally:
+                store.close()
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
+    def test_the_umask_is_restored_after_opening(self):
+        with tempfile.TemporaryDirectory() as folder:
+            previous = os.umask(0o022)
+            try:
+                store = clipstore.Store(Path(folder) / "clipboard")
+                current = os.umask(0o022)
+            finally:
+                os.umask(previous)
+            store.close()
+            self.assertEqual(current, 0o022)
+
+    def test_a_symbolic_link_database_is_refused(self):
+        if not hasattr(os, "symlink"):
+            self.skipTest("no symlinks")
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder) / "clipboard"
+            directory.mkdir()
+            try:
+                os.symlink(Path(folder) / "elsewhere.db", directory / "clips.db")
+            except OSError:
+                self.skipTest("cannot create symlinks here")
+            with self.assertRaises(clipstore.StoreError):
+                clipstore.Store(directory)
+
+    def test_windows_gets_an_owner_only_acl_on_the_data_folder(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(sys, "platform", "win32"):
+            with patch.object(clipstore.desktop, "restrict_to_owner") as restrict:
+                with patch.object(clipstore.os, "getuid", create=True, return_value=0):
+                    directory = clipstore._private_dir(Path(folder) / "clipboard")
+            restrict.assert_called_once_with(directory)
+
+    def test_module_wipe_removes_the_whole_folder_including_side_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder) / "clipboard"
+            store = clipstore.Store(directory)
+            store.add_text("secret words", now=1.0)
+            store.add_image(make_png(), now=2.0)
+            store.close()
+            (directory / "clips.db.damaged-1").write_text("old")
+            clipstore.wipe(directory)
+            self.assertFalse(directory.exists())
+            clipstore.wipe(directory)  # Already gone is fine.
+
+    def test_module_wipe_never_follows_a_link(self):
+        if not hasattr(os, "symlink"):
+            self.skipTest("no symlinks")
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "precious"
+            target.mkdir()
+            (target / "keep.txt").write_text("keep")
+            link = Path(folder) / "clipboard"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError:
+                self.skipTest("cannot create symlinks here")
+            clipstore.wipe(link)
+            self.assertFalse(link.exists() or link.is_symlink())
+            self.assertTrue((target / "keep.txt").exists())
+
+
 class CaptureTests(StoreCase):
     def test_items_list_newest_first(self):
         self.store.add_text("first", now=100.0)

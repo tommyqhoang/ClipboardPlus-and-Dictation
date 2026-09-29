@@ -1,5 +1,15 @@
 # Packaged Installers (macOS/Windows/Linux) Implementation Plan
 
+> **Historical design record, not the current spec.** Where this document
+> differs from what ships, the code and `packaging/README.md` win. Known
+> differences: code signing is now conditional (Developer ID + notarization on
+> macOS and Azure Trusted Signing / signtool on Windows when release secrets
+> exist; ad-hoc/unsigned otherwise); in-app self-update for packaged installs
+> is disabled in v1; the AppImage is assembled by `build-appimage.sh` and
+> `appimagetool` (linuxdeploy is not used); Linux dictation needs the system
+> `arecord` (alsa-utils); only the three main installers are built (macOS
+> Apple Silicon, Windows x86_64, Linux x86_64).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship Clipboard+ as a self-contained, downloadable installer per OS

@@ -64,19 +64,32 @@ Download the installer for your OS from the
   isn't notarized yet; without this step macOS 15+ may claim it "is damaged
   and can't be opened." If you instead drag the app yourself, run
   `xattr -dr com.apple.quarantine /Applications/Clipboard+.app` once in
-  Terminal before opening it.) On an Intel Mac, use the
-  [source install](#build-from-source) instead.
+  Terminal before opening it.) Signed and notarized builds skip this step
+  once the maintainer's Apple credentials are configured for a release.
+  **Intel Macs:** no prebuilt installer is published (the release builds only
+  Apple Silicon); use the [source install](#build-from-source), which works on
+  Intel but gets less testing.
 - **Windows**: `Clipboard+-Setup.exe` — run it; if SmartScreen shows a
-  notice, choose "More info" then "Run anyway" (same reason: unsigned).
+  notice, choose "More info" then "Run anyway" (unsigned unless the release
+  was built with signing credentials). x86_64 only; Windows on ARM runs it
+  through emulation, untested.
   Installs to your user folder, no admin needed.
 - **Linux**: `Clipboard+-x86_64.AppImage` — `chmod +x` it (or check "Allow
   executing file as program" in your file manager), then double-click. No
   package manager, no sudo. Needs FUSE to mount itself (present on most
   desktops already); if it fails to start with a FUSE error, run it with
-  `--appimage-extract-and-run` instead.
+  `--appimage-extract-and-run` instead. x86_64 only; there is no ARM64 Linux
+  build, use the source install there.
+  **One system requirement:** dictation records with `arecord` from your
+  distribution's `alsa-utils` package (not bundled; already present on most
+  desktops). If it is missing, the AppImage prints and shows a notice at
+  startup naming the package (for example `sudo apt install alsa-utils`);
+  clipboard history works without it.
 
-No Python, no terminal, no dependencies to install separately — everything
-needed ships inside the download. Prefer a one-line install script instead
+No Python and no terminal needed. Everything else ships inside the download
+(Python runtime, whisper.cpp and ffmpeg); the only outside pieces are the
+Linux `arecord` above and the operating system itself. Licenses of the
+bundled components are in `THIRD-PARTY-NOTICES.md`. Prefer a one-line install script instead
 (or want to build from a Git checkout)? See
 [Build from source](#build-from-source).
 
@@ -482,8 +495,41 @@ Uninstall with `./uninstall.sh` (macOS/Linux) or `.\uninstall.ps1` (Windows,
 PowerShell) after the active session finishes. It removes the installed
 command/module, the Start Menu shortcut or GNOME binding, the macOS app bundle,
 and stops the clipboard service, retaining models, settings, transcripts,
-recoverable audio and the clipboard history (use **Delete all clipboard data**
-first to erase it).
+recoverable audio and the clipboard history by default. Add `--purge`
+(`-Purge` on Windows) to also delete all of that plus the account key and
+telemetry id; without a flag on a terminal it asks. See also
+[Removing a packaged install](#removing-a-packaged-install).
+
+### Removing a packaged install
+
+Your history, settings, account key and models are kept unless you choose
+otherwise below (**Delete all clipboard data** in the app erases history first).
+
+- **Windows** (Setup.exe): Settings > Apps > Clipboard+ > Uninstall. It asks
+  whether to also delete your data (default: keep); silent uninstalls always
+  keep it. The login item is removed for you.
+- **macOS** (DMG): double-click **Uninstall Clipboard+** on the DMG (or run it
+  with `--purge` to also delete data). It quits the app, unloads and deletes
+  its login item (the LaunchAgent `com.apercallc.clipboardplusdesktop.menubar`
+  in `~/Library/LaunchAgents`) and removes `Clipboard+.app`. Manually: turn
+  off "Open at Login" in the app, then drag the app to the Trash.
+- **Linux** (AppImage): run `./Clipboard+-x86_64.AppImage --uninstall` (add
+  `--purge` to also delete data, `--delete-appimage` to delete the file). It
+  removes the GNOME shortcuts (Dictation and Clipboard history), the autostart
+  entry `~/.config/autostart/clipboardplus.desktop` and the menu entry, none
+  of which disappear by deleting the AppImage alone. Without a working
+  AppImage, `./uninstall.sh` from a checkout does the same integration cleanup.
+- **Source install**: `./uninstall.sh [--purge]` (macOS/Linux) or
+  `.\uninstall.ps1 [-Purge]` (Windows). `--purge` also deletes the clipboard
+  database, the Clipboard+ account key file, the telemetry id, recordings and
+  downloaded models; without it they are all kept.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Bundled third-party software (whisper.cpp under
+MIT, static ffmpeg under GPL with a source offer) is listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Report vulnerabilities per
+[SECURITY.md](SECURITY.md); contributions per [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Architecture and development
 

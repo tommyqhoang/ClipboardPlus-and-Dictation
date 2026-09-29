@@ -5,9 +5,11 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +20,7 @@ else:
 
 
 # Shown in crash reports and statistics; raise it with every release.
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.4.0"
 
 
 def platform_name() -> str:
@@ -138,6 +140,156 @@ def macos_bundle() -> str:
     return str(root.parent.parent) if root is not None else ""
 
 
+def _windows_account() -> str:
+    """DOMAIN\\user for the signed-in Windows account (what icacls expects)."""
+    user = os.environ.get("USERNAME", "")
+    domain = os.environ.get("USERDOMAIN", "")
+    if not user:
+        try:
+            import getpass
+
+            user = getpass.getuser()
+        except (ImportError, KeyError, OSError):
+            return ""
+    return f"{domain}\\{user}" if domain else user
+
+
+_restricted: set[str] = set()
+
+
+def restrict_to_owner(path: Path) -> bool:
+    """Make `path` (a file or folder) readable and writable by the current user only.
+
+    POSIX: mode 0700 for folders, 0600 for files. Windows, where mode bits mean nothing:
+    inheritance from the parent is cut and the account alone is granted full control
+    (through `icacls`; a folder's grant is inherited by what is created inside it later).
+    True when the restriction is in place; failing never raises, because a storage
+    location that cannot be locked down is still better than losing the data.
+    """
+    try:
+        if sys.platform != "win32":
+            path.chmod(0o700 if path.is_dir() else 0o600)
+            return True
+        key = str(path)
+        if key in _restricted:
+            return True
+        account = _windows_account()
+        if not account:
+            return False
+        grant = f"{account}:(OI)(CI)F" if path.is_dir() else f"{account}:F"
+        done = subprocess.run(
+            ["icacls", key, "/inheritance:r", "/grant:r", grant],
+            capture_output=True,
+            timeout=15,
+            check=False,
+            **process_options(),
+        )
+        if done.returncode == 0:
+            _restricted.add(key)
+        return done.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def write_private(path: Path, data: str | bytes) -> None:
+    """Atomically write `path` so it is owner-only from its first byte.
+
+    The temporary file is created exclusively with mode 0600 (the umask can only make it
+    stricter) and, on Windows, restricted before any content is written; it then replaces
+    `path` by rename, so a reader sees the old file or the whole new one.
+    """
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.part")
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            if sys.platform == "win32":
+                restrict_to_owner(temporary)
+            else:
+                os.fchmod(stream.fileno(), 0o600)
+            stream.write(raw)
+        for attempt in range(20):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if sys.platform != "win32" or attempt == 19:
+                    raise
+                time.sleep(0.01)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _private_dir_ok(path: Path) -> bool:
+    """Whether `path` is a real folder (not a link) that only this user can enter."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    if sys.platform == "win32":
+        return True  # No owner or mode bits; the ACL is applied by whoever creates it.
+    return info.st_uid == os.getuid() and not info.st_mode & 0o077
+
+
+def make_private_dir(path: Path) -> bool:
+    """Create `path` as a private folder without trusting a shared parent such as /tmp.
+
+    The folder is made with mode 0700 and never with `exist_ok`, so an attacker's
+    folder or link that was planted first is noticed, not adopted. An existing folder
+    is accepted only when it is a real directory owned by this user and closed to
+    everyone else (checked with lstat, which does not follow links). False means refuse.
+    """
+    for _ in range(4):
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            return _private_dir_ok(path)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+        if _private_dir_ok(path):
+            return True
+        # The umask stripped nothing we asked for, so this is unexpected: look again.
+        try:
+            os.rmdir(path)
+        except OSError:
+            return False
+    return False
+
+
+def _runtime_fallback(cache_root: Path) -> Path:
+    """A private per-user runtime folder when the system provides no XDG_RUNTIME_DIR.
+
+    A per-user temporary folder (macOS's $TMPDIR, or a TMPDIR the user set) is preferred
+    to the shared /tmp. Whichever it is, the folder is verified; if something else owns
+    that name, the runtime folder moves under the user's own cache folder instead.
+    """
+    name = f"dictation-{user_id()}"
+    bases: list[Path] = []
+    configured = os.environ.get("TMPDIR", "")
+    if configured and os.path.isabs(configured):
+        bases.append(Path(configured))
+    bases.append(Path(tempfile.gettempdir()))
+    for base in dict.fromkeys(bases):
+        candidate = base / name
+        if make_private_dir(candidate):
+            return candidate
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError:
+        return cache_root / "run"
+    fallback = cache_root / "run"
+    make_private_dir(fallback)
+    return fallback
+
+
 def roots() -> tuple[Path, Path, Path]:
     home = Path.home()
     system = platform_name()
@@ -150,27 +302,30 @@ def roots() -> tuple[Path, Path, Path]:
         defaults = (
             home / "Library/Application Support/WhisperDictation",
             home / "Library/Caches/WhisperDictation",
-            Path(tempfile.gettempdir()) / f"dictation-{user_id()}",
+            home,  # Replaced below, once the cache folder is known.
         )
     else:
-        defaults = (
-            home / ".config/dictation",
-            home / ".cache/dictation",
-            Path(tempfile.gettempdir()) / f"dictation-{user_id()}",
-        )
+        defaults = (home / ".config/dictation", home / ".cache/dictation", home)
     # Explicit XDG overrides keep existing integrations and isolated tests usable.
-    return (
+    config = (
         Path(os.environ["XDG_CONFIG_HOME"]) / "dictation"
         if "XDG_CONFIG_HOME" in os.environ
-        else defaults[0],
+        else defaults[0]
+    )
+    cache = (
         Path(os.environ["XDG_CACHE_HOME"]) / "dictation"
         if "XDG_CACHE_HOME" in os.environ
-        else defaults[1],
-        Path(os.environ["XDG_RUNTIME_DIR"])
-        / ("dictation" if sys.platform == "win32" else f"dictation-{user_id()}")
-        if "XDG_RUNTIME_DIR" in os.environ
-        else defaults[2],
+        else defaults[1]
     )
+    if "XDG_RUNTIME_DIR" in os.environ:
+        runtime = Path(os.environ["XDG_RUNTIME_DIR"]) / (
+            "dictation" if sys.platform == "win32" else f"dictation-{user_id()}"
+        )
+    elif system == "windows":
+        runtime = defaults[2]
+    else:
+        runtime = _runtime_fallback(cache)
+    return config, cache, runtime
 
 
 def lock(path: Path) -> int | None:

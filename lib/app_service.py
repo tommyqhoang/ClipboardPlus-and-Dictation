@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import socket
 import sqlite3
@@ -19,10 +20,19 @@ import clipboardplus
 import clipservice
 import clipstore
 import clipsync
+import cues
 import desktop
 import dictation as d
 import hotkeys
 import onboarding
+import permissions
+
+try:
+    import logsetup
+
+    log = logsetup.get_logger("app_service")
+except ImportError:
+    log = logging.getLogger(__name__)
 
 # Speech-to-text services with an OpenAI-compatible /audio/transcriptions API.
 PROVIDERS = {
@@ -64,7 +74,8 @@ class MicrophoneTest:
         while stream is not None:
             try:
                 chunk = stream.read(self.CHUNK)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                log.debug("microphone test read failed: %s", exc)
                 return  # The device may disappear while the test is running.
             if not chunk:
                 return
@@ -80,24 +91,24 @@ class MicrophoneTest:
         if self.process.poll() is None:
             try:
                 self.process.terminate()
-            except OSError:
-                pass  # It may have exited between poll and terminate.
+            except OSError as exc:  # It may have exited between poll and terminate.
+                log.debug("microphone test terminate failed: %s", exc)
             try:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 try:
                     self.process.kill()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    log.debug("microphone test kill failed: %s", exc)
                 try:
                     self.process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
-                    pass
+                    log.warning("the microphone test process did not exit")
         if self.process.stdout is not None:
             try:
                 self.process.stdout.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                log.debug("microphone test stream close failed: %s", exc)
 
     def outcome(self) -> str:
         """none, quiet, faint or good (for statistics; `verdict` says it in words)."""
@@ -158,7 +169,8 @@ class Service:
         try:
             d.Config(self.paths).check(recording=True)
             return True
-        except d.DictationError:
+        except d.DictationError as exc:
+            log.debug("setup check failed: %s", exc)
             return False
 
     def completed(self) -> bool:
@@ -327,8 +339,10 @@ class Service:
         output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
         backend = desktop.audio_backend(config.values)
         if backend == "alsa" and result.returncode != 0:
+            log.warning("microphone discovery failed: %s", permissions.tail_of(result.stderr))
             raise d.DictationError(
-                "Microphone discovery failed. Check audio permissions and your PipeWire/ALSA setup, then try again."
+                "Microphone discovery failed. "
+                + permissions.microphone_message().removeprefix("Microphone could not start. ")
             )
         if backend == "alsa":
             devices = self._alsa_microphones(output)
@@ -339,7 +353,8 @@ class Service:
             devices = re.findall(r"\[\d+\]\s+(.+)", audio)
         if not devices:
             raise d.DictationError(
-                "No microphones found. Connect a microphone and allow microphone access in system privacy settings, then try again."
+                "No microphones found. Connect a microphone, then try again. "
+                + permissions.microphone_message().removeprefix("Microphone could not start. ")
             )
         return list(dict.fromkeys(devices))
 
@@ -407,6 +422,9 @@ class Service:
                 allow_remote=not loopback,
             )
         else:
+            if not model:
+                # Fail with what to do (offline, disk full) before a long download starts.
+                onboarding.preflight_download(self.paths.config.parent / "models")
             path = onboarding.validate_model(
                 Path(model).expanduser()
                 if model
@@ -452,6 +470,40 @@ class Service:
         saved = d.DEFAULTS | d.read_json(self.paths.config)
         saved[key] = value
         d.atomic(self.paths.config, json.dumps(saved, indent=2))
+
+    def set_sounds(self, mode: str) -> None:
+        """Save the audible cues setting: off, errors (the default) or all."""
+        if mode not in cues.MODES:
+            raise ValueError(mode)
+        d.private_dir(self.paths.config.parent)
+        saved = d.DEFAULTS | d.read_json(self.paths.config)
+        saved["sounds"] = mode
+        d.atomic(self.paths.config, json.dumps(saved, indent=2))
+
+    def permission_help(self) -> list[tuple[str, str, str]]:
+        """What the operating system may still need to be told: (title, why, settings link).
+
+        Empty on Linux, where paste helpers and the microphone need no settings page.
+        """
+        found: list[tuple[str, str, str]] = []
+        if desktop.platform_name() == "macos":
+            if permissions.accessibility_trusted() is False:
+                found.append(
+                    (
+                        "Allow Accessibility",
+                        permissions.accessibility_explanation(),
+                        permissions.ACCESSIBILITY_URL,
+                    )
+                )
+            if permissions.microphone_status() in ("denied", "not_determined"):
+                found.append(
+                    (
+                        "Allow the microphone",
+                        permissions.microphone_message("macos"),
+                        permissions.MAC_MICROPHONE_URL,
+                    )
+                )
+        return found
 
     def action(self, action: str) -> None:
         config = d.Config(self.paths)

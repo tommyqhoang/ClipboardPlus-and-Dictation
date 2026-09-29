@@ -1,0 +1,4 @@
+# Everything a release build installs: dev tooling, GUI toolkit, PyInstaller.
+-r requirements-dev.txt
+-r requirements-gui.txt
+pyinstaller==6.22.3

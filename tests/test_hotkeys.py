@@ -490,7 +490,7 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(self.preferences.features(), hotkeys.Features(True, False))
         self.assertTrue(self.preferences.clipboard().images)
         self.assertTrue(self.preferences.open_at_login())
-        self.assertTrue(self.preferences.share_usage())  # On unless declined.
+        self.assertFalse(self.preferences.share_usage())  # Off until the user agrees.
         for features in (hotkeys.Features(False, True), hotkeys.Features(True, True)):
             self.preferences.save(features=features)
             self.assertEqual(self.preferences.features(), features)

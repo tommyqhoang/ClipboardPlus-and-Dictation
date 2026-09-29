@@ -3,6 +3,16 @@
 import sys
 from pathlib import Path
 
+# clipboardplus loads the OS keychain with importlib, so PyInstaller cannot see it:
+# bundle keyring, its backends and its metadata (entry-point discovery) explicitly.
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+
+KEYRING_IMPORTS = collect_submodules("keyring")
+try:
+    KEYRING_DATA = copy_metadata("keyring")
+except Exception:  # keyring is optional; without it the key file fallback is used.
+    KEYRING_DATA = []
+
 block_cipher = None
 ROOT = Path(SPECPATH).resolve().parents[1]
 LIB = ROOT / "lib"
@@ -31,8 +41,9 @@ for entry in ENTRIES:
             datas=[
                 (str(LIB / "menubar-icon.png"), "."),
                 (str(LIB / "menubar-recording.png"), "."),
+                *KEYRING_DATA,
             ],
-            hiddenimports=PYOBJC_HIDDEN_IMPORTS if entry == "menubar" else [],
+            hiddenimports=[*KEYRING_IMPORTS, *(PYOBJC_HIDDEN_IMPORTS if entry == "menubar" else [])],
             hookspath=HOOKS,
             runtime_hooks=[],
             excludes=[],

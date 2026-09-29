@@ -54,10 +54,10 @@ class SharedTests(unittest.TestCase):
 
     def test_copied_api_keys_and_private_keys_are_never_kept(self):
         for secret in (
-            "sk-proj-abcdefghijklmnopqrstuvwx",
-            "  ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+            "sk-" + "proj-abcdefghijklmnopqrstuvwx",
+            "  gh" + "p_abcdefghijklmnopqrstuvwxyz0123456789\n",
             "cp_live_abcdefghijklmnop1234",
-            "AKIAABCDEFGHIJKLMNOP",
+            "AK" + "IAABCDEFGHIJKLMNOP",
             "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----",
         ):
             with self.subTest(secret=secret[:12]):
@@ -67,7 +67,7 @@ class SharedTests(unittest.TestCase):
                 )
         for ordinary in (
             "sk-",
-            "Use your sk-proj-abcdefghijklmnopqrstuvwx key here",  # Prose around it is kept.
+            "Use your sk-" + "proj-abcdefghijklmnopqrstuvwx key here",  # Prose around it is kept.
             "https://example.com/a/very/long/path/with/segments",
             "0123456789abcdef0123456789abcdef0123456789",
         ):
@@ -75,6 +75,73 @@ class SharedTests(unittest.TestCase):
                 self.assertEqual(
                     clipwatch.limit_clip(clipwatch.Clip(text=ordinary)),
                     clipwatch.Clip(text=ordinary),
+                )
+
+    def test_broader_secret_formats_are_never_kept(self):
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"
+        for secret in (
+            jwt,
+            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc",
+            "sk-" + "ant-api03-abcdefghijklmnopqrstuvwx",
+            "sk_" + "live_abcdefghijklmnop1234",
+            "xox" + "b-123456789012-abcdefghijklmnopqrstu",
+            "AI" + "zaSyA-abcdefghijklmnopqrstuvwxyz01234",
+            "ya29.a0AfH6SMBabcdefghijklmnop",
+            "AS" + "IAABCDEFGHIJKLMNOP",
+            "482913",  # A one-time code copied alone.
+            "12345678",
+            "4111 1111 1111 1111",  # A card number (passes Luhn).
+            "5500-0000-0000-0004",
+            "Xk9fQ2mZp8Lr3vTn7YwB1aHd5CjE0sGuQ4",  # One long random-looking token.
+            f"Authorization: Bearer {jwt}",  # A secret inside longer text.
+            "export AWS_KEY=AK" + "IAABCDEFGHIJKLMNOP now",
+        ):
+            with self.subTest(secret=secret[:14]):
+                self.assertTrue(clipwatch.looks_secret(secret))
+                self.assertEqual(
+                    clipwatch.limit_clip(clipwatch.Clip(text=secret)),
+                    clipwatch.Clip(concealed=True),
+                )
+
+    def test_ordinary_text_that_resembles_secrets_is_kept(self):
+        for ordinary in (
+            "12345",  # Too short for a code.
+            "123456789",  # Too long for a code, not a card.
+            "4111 1111 1111 1112",  # Fails Luhn.
+            "call 482913 today",  # A code inside prose.
+            "0123456789abcdef0123456789abcdef01234567",  # A git hash (hex only).
+            "thisIsAVeryLongCamelCaseIdentifierNameHereOk",  # No digits.
+            "/usr/local/share/applications/some-long-directory/name",
+            "2024-01-05",
+            "The quick brown fox jumps over the lazy dog, again and again.",
+            "eyJ",
+        ):
+            with self.subTest(ordinary=ordinary[:14]):
+                self.assertFalse(clipwatch.looks_secret(ordinary))
+
+    def test_copies_from_password_managers_are_skipped_by_app(self):
+        for app in (
+            "com.1password.1password",
+            "com.agilebits.onepassword7",
+            "com.bitwarden.desktop",
+            "org.keepassxc.KeePassXC",
+            "com.lastpass.LastPass",
+            "com.dashlane.dashlanephonefinal",
+            "com.apple.keychainaccess",
+            "KeePassXC.exe",
+            "Bitwarden.exe",
+        ):
+            with self.subTest(app=app):
+                self.assertEqual(
+                    clipwatch.limit_clip(clipwatch.Clip(text="hello there", source_app=app)),
+                    clipwatch.Clip(concealed=True),
+                )
+        for app in ("", "org.mozilla.firefox", "com.apple.Safari", "notepad.exe"):
+            with self.subTest(app=app):
+                self.assertEqual(
+                    clipwatch.limit_clip(clipwatch.Clip(text="hello there", source_app=app)),
+                    clipwatch.Clip(text="hello there"),
                 )
 
     def test_trim_png_cuts_trailing_padding_only(self):

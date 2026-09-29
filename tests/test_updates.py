@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -293,80 +294,180 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("failed", notify.call_args.args[1])
 
-    def test_an_update_downloads_extracts_and_installs(self):
-        installed: list[str] = []
+    # -- applying: integrity, atomic swap, rollback ----------------------
 
-        def fake_download(url: str, destination: Path) -> None:
-            destination.write_bytes(b"tarball")
+    def source_release(self, tag="v9.9.9", setup="pass", sums="manifest", tamper=False):
+        """A fake GitHub: (fetch, fetch_text, download) for a source release."""
+        src = self.root / "src" / f"ClipboardPlus-{tag}"
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "setup-desktop.py").write_text(setup, encoding="utf-8")
+        archive = self.root / "src" / "release.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(src, arcname=src.name)
+        blob = archive.read_bytes()
+        digest = hashlib.sha256(blob).hexdigest()
+        served = b"tampered" + blob if tamper else blob
+        name = f"{tag}.tar.gz"
+        base = "https://github.com/o/r/releases/download/" + tag
+        assets = {}
+        texts = {}
+        if sums == "manifest":
+            assets["SHA256SUMS"] = f"{base}/SHA256SUMS"
+            texts[assets["SHA256SUMS"]] = f"{digest}  {name}\n{'0' * 64}  other.bin\n"
+        elif sums == "sidecar":
+            assets[name + ".sha256"] = f"{base}/{name}.sha256"
+            texts[assets[name + ".sha256"]] = f"{digest}  {name}\n"
+        elif sums == "wrong":
+            assets["SHA256SUMS"] = f"{base}/SHA256SUMS"
+            texts[assets["SHA256SUMS"]] = f"{'1' * 64}  {name}\n"
 
-        def fake_extract(archive: Path, folder: Path) -> Path:
-            source = folder / "ClipboardPlus-9.9.9"
-            (source / "lib").mkdir(parents=True)
-            (source / "setup-desktop.py").write_text(
-                "import sys; print('installed', sys.argv[1])", encoding="utf-8"
-            )
-            return source
+        def fetch(url: str) -> dict[str, Any]:
+            return {
+                "tag_name": tag,
+                "assets": [{"name": n, "browser_download_url": u} for n, u in assets.items()],
+            }
 
-        def fake_setup() -> int:
-            installed.append("setup-desktop.py ran")
-            return 0
+        def download(url: str, destination: Path, limit: int = 0) -> None:
+            self.assertEqual(url, updates.TARBALL_URL.format(tag=tag))
+            destination.write_bytes(served)
 
-        # setup-desktop.py is a real script; the extracted stub is what runs, so a
-        # successful install only needs its exit code.
-        with (
-            patch.object(updates, "_download", fake_download),
-            patch.object(updates, "_extract", fake_extract),
-            patch.object(updates.subprocess, "run") as run,
-        ):
-            run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            updates.apply_update(self.paths, "9.9.9", "https://example.com/t.tar.gz")
-        self.assertEqual(installed, [])
-        self.assertTrue(run.called)
-        state = updates.read_state(self.paths)
-        self.assertEqual(state.get("applied"), "9.9.9")
-        self.assertEqual(state.get("status"), "installed")
+        return fetch, texts.__getitem__, download
 
-    def test_real_archive_runs_its_installer_and_records_the_result(self):
-        source = self.root / "ClipboardPlus-and-Dictation-9.9.9"
-        source.mkdir()
-        installed = self.root / "installed.txt"
-        (source / "setup-desktop.py").write_text(
+    URL = "https://github.com/o/r/archive/refs/tags/v9.9.9.tar.gz"
+
+    def apply(self, fetch, fetch_text, download, **patches):
+        with patch.object(updates, "_download", download):
+            return updates.apply_update(self.paths, "9.9.9", self.URL, fetch, fetch_text)
+
+    def test_a_verified_release_is_installed_and_recorded(self):
+        marker = self.root / "installed.txt"
+        setup = f"from pathlib import Path\nPath({str(marker)!r}).write_text('ok')\nprint('done')\n"
+        for sums in ("manifest", "sidecar"):
+            marker.unlink(missing_ok=True)
+            with self.subTest(sums=sums):
+                message = self.apply(*self.source_release(setup=setup, sums=sums))
+                self.assertEqual(marker.read_text(), "ok")
+                self.assertIn("9.9.9", message)
+                state = updates.read_state(self.paths)
+                self.assertEqual((state["status"], state["applied"]), ("installed", "9.9.9"))
+                self.assertEqual(state["message"], message)
+                self.assertIn("done", (self.paths.cache / "update.log").read_text())
+
+    def test_a_checksum_mismatch_is_refused_before_anything_is_unpacked_or_run(self):
+        marker = self.root / "ran.txt"
+        setup = f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+        for kwargs in ({"tamper": True}, {"sums": "wrong"}):
+            with self.subTest(**kwargs), patch.object(updates, "_extract") as extract:
+                with self.assertRaisesRegex(updates.UpdateError, "did not match"):
+                    self.apply(*self.source_release(setup=setup, **kwargs))
+                extract.assert_not_called()
+                self.assertFalse(marker.exists())
+                self.assertEqual(updates.read_state(self.paths)["status"], "failed")
+                self.assertNotIn("applied", updates.read_state(self.paths))
+
+    def test_a_release_without_a_checksum_is_refused(self):
+        marker = self.root / "ran.txt"
+        setup = f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+        with self.assertRaisesRegex(updates.UpdateError, "no published checksum"):
+            self.apply(*self.source_release(setup=setup, sums="none"))
+        self.assertFalse(marker.exists())
+
+    def test_conflicting_checksum_files_are_refused(self):
+        assets = {
+            "SHA256SUMS": "https://github.com/a/SHA256SUMS",
+            "x.bin.sha256": "https://github.com/a/x.bin.sha256",
+        }
+        texts = {
+            assets["SHA256SUMS"]: "1" * 64 + "  x.bin\n",
+            assets["x.bin.sha256"]: "2" * 64 + "  x.bin\n",
+        }
+        with self.assertRaisesRegex(updates.UpdateError, "disagree"):
+            updates.expected_checksum("x.bin", assets, texts.__getitem__)
+
+    def test_checksum_lookup_tolerates_github_renaming_the_asset(self):
+        assets = {"SHA256SUMS": "https://github.com/a/SHA256SUMS"}
+        text = {assets["SHA256SUMS"]: "a" * 64 + "  Clipboard+-Setup.exe\n"}
+        found = updates.expected_checksum("Clipboard.-Setup.exe", assets, text.__getitem__)
+        self.assertEqual(found, "a" * 64)
+
+    def test_the_release_is_resolved_to_an_exact_tag(self):
+        calls: list[str] = []
+
+        def fetch(url: str) -> dict[str, Any]:
+            calls.append(url)
+            if url.endswith("/v9.9.9"):
+                raise urllib.error.HTTPError(url, 404, "nf", {}, None)  # type: ignore[arg-type]
+            return {"tag_name": "9.9.9", "assets": []}
+
+        tag, _ = updates.resolve_tag("9.9.9", fetch)
+        self.assertEqual(tag, "9.9.9")
+        self.assertEqual(len(calls), 2)
+        with self.assertRaises(updates.UpdateError):
+            updates.resolve_tag("9.9.9", lambda url: {"tag_name": "v1.0.0", "assets": []})
+        with self.assertRaises(updates.UpdateError):
+            updates.resolve_tag("main", fetch)
+
+    def test_an_untrusted_download_address_is_refused(self):
+        with self.assertRaisesRegex(updates.UpdateError, "trusts"):
+            updates.apply_update(self.paths, "9.9.9", "https://evil.example/x.tar.gz")
+
+    def make_app(self) -> Path:
+        app = self.root / "prefix" / "lib" / "whisper-dictation"
+        app.mkdir(parents=True)
+        (app / "tray.py").write_text("old version", encoding="utf-8")
+        return app
+
+    def test_a_failed_install_rolls_back_to_the_previous_app(self):
+        app = self.make_app()
+        setup = (
             "from pathlib import Path\n"
-            f"Path({str(installed)!r}).write_text('installed')\n"
-            "print('Installer completed.')\n",
-            encoding="utf-8",
+            f"Path({str(app / 'tray.py')!r}).write_text('half written')\n"
+            f"Path({str(app / 'extra.py')!r}).write_text('new')\n"
+            "raise SystemExit(1)\n"
         )
-
-        def make_archive(_url: str, destination: Path) -> None:
-            with tarfile.open(destination, "w:gz") as tar:
-                tar.add(source, arcname=source.name)
-
-        with patch.object(updates, "_download", make_archive):
-            updates.apply_update(self.paths, "9.9.9", "https://example.com/archive.tar.gz")
-        self.assertEqual(installed.read_text(encoding="utf-8"), "installed")
-        self.assertIn("Installer completed.", (self.paths.cache / "update.log").read_text())
-        self.assertEqual(updates.read_state(self.paths)["status"], "installed")
-
-    def test_a_failed_install_reports_and_does_not_apply(self):
-        with (
-            patch.object(updates, "_download", lambda *a: None),
-            patch.object(updates, "_extract", self._stub_source),
-            patch.object(
-                updates.subprocess,
-                "run",
-                return_value=subprocess.CompletedProcess([], 1, "", "boom"),
-            ),
-        ):
+        with patch.object(updates, "app_folder", return_value=app):
             with self.assertRaises(updates.UpdateError):
-                updates.apply_update(self.paths, "9.9.9", "https://example.com/t.tar.gz")
+                self.apply(*self.source_release(setup=setup))
+        self.assertEqual((app / "tray.py").read_text(), "old version")
+        self.assertFalse((app / "extra.py").exists())
+        self.assertEqual([p.name for p in app.parent.iterdir()], ["whisper-dictation"])
         self.assertNotIn("applied", updates.read_state(self.paths))
-        self.assertEqual(updates.read_state(self.paths)["status"], "failed")
-        self.assertIn("boom", (self.paths.cache / "update.log").read_text(encoding="utf-8"))
+
+    def test_a_timed_out_install_rolls_back_too(self):
+        app = self.make_app()
+        real_run = subprocess.run
+
+        def hang(command, **kwargs):
+            (app / "tray.py").write_text("half written", encoding="utf-8")
+            raise subprocess.TimeoutExpired(command, 1800)
+
+        with (
+            patch.object(updates, "app_folder", return_value=app),
+            patch.object(updates.subprocess, "run", hang),
+        ):
+            with self.assertRaisesRegex(updates.UpdateError, "did not complete"):
+                self.apply(*self.source_release())
+        self.assertIs(updates.subprocess.run, real_run)
+        self.assertEqual((app / "tray.py").read_text(), "old version")
+        self.assertEqual([p.name for p in app.parent.iterdir()], ["whisper-dictation"])
+        self.assertIn("rolled back", updates.read_state(self.paths)["error"])
+
+    def test_a_successful_install_swaps_and_removes_its_backup(self):
+        app = self.make_app()
+        stale = app.parent / "whisper-dictation.bak-1"
+        stale.mkdir()
+        (stale / "junk").write_text("x")
+        setup = f"from pathlib import Path\nPath({str(app / 'tray.py')!r}).write_text('new')\n"
+        with patch.object(updates, "app_folder", return_value=app):
+            self.apply(*self.source_release(setup=setup))
+        self.assertEqual((app / "tray.py").read_text(), "new")
+        self.assertEqual([p.name for p in app.parent.iterdir()], ["whisper-dictation"])
 
     def test_a_filesystem_failure_records_a_retryable_update_error(self):
+        fetch, texts, _ = self.source_release()
         with patch.object(updates, "_download", side_effect=OSError("disk full")):
             with self.assertRaisesRegex(updates.UpdateError, "disk full"):
-                updates.apply_update(self.paths, "9.9.9", "https://example.com/t.tar.gz")
+                updates.apply_update(self.paths, "9.9.9", self.URL, fetch, texts)
         state = updates.read_state(self.paths)
         self.assertEqual(state["status"], "failed")
         self.assertIn("re-run the installer", state["error"])
@@ -375,34 +476,24 @@ class UpdateTests(unittest.TestCase):
 
     def test_retry_clears_the_previous_error(self):
         updates.write_state(self.paths, {"status": "failed", "error": "old failure"})
+        fetch, texts, _ = self.source_release()
 
-        def interrupted(_url: str, _destination: Path) -> None:
+        def interrupted(_url: str, _destination: Path, limit: int = 0) -> None:
             self.assertNotIn("error", updates.read_state(self.paths))
             raise updates.UpdateError("new failure")
 
         with patch.object(updates, "_download", interrupted):
             with self.assertRaisesRegex(updates.UpdateError, "new failure"):
-                updates.apply_update(self.paths, "9.9.9", "https://example.com/archive.tar.gz")
+                updates.apply_update(self.paths, "9.9.9", self.URL, fetch, texts)
         self.assertEqual(updates.read_state(self.paths)["error"], "new failure")
 
-    def _stub_source(self, archive: Path, folder: Path) -> Path:
-        source = folder / "ClipboardPlus-9.9.9"
-        (source / "lib").mkdir(parents=True)
-        (source / "setup-desktop.py").write_text("", encoding="utf-8")
-        return source
-
     def test_a_second_update_click_waits_for_the_first(self):
-        with (
-            patch.object(updates, "_download", lambda *a: None),
-            patch.object(updates, "_extract", self._stub_source),
-            patch.object(
-                updates.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")
-            ),
-        ):
-            holder = desktop.lock(self.paths.runtime / "update.lock")
-            self.addCleanup(os.close, holder)
-            updates.apply_update(self.paths, "9.9.9", "https://example.com/t.tar.gz")  # Returns.
-            self.assertNotIn("applied", updates.read_state(self.paths))
+        holder = desktop.lock(self.paths.runtime / "update.lock")
+        self.addCleanup(os.close, holder)
+        with patch.object(updates, "_download") as download:
+            self.assertEqual(updates.apply_update(self.paths, "9.9.9", self.URL), "")
+        download.assert_not_called()
+        self.assertNotIn("applied", updates.read_state(self.paths))
 
 
 class ExtractTests(unittest.TestCase):
@@ -464,6 +555,31 @@ class ExtractTests(unittest.TestCase):
         ):
             updates._extract(archive, self.work / "unpack-large")
 
+    def test_fallback_extraction_normalizes_modes_without_the_data_filter(self):
+        archive = self.work / "modes.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for name, mode in (("release/setup-desktop.py", 0o4777), ("release/data.txt", 0o666)):
+                member = tarfile.TarInfo(name)
+                member.mode, member.size = mode, 1
+                tar.addfile(member, io.BytesIO(b"x"))
+        with patch.object(updates.tarfile, "data_filter", None):
+            top = updates._extract(archive, self.work / "fallback")
+        self.assertEqual((top / "setup-desktop.py").stat().st_mode & 0o7777, 0o755)
+        self.assertEqual((top / "data.txt").stat().st_mode & 0o7777, 0o644)
+
+    def test_extraction_uses_the_data_filter_when_available(self):
+        if getattr(tarfile, "data_filter", None) is None:
+            self.skipTest("no tarfile data filter")
+        archive = self.work / "f.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            member = tarfile.TarInfo("release/setup-desktop.py")
+            member.size = 1
+            tar.addfile(member, io.BytesIO(b"x"))
+        with patch.object(tarfile.TarFile, "extractall", autospec=True) as extract:
+            with self.assertRaises(updates.UpdateError):  # Nothing extracted -> no installer.
+                updates._extract(archive, self.work / "filtered")
+        self.assertEqual(extract.call_args.kwargs["filter"], "data")
+
 
 class FrozenUpdateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -485,20 +601,177 @@ class FrozenUpdateTests(unittest.TestCase):
         d.private_dir(self.paths.config.parent)
         updates.write_state(self.paths, {})
 
-    def test_frozen_install_fails_clearly_instead_of_attempting_an_unsafe_swap(self):
+    ASSETS = {
+        "Clipboard.-x86_64.AppImage": "https://github.com/o/r/releases/download/v9/a.AppImage",
+        "Clipboard.-macOS-arm64.dmg": "https://github.com/o/r/releases/download/v9/a.dmg",
+        "Clipboard.-Setup.exe": "https://github.com/o/r/releases/download/v9/a.exe",
+        "SHA256SUMS": "https://github.com/o/r/releases/download/v9/SHA256SUMS",
+    }
+
+    def test_each_platform_selects_its_own_installer(self):
+        pick = updates.platform_asset
+        self.assertEqual(pick(self.ASSETS, "linux", "x86_64"), "Clipboard.-x86_64.AppImage")
+        self.assertEqual(pick(self.ASSETS, "darwin", "arm64"), "Clipboard.-macOS-arm64.dmg")
+        self.assertEqual(pick(self.ASSETS, "win32", "AMD64"), "Clipboard.-Setup.exe")
+        for system, machine in (("linux", "aarch64"), ("darwin", "x86_64"), ("freebsd", "x86_64")):
+            with self.subTest(system=system), self.assertRaises(updates.UpdateError):
+                pick(self.ASSETS, system, machine)
+        with self.assertRaisesRegex(updates.UpdateError, "no download"):
+            pick({"notes.txt": "https://github.com/x"}, "linux", "x86_64")
+
+    def frozen_setup(self, system, blob=b"NEW-APP", good=True):
+        digest = hashlib.sha256(blob).hexdigest() if good else "0" * 64
+        name = updates.platform_asset(
+            self.ASSETS, system, "arm64" if system == "darwin" else "x86_64"
+        )
+        text = {self.ASSETS["SHA256SUMS"]: f"{digest}  {name}\n"}
+
+        def download(url: str, destination: Path, limit: int = 0) -> None:
+            self.assertEqual(url, self.ASSETS[name])
+            destination.write_bytes(blob)
+
+        return name, text.__getitem__, download
+
+    def test_an_appimage_is_replaced_in_place_and_the_old_one_kept(self):
+        target = self.root / "Clipboard+-x86_64.AppImage"
+        target.write_bytes(b"OLD-APP")
+        _, texts, download = self.frozen_setup("linux")
+        with (
+            patch.dict(os.environ, {"APPIMAGE": str(target)}),
+            patch.object(updates, "_download", download),
+        ):
+            message = updates._install_frozen(
+                self.paths, "9.9.9", self.ASSETS, texts, "linux", "x86_64"
+            )
+        self.assertEqual(target.read_bytes(), b"NEW-APP")
+        self.assertTrue(os.access(target, os.X_OK))
+        self.assertEqual((self.root / (target.name + ".old")).read_bytes(), b"OLD-APP")
+        self.assertEqual(sorted(p.suffix for p in self.root.glob("*.new")), [])
+        self.assertIn("Restart", message)
+
+    def test_a_bad_checksum_leaves_the_running_appimage_untouched(self):
+        target = self.root / "Clipboard+-x86_64.AppImage"
+        target.write_bytes(b"OLD-APP")
+        _, texts, download = self.frozen_setup("linux", good=False)
+        with (
+            patch.dict(os.environ, {"APPIMAGE": str(target)}),
+            patch.object(updates, "_download", download),
+            self.assertRaisesRegex(updates.UpdateError, "did not match"),
+        ):
+            updates._install_frozen(self.paths, "9.9.9", self.ASSETS, texts, "linux", "x86_64")
+        self.assertEqual(target.read_bytes(), b"OLD-APP")
+        self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.is_file()), [target.name])
+
+    def test_a_failed_swap_restores_the_appimage(self):
+        target = self.root / "app.AppImage"
+        target.write_bytes(b"OLD")
+        new = self.root / "app.AppImage.new"
+        new.write_bytes(b"NEW")
+        real = os.replace
+
+        def flaky(src, dst):
+            if str(src).endswith(".new"):
+                raise OSError("busy")
+            real(src, dst)
+
+        with patch.object(updates.os, "replace", flaky), self.assertRaises(OSError):
+            updates._replace_appimage(new, target)
+        self.assertEqual(target.read_bytes(), b"OLD")
+
+    def test_a_dmg_is_verified_before_it_is_opened(self):
+        downloads = self.root / "Downloads"
+        downloads.mkdir()
+        for good in (False, True):
+            name, texts, download = self.frozen_setup("darwin", good=good)
+            with (
+                patch.object(updates, "downloads_folder", return_value=downloads),
+                patch.object(updates, "_download", download),
+                patch.object(updates.subprocess, "run") as run,
+            ):
+                if good:
+                    message = updates._install_frozen(
+                        self.paths, "9.9.9", self.ASSETS, texts, "darwin", "arm64"
+                    )
+                    run.assert_called_once()
+                    self.assertEqual(run.call_args.args[0], ["open", str(downloads / name)])
+                    self.assertIn("Applications", message)
+                else:
+                    with self.assertRaises(updates.UpdateError):
+                        updates._install_frozen(
+                            self.paths, "9.9.9", self.ASSETS, texts, "darwin", "arm64"
+                        )
+                    run.assert_not_called()
+                    self.assertEqual(list(downloads.iterdir()), [])
+
+    def test_windows_setup_is_launched_only_after_verification(self):
+        downloads = self.root / "Downloads"
+        downloads.mkdir()
+        name, texts, download = self.frozen_setup("win32")
+        launched: list[str] = []
+        with (
+            patch.object(updates, "downloads_folder", return_value=downloads),
+            patch.object(updates, "_download", download),
+            patch.object(updates.os, "startfile", launched.append, create=True),
+        ):
+            message = updates._install_frozen(
+                self.paths, "9.9.9", self.ASSETS, texts, "win32", "x86_64"
+            )
+        self.assertEqual(launched, [str(downloads / name)])
+        self.assertIn("installer", message)
+
+    def test_an_unpackaged_linux_download_is_saved_verified_not_run(self):
+        downloads = self.root / "Downloads"
+        downloads.mkdir()
+        name, texts, download = self.frozen_setup("linux")
+        env = {k: v for k, v in os.environ.items() if k != "APPIMAGE"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(updates, "downloads_folder", return_value=downloads),
+            patch.object(updates, "_download", download),
+            patch.object(updates.subprocess, "run") as run,
+        ):
+            message = updates._install_frozen(
+                self.paths, "9.9.9", self.ASSETS, texts, "linux", "x86_64"
+            )
+        run.assert_not_called()
+        self.assertEqual((downloads / name).read_bytes(), b"NEW-APP")
+        self.assertIn(str(downloads / name), message)
+
+    def test_a_frozen_update_without_a_checksum_downloads_nothing(self):
         install = self.root / "Clipboard+"
         install.mkdir()
+        fetch = lambda url: {  # noqa: E731
+            "tag_name": "v9.9.9",
+            "assets": [
+                {
+                    "name": "Clipboard+-Setup.exe",
+                    "browser_download_url": "https://github.com/o/a.exe",
+                },
+                {
+                    "name": "Clipboard+-x86_64.AppImage",
+                    "browser_download_url": "https://github.com/o/a.AppImage",
+                },
+                {
+                    "name": "Clipboard+-macOS-arm64.dmg",
+                    "browser_download_url": "https://github.com/o/a.dmg",
+                },
+            ],
+        }
         with (
             patch.object(updates.desktop, "frozen_root", return_value=install),
             patch.object(updates, "_download") as download,
             patch.object(updates.subprocess, "Popen") as popen,
+            patch.object(
+                updates.host,
+                "machine",
+                return_value="x86_64" if sys.platform != "darwin" else "arm64",
+            ),
         ):
-            with self.assertRaisesRegex(updates.UpdateError, "aren't available for this build"):
-                updates.apply_update(self.paths, "9.9.9", "https://example.invalid/release.zip")
+            with self.assertRaises(updates.UpdateError):
+                updates.apply_update(self.paths, "9.9.9", "https://github.com/o/r/a.tar.gz", fetch)
         download.assert_not_called()
         popen.assert_not_called()
-        state = updates.read_state(self.paths)
-        self.assertEqual(state.get("status"), "failed")
+        self.assertEqual(updates.read_state(self.paths).get("status"), "failed")
 
 
 if __name__ == "__main__":

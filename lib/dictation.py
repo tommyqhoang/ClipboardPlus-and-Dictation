@@ -9,6 +9,7 @@ import contextlib
 import http.client
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -26,20 +27,54 @@ import wave
 from pathlib import Path
 from typing import Any
 
+import cues
 import desktop
+import permissions
 import telemetry
 from desktop import lock
+
+try:  # The rotating file log, when this install has it.
+    import logsetup
+
+    log = logsetup.get_logger("dictation")
+except ImportError:
+    log = logging.getLogger(__name__)
 
 
 class DictationError(Exception):
     """An actionable error safe to display without credentials or transcripts."""
 
 
+def _fsync_dir(folder: Path) -> None:
+    """Make a rename durable: flush the directory entry (POSIX; Windows has no such call)."""
+    if sys.platform == "win32":
+        return
+    try:
+        fd = os.open(folder, os.O_RDONLY)
+    except OSError as exc:
+        log.debug("cannot open %s to sync it: %s", folder, exc)
+        return
+    try:
+        os.fsync(fd)
+    except OSError as exc:  # Some file systems refuse it; the data is still written.
+        log.debug("cannot sync %s: %s", folder, exc)
+    finally:
+        os.close(fd)
+
+
 def atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` so a reader sees the old or the new file, never half of one.
+
+    The data is flushed to disk before the rename and the directory entry after it, so a
+    power cut cannot leave an empty file behind. The temp file is removed only when the
+    write fails (a successful rename has already consumed it).
+    """
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".dictation-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
             stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
         for attempt in range(20):
             try:
                 os.replace(name, path)
@@ -49,8 +84,10 @@ def atomic(path: Path, text: str) -> None:
                 if sys.platform != "win32" or attempt == 19:
                     raise
                 time.sleep(0.01)
-    finally:
+    except BaseException:
         Path(name).unlink(missing_ok=True)
+        raise
+    _fsync_dir(path.parent)
 
 
 def private_dir(path: Path) -> Path:
@@ -88,12 +125,22 @@ def read_json(path: Path) -> dict[str, Any]:
             # state file. Give the atomic writer time to finish before reporting it.
             if sys.platform != "win32" or attempt == 19:
                 raise DictationError(
-                    f"Cannot read {path.name}; check its JSON syntax and permissions."
+                    f"Cannot read {path.name}: permission denied. Check that you own {path} "
+                    "and can read it."
                 ) from exc
             time.sleep(0.01)
-        except (ValueError, OSError) as exc:
+        except json.JSONDecodeError as exc:
             raise DictationError(
-                f"Cannot read {path.name}; check its JSON syntax and permissions."
+                f"{path.name} isn’t valid JSON (line {exc.lineno}, column {exc.colno}: "
+                f"{exc.msg}). Fix that line, or delete {path} to start again."
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise DictationError(
+                f"{path.name} isn’t valid UTF-8 text; delete {path} to start again."
+            ) from exc
+        except OSError as exc:
+            raise DictationError(
+                f"Cannot read {path.name} ({exc.strerror or exc.__class__.__name__})."
             ) from exc
     else:
         raise AssertionError("Read retries did not finish")
@@ -134,6 +181,7 @@ DEFAULTS: dict[str, Any] = {
     "overlay": True,
     "notifications": False,  # Session messages as desktop notifications (the pill shows them).
     "auto_paste": True,
+    "sounds": "errors",  # Audible cues: "off", "errors", or "all" (start, stop and error).
     "rewrite_endpoint": "",
     "rewrite_model": "",
     "rewrite_api_key_env": "DICTATION_REWRITE_API_KEY",
@@ -180,6 +228,8 @@ class Config:
         ):
             if not low <= self.values[key] <= high:
                 raise DictationError(f"{key} must be between {low} and {high}.")
+        if self.s("sounds") not in cues.MODES:
+            raise DictationError("sounds must be off, errors, or all.")
         if self.s("backend") not in ("local", "http"):
             raise DictationError("backend must be local or http.")
         if self.s("audio_backend") not in ("auto", "alsa", "avfoundation", "dshow"):
@@ -284,8 +334,10 @@ def notify(config: Config | None, message: str, *, session: bool = False) -> Non
                 check=False,
                 **desktop.process_options(),
             )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.warning("notification failed: %s", exc)
+    else:
+        log.warning("no notification tool (%s); message not shown: %s", command[0], message)
 
 
 def clean_text(text: str, commands: bool = True) -> str:
@@ -349,6 +401,13 @@ def transcribe(config: Config, pcm: bytes, cache: Path, *, timeout: int | None =
         text = engine.transcribe(config, config.paths, wav_bytes(pcm), timeout)
         if text is not None:
             return clean_text(text, config.b("voice_commands"))
+        fallback_note = ""
+        if engine.last_failure is not None and engine.last_failure.kind in (
+            engine.Failure.TIMEOUT,
+            engine.Failure.HTTP_ERROR,
+            engine.Failure.MODEL_MISSING,
+        ):
+            fallback_note = " " + str(engine.last_failure)
         with tempfile.TemporaryDirectory(prefix="inference-", dir=cache) as folder:
             audio = Path(folder) / "audio.wav"
             audio.write_bytes(wav_bytes(pcm))
@@ -378,11 +437,17 @@ def transcribe(config: Config, pcm: bytes, cache: Path, *, timeout: int | None =
                 )
             except subprocess.TimeoutExpired as exc:
                 raise DictationError(
-                    "Transcription timed out; audio is available for retry."
+                    "Transcription timed out; audio is available for retry." + fallback_note
                 ) from exc
             if result.returncode:
+                log.warning(
+                    "whisper-cli exited %s: %s",
+                    result.returncode,
+                    permissions.tail_of(result.stderr),
+                )
                 raise DictationError(
                     "Whisper failed. Check model compatibility and available memory; audio is retained."
+                    + fallback_note
                 )
             text = result.stdout.decode("utf-8", errors="replace")
     else:
@@ -474,41 +539,90 @@ def record_transcript(paths: Paths, text: str) -> None:
     clipservice.record_transcript(paths, text)
 
 
-def paste_text(config: Config) -> bool:
-    """Best-effort paste into the focused app; clipboard remains the fallback."""
+# Why the last paste_text() failed ("" when it worked or was never tried).
+paste_failure = ""
+
+
+def paste_command(config: Config) -> list[str]:
+    """The key-press helper for this operating system and session."""
     platform = desktop.platform_name()
     if platform == "macos":
-        command = [
+        return [
             "osascript",
             "-e",
             'tell application "System Events" to keystroke "v" using command down',
         ]
-    elif platform == "windows":
-        command = [
+    if platform == "windows":
+        return [
             config.s("powershell"),
             "-NoProfile",
             "-NonInteractive",
             "-Command",
             "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')",
         ]
-    elif os.environ.get("WAYLAND_DISPLAY"):
+    if os.environ.get("WAYLAND_DISPLAY"):
         # Never fall back to X11 input injection in a Wayland session: the
         # focused native window might differ from XWayland's focused window.
-        command = ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"]
-    else:
-        command = ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
+        return ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"]
+    return ["xdotool", "key", "--clearmodifiers", "ctrl+v"]
+
+
+def paste_text(config: Config) -> bool:
+    """Best-effort paste into the focused app; clipboard remains the fallback.
+
+    On failure the reason (the helper's own error output, or that it is missing) is left
+    in `paste_failure` and logged, so the caller can say what to fix.
+    """
+    global paste_failure
+    paste_failure = ""
+    command = paste_command(config)
+    if desktop.platform_name() == "macos" and permissions.accessibility_trusted() is False:
+        paste_failure = "Accessibility access is off"
+        log.warning("auto-paste skipped: %s", paste_failure)
+        return False
     try:
         subprocess.run(
             command,
             check=True,
             timeout=3,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             **desktop.process_options(),
         )
         return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+    except FileNotFoundError:
+        paste_failure = f"{Path(command[0]).name} is not installed"
+    except subprocess.CalledProcessError as exc:
+        paste_failure = permissions.tail_of(exc.stderr) or f"exit status {exc.returncode}"
+    except subprocess.TimeoutExpired:
+        paste_failure = f"{Path(command[0]).name} timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        paste_failure = str(exc) or exc.__class__.__name__
+    log.warning("auto-paste failed: %s", paste_failure)
+    return False
+
+
+def explain_accessibility_once(config: Config, paths: Paths) -> None:
+    """On macOS, say why Accessibility is needed before the first paste that lacks it."""
+    if desktop.platform_name() != "macos" or permissions.accessibility_trusted() is not False:
+        return
+    marker = paths.cache / "accessibility-explained"
+    if marker.exists():
+        return
+    notify(config, permissions.accessibility_explanation())
+    try:
+        marker.write_text("1", encoding="utf-8")
+    except OSError as exc:
+        log.debug("could not remember the Accessibility explanation: %s", exc)
+
+
+def paste_failed_notice() -> str:
+    """The actionable "copied, but couldn't paste" message for this system."""
+    reason = paste_failure
+    # A missing helper is explained by the install advice; don't say it twice.
+    if reason.endswith("is not installed"):
+        reason = ""
+    return permissions.paste_failure_message(reason=reason)
 
 
 PASTED = "Pasted into your app. It’s on the clipboard too."
@@ -527,15 +641,22 @@ def finish(config: Config, paths: Paths, *, auto_paste: bool = False) -> str:
         (paths.cache / "concise.json").unlink(missing_ok=True)
         record_transcript(paths, text)
         copy_text(config, paths)
-        pasted = auto_paste and config.b("auto_paste") and paste_text(config)
-        notify(
-            config,
-            "Pasted. Your transcript is also on the clipboard."
-            if pasted
-            else "Ready to paste: press "
-            + ("Command+V." if desktop.platform_name() == "macos" else "Ctrl+V."),
-            session=auto_paste,  # Only the shortcut's session has the pill.
-        )
+        wanted = auto_paste and config.b("auto_paste")
+        if wanted:
+            explain_accessibility_once(config, paths)
+        pasted = wanted and paste_text(config)
+        if wanted and not pasted:
+            # Not a session message: the pill can't say how to fix it, so always send it.
+            notify(config, paste_failed_notice())
+        else:
+            notify(
+                config,
+                "Pasted. Your transcript is also on the clipboard."
+                if pasted
+                else "Ready to paste: press "
+                + ("Command+V." if desktop.platform_name() == "macos" else "Ctrl+V."),
+                session=auto_paste,  # Only the shortcut's session has the pill.
+            )
     else:
         notify(
             config,
@@ -565,7 +686,7 @@ def open_app(config: Config) -> None:
     frozen = desktop.frozen_root() is not None
     if not frozen and not Path(__file__).resolve().with_name("app.py").is_file():
         return
-    with contextlib.suppress(OSError):
+    try:
         subprocess.Popen(
             desktop.relaunch("app"),
             stdin=subprocess.DEVNULL,
@@ -573,6 +694,8 @@ def open_app(config: Config) -> None:
             stderr=subprocess.DEVNULL,
             **desktop.process_options(detached=True),
         )
+    except OSError as exc:
+        log.warning("could not open the app window: %s", exc)
 
 
 def start_overlay(config: Config, token: str) -> subprocess.Popen[bytes] | None:
@@ -591,7 +714,8 @@ def start_overlay(config: Config, token: str) -> subprocess.Popen[bytes] | None:
             close_fds=True,
             **desktop.process_options(),
         )
-    except OSError:
+    except OSError as exc:
+        log.warning("could not start the recording pill: %s", exc)
         return None
 
 
@@ -600,181 +724,276 @@ def stop_recorder(recorder: subprocess.Popen[bytes] | None) -> None:
     if recorder is None or recorder.poll() is not None:
         return
     if recorder.stdin is not None:
-        with contextlib.suppress(OSError):
+        try:
             recorder.stdin.write(b"q\n")
             recorder.stdin.close()
+        except OSError as exc:  # The device is already gone.
+            log.debug("recorder did not take the quit request: %s", exc)
         try:
             recorder.wait(timeout=1)
             return
         except subprocess.TimeoutExpired:
             pass
-    with contextlib.suppress(OSError):
+    try:
         recorder.terminate()
+    except OSError as exc:
+        log.debug("recorder terminate failed: %s", exc)
     try:
         recorder.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(OSError):
+        try:
             recorder.kill()
+        except OSError as exc:
+            log.debug("recorder kill failed: %s", exc)
         with contextlib.suppress(subprocess.TimeoutExpired):
             recorder.wait(timeout=2)
 
 
-def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
-    recorder: subprocess.Popen[bytes] | None = None
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    pending: concurrent.futures.Future[str] | None = None
-    started = time.monotonic()
-    next_preview = started + config.n("live_interval")
-    cancelled = False
-    interrupted = False
-    warned = False
+class Session:
+    """One recording, from the shortcut's first press to the transcript.
 
-    def interrupt(signum: int, frame: Any) -> None:
-        nonlocal interrupted
-        interrupted = True
+    `worker` runs it in the background process the shortcut starts. The steps are
+    methods so each can be read (and tested) alone.
+    """
 
-    signal.signal(signal.SIGTERM, interrupt)
-    signal.signal(signal.SIGINT, interrupt)
+    def __init__(self, config: Config, paths: Paths, fd: int, token: str) -> None:
+        self.config = config
+        self.paths = paths
+        self.fd = fd
+        self.token = token
+        self.recorder: subprocess.Popen[bytes] | None = None
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.pending: concurrent.futures.Future[str] | None = None
+        self.started = time.monotonic()
+        self.next_preview = self.started + config.n("live_interval")
+        self.cancelled = False
+        self.interrupted = False
+        self.warned = False
+        self.recorder_errors = paths.cache / "recorder.err"
+        self.pill: subprocess.Popen[bytes] | None = None
+        self.pill_failed = False  # The pill could not open: notifications carry the story.
 
-    def state(phase: str, message: str = "", result: str = "") -> None:
+    def tell(self, message: str) -> None:
+        """A session message: the pill shows it, so a notification only when it can't."""
+        notify(self.config, message, session=not self.pill_failed)
+
+    def cue(self, kind: str) -> None:
+        """An audible cue, unless the pill (which plays them itself) is on screen."""
+        if self.pill is None or self.pill_failed:
+            cues.play(kind, self.config.s("sounds"))
+
+    def check_pill(self) -> None:
+        """Notice a pill that exited early (no display, unsupported desktop)."""
+        if self.pill is None or self.pill_failed or self.pill.poll() in (None, 0):
+            return
+        self.pill_failed = True
+        log.info("recording pill exited with %s; using notifications", self.pill.returncode)
+        self.tell("Recording. Press your shortcut again to stop.")
+        self.cue("start")
+
+    def interrupt(self, signum: int, frame: Any) -> None:
+        self.interrupted = True
+
+    def install_signals(self) -> None:
+        signal.signal(signal.SIGTERM, self.interrupt)
+        signal.signal(signal.SIGINT, self.interrupt)
+
+    def state(self, phase: str, message: str = "", result: str = "") -> None:
         atomic(
-            paths.state,
+            self.paths.state,
             json.dumps(
                 {
                     "phase": phase,
-                    "token": token,
+                    "token": self.token,
                     "message": message,
                     "result": result,
-                    "started_at": time.time() - (time.monotonic() - started),
-                    "elapsed_seconds": round(time.monotonic() - started, 1),
-                    "max_seconds": config.n("max_seconds"),
+                    "started_at": time.time() - (time.monotonic() - self.started),
+                    "elapsed_seconds": round(time.monotonic() - self.started, 1),
+                    "max_seconds": self.config.n("max_seconds"),
                 }
             ),
         )
 
-    try:
+    def recorder_reason(self) -> str:
+        """What the recording tool said when it stopped (its last lines of error output)."""
+        try:
+            return permissions.tail_of(self.recorder_errors.read_bytes())
+        except OSError:
+            return ""
+
+    def start_recorder(self) -> None:
+        """Start the microphone (and the pill and engine) and confirm it is recording."""
+        config, paths = self.config, self.paths
+        blocked = permissions.microphone_blocked()
+        if blocked:
+            raise DictationError(blocked)
         paths.preview.unlink(missing_ok=True)
         # Raw PCM has no unfinalized WAV header; snapshots are wrapped on demand.
-        with paths.audio.open("wb") as output:
-            recorder = subprocess.Popen(
+        with paths.audio.open("wb") as output, self.recorder_errors.open("wb") as errors:
+            self.recorder = subprocess.Popen(
                 desktop.recorder_command(config.values),
                 stdout=output,
                 stdin=subprocess.PIPE
                 if desktop.audio_backend(config.values) != "alsa"
                 else subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=errors,
                 close_fds=True,
                 **desktop.process_options(),
             )
         # The pill adds to the notifications (a notification is never missed).
-        start_overlay(config, token)  # Starts up while the microphone does.
+        self.pill = start_overlay(config, self.token)  # Starts up while the microphone does.
         if config.s("backend") == "local":
             import engine
 
             if engine.read_info(paths) is None:
                 engine.start(paths, config)  # Loads the model while the user speaks.
         time.sleep(0.08)
-        if recorder.poll() is not None:
+        if self.recorder.poll() is not None:
+            reason = self.recorder_reason()
+            log.warning("recorder exited at start: %s", reason or "no output")
+            raise DictationError(permissions.microphone_message(reason=reason))
+
+    def stop_requested(self) -> bool:
+        """Whether the shortcut asked to stop or cancel (which is remembered)."""
+        control = read_json(self.paths.control)
+        if control.get("token") == self.token and control.get("action") in ("stop", "cancel"):
+            self.cancelled = control["action"] == "cancel"
+            return True
+        return False
+
+    def recorder_ended(self) -> bool:
+        """Whether the recording tool exited by itself; raises when it failed."""
+        assert self.recorder is not None
+        if self.recorder.poll() is None:
+            return False
+        if self.recorder.returncode:
+            reason = self.recorder_reason()
+            log.warning("recorder stopped with %s: %s", self.recorder.returncode, reason)
             raise DictationError(
-                "Microphone could not start. Choose a microphone in Settings and allow microphone access."
+                "The microphone stopped"
+                + (f" ({reason})" if reason else "")
+                + ". Your audio is saved: open Clipboard+ and choose Retry, "
+                "or run dictate-toggle --transcribe."
             )
-        state("recording")
-        notify(config, "Recording. Press your shortcut again to stop.", session=True)
+        return True
+
+    def time_is_up(self) -> bool:
+        """Warn before the recording limit; True once it is reached."""
+        remaining = self.config.n("max_seconds") - (time.monotonic() - self.started)
+        if remaining <= 30 and not self.warned:
+            self.warned = True
+            self.tell(f"Recording stops automatically in {max(1, math.ceil(remaining))} seconds.")
+        return remaining <= 0
+
+    def collect_preview(self) -> None:
+        """Save a finished live draft (a failed one only costs the draft)."""
+        if self.pending is None or not self.pending.done():
+            return
+        try:
+            preview = self.pending.result()
+            atomic(self.paths.preview, preview)
+            if preview and self.config.b("preview_notifications"):
+                self.tell("Draft: " + preview[-160:])
+        except (DictationError, OSError) as exc:
+            log.info("live preview failed: %s", exc)
+            self.state("recording", "Live preview unavailable; final transcription will still run.")
+        self.pending = None
+        self.next_preview = time.monotonic() + self.config.n("live_interval")
+
+    def submit_preview(self) -> None:
+        """Start a live draft of the latest audio when one is due."""
+        config, paths = self.config, self.paths
+        if not (
+            config.b("live") and self.pending is None and time.monotonic() >= self.next_preview
+        ):
+            return
+        with paths.audio.open("rb") as audio:
+            size = paths.audio.stat().st_size
+            audio.seek(max(0, size - config.n("live_window") * 32000) // 2 * 2)
+            pcm = audio.read(config.n("live_window") * 32000)
+        # A preview is optional. Bound it independently so Stop/Cancel cannot
+        # wait for the full final-transcription timeout.
+        self.pending = self.executor.submit(
+            transcribe, config, pcm, paths.cache, timeout=min(5, config.n("timeout"))
+        )
+
+    def record_until_stopped(self) -> None:
+        """Poll the shortcut, the recorder and the clock until the recording should end."""
         while True:
-            control = read_json(paths.control)
-            if control.get("token") == token and control.get("action") in ("stop", "cancel"):
-                cancelled = control["action"] == "cancel"
+            if self.stop_requested():
                 break
-            if interrupted:
+            if self.interrupted:
                 raise DictationError(
                     "Recording interrupted. Your audio is saved: open the app to retry."
                 )
-            if recorder.poll() is not None:
-                if recorder.returncode:
-                    raise DictationError(
-                        "The microphone stopped. Your audio is saved: open the app to retry."
-                    )
+            if self.recorder_ended() or self.time_is_up():
                 break
-            remaining = config.n("max_seconds") - (time.monotonic() - started)
-            if remaining <= 30 and not warned:
-                warned = True
-                notify(
-                    config,
-                    f"Recording stops automatically in {max(1, math.ceil(remaining))} seconds.",
-                    session=True,
-                )
-            if remaining <= 0:
-                break
-            if pending is not None and pending.done():
-                try:
-                    preview = pending.result()
-                    atomic(paths.preview, preview)
-                    if preview and config.b("preview_notifications"):
-                        notify(config, "Draft: " + preview[-160:], session=True)
-                except (DictationError, OSError):
-                    state(
-                        "recording", "Live preview unavailable; final transcription will still run."
-                    )
-                pending = None
-                next_preview = time.monotonic() + config.n("live_interval")
-            if config.b("live") and pending is None and time.monotonic() >= next_preview:
-                with paths.audio.open("rb") as audio:
-                    size = paths.audio.stat().st_size
-                    audio.seek(max(0, size - config.n("live_window") * 32000) // 2 * 2)
-                    pcm = audio.read(config.n("live_window") * 32000)
-                # A preview is optional. Bound it independently so Stop/Cancel cannot
-                # wait for the full final-transcription timeout.
-                pending = executor.submit(
-                    transcribe, config, pcm, paths.cache, timeout=min(5, config.n("timeout"))
-                )
+            self.check_pill()
+            self.collect_preview()
+            self.submit_preview()
             time.sleep(0.05)
-        stop_recorder(recorder)
+
+    def finalize(self) -> None:
+        """Stop the recorder, then cancel or transcribe what was recorded."""
+        config, paths = self.config, self.paths
+        stop_recorder(self.recorder)
         loading = (
             "Loading the speech model; the first transcription can take longer."
             if config.s("backend") == "local"
             else "Transcribing…"
         )
-        state("cancelling" if cancelled else "transcribing", "" if cancelled else loading)
-        # Do not overlap inference requests or release the session while a preview runs.
-        executor.shutdown(wait=True)
-        if cancelled:
-            paths.audio.unlink(missing_ok=True)
-            state("idle", "Recording cancelled.", result="cancelled")
-            notify(config, "Recording cancelled.", session=True)
-        else:
-            notify(config, loading, session=True)
-            recorded = time.monotonic() - started
-            began = time.monotonic()
-            result = finish(config, paths, auto_paste=True)
-            # The pill shows a pasted transcript as copied too, saying it was pasted.
-            if result == "pasted":
-                state("idle", PASTED, result="copied")
-            else:
-                state("idle", result=result)
-            telemetry.event(
-                "dictation_complete",
-                wait=True,
-                result=result,
-                seconds=round(recorded),
-                transcribe_seconds=round(time.monotonic() - began, 1),
-                backend=config.s("backend"),
-                model=model_name(config),
-                language=config.s("language"),
-                live=config.b("live"),
-                overlay=config.b("overlay"),
-            )
-        if cancelled:
-            telemetry.event(
-                "dictation_cancelled", wait=True, seconds=round(time.monotonic() - started)
-            )
-    except (DictationError, OSError) as exc:
-        message = (
-            str(exc)
-            if isinstance(exc, DictationError)
-            else "Session failed; check device and file permissions."
+        self.state(
+            "cancelling" if self.cancelled else "transcribing", "" if self.cancelled else loading
         )
-        state("error", message)
+        # Do not overlap inference requests or release the session while a preview runs.
+        self.executor.shutdown(wait=True)
+        if self.cancelled:
+            paths.audio.unlink(missing_ok=True)
+            self.state("idle", "Recording cancelled.", result="cancelled")
+            self.tell("Recording cancelled.")
+            self.cue("stop")
+            telemetry.event(
+                "dictation_cancelled", wait=True, seconds=round(time.monotonic() - self.started)
+            )
+            return
+        self.tell(loading)
+        self.cue("stop")
+        recorded = time.monotonic() - self.started
+        began = time.monotonic()
+        result = finish(config, paths, auto_paste=True)
+        # The pill shows a pasted transcript as copied too, saying it was pasted.
+        if result == "pasted":
+            self.state("idle", PASTED, result="copied")
+        else:
+            self.state("idle", result=result)
+        telemetry.event(
+            "dictation_complete",
+            wait=True,
+            result=result,
+            seconds=round(recorded),
+            transcribe_seconds=round(time.monotonic() - began, 1),
+            backend=config.s("backend"),
+            model=model_name(config),
+            language=config.s("language"),
+            live=config.b("live"),
+            overlay=config.b("overlay"),
+        )
+
+    def fail(self, exc: DictationError | OSError) -> None:
+        """Record the error where the pill and app read it and send a notification.
+
+        The notification goes out whether or not the pill is on screen: it is the one
+        channel that reaches a user who is looking at another app.
+        """
+        config = self.config
+        if isinstance(exc, DictationError):
+            message = str(exc)
+        else:
+            log.exception("recording session failed")
+            message = "Session failed; check device and file permissions."
+        self.state("error", message)
         notify(config, message)
+        self.cue("error")
         # Expected problems (no microphone, no model) are warnings; the rest are errors.
         telemetry.capture(
             exc,
@@ -784,11 +1003,123 @@ def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
             backend=config.s("backend"),
             model=model_name(config),
         )
-    finally:
-        stop_recorder(recorder)
-        executor.shutdown(wait=True)
-        paths.preview.unlink(missing_ok=True)
+
+    def cleanup(self) -> None:
+        stop_recorder(self.recorder)
+        self.executor.shutdown(wait=True)
+        self.paths.preview.unlink(missing_ok=True)
+        self.recorder_errors.unlink(missing_ok=True)
+        os.close(self.fd)
+
+    def run(self) -> None:
+        self.install_signals()
+        try:
+            self.start_recorder()
+            self.state("recording")
+            self.tell("Recording. Press your shortcut again to stop.")
+            self.cue("start")
+            self.record_until_stopped()
+            self.finalize()
+        except (DictationError, OSError) as exc:
+            self.fail(exc)
+        finally:
+            self.cleanup()
+
+
+def worker(config: Config, paths: Paths, fd: int, token: str) -> None:
+    Session(config, paths, fd, token).run()
+
+
+def request_stop(paths: Paths, action: str) -> bool:
+    """Ask the running recording to stop or cancel; False when none is recording."""
+    current = read_json(paths.state)
+    if action in ("toggle", "cancel") and current.get("phase") == "recording":
+        atomic(
+            paths.control,
+            json.dumps(
+                {"token": current["token"], "action": "cancel" if action == "cancel" else "stop"}
+            ),
+        )
+        print("Cancelling…" if action == "cancel" else "Stopping…")
+        return True
+    return False
+
+
+def dispatch_while_busy(config: Config, paths: Paths, action: str) -> None:
+    """A session holds the recorder: stop it if asked to, otherwise explain."""
+    if action == "discard":
+        raise DictationError("Session is active; use --cancel while recording.")
+    if request_stop(paths, action):
+        return
+    notify(config, "Still transcribing. Your text will be ready in a moment.", session=True)
+    print("Dictation is busy; audio is protected until this session finishes.")
+
+
+def wait_for_worker(paths: Paths, child: subprocess.Popen[bytes], token: str) -> None:
+    """Block (up to 8 seconds) until the background worker acknowledges it started."""
+    deadline = time.monotonic() + 8
+    while True:
+        current = read_json(paths.state)
+        if current.get("token") == token and current.get("phase") != "starting":
+            if current.get("phase") in ("error", "interrupted"):
+                raise DictationError(
+                    str(current.get("message") or "Session worker could not start.")
+                )
+            return
+        if child.poll() is not None:
+            raise DictationError("Session worker could not start; check your Python installation.")
+        if time.monotonic() >= deadline:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+            raise DictationError("Session startup timed out. Try again.")
+        time.sleep(0.02)
+
+
+def start_worker(config: Config, paths: Paths, action: str) -> None:
+    """Take the session lock and start a recording worker (or transcribe retained audio)."""
+    try:
+        config.check(recording=action in ("toggle", "start"))
+    except DictationError:
+        if action in ("toggle", "start"):
+            open_app(config)  # Most often setup is unfinished: show where to finish it.
+        raise
+    fd = lock(paths.runtime / "session.lock")
+    if fd is None:
+        raise DictationError("Session is busy.")
+    try:
+        if action == "transcribe":
+            finish(config, paths)
+            atomic(paths.state, json.dumps({"phase": "idle"}))
+            return
+        if paths.audio.exists() and paths.audio.stat().st_size:
+            if action in ("toggle", "start"):
+                open_app(config)
+            raise DictationError(
+                "Your last recording wasn’t transcribed yet. Retry or discard it in "
+                "Clipboard+, then record again. (Or run --transcribe / --discard.)"
+            )
+        token = uuid.uuid4().hex
+        atomic(paths.state, json.dumps({"phase": "starting", "token": token}))
+        # Windows cannot inherit a POSIX file lock. Keep the command lock until
+        # the worker has acquired its own session lock and acknowledged startup.
         os.close(fd)
+        fd = None
+        child = subprocess.Popen(
+            desktop.relaunch("dictation", "--worker", token),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **desktop.process_options(detached=True),
+        )
+        wait_for_worker(paths, child, token)
+        print("Starting recording…")
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def dispatch(config: Config, paths: Paths, action: str) -> None:
@@ -808,25 +1139,7 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
     atomic(began, str(time.time()))
     try:
         if busy(paths):
-            if action == "discard":
-                raise DictationError("Session is active; use --cancel while recording.")
-            current = read_json(paths.state)
-            if action in ("toggle", "cancel") and current.get("phase") == "recording":
-                atomic(
-                    paths.control,
-                    json.dumps(
-                        {
-                            "token": current["token"],
-                            "action": "cancel" if action == "cancel" else "stop",
-                        }
-                    ),
-                )
-                print("Cancelling…" if action == "cancel" else "Stopping…")
-            else:
-                notify(
-                    config, "Still transcribing. Your text will be ready in a moment.", session=True
-                )
-                print("Dictation is busy; audio is protected until this session finishes.")
+            dispatch_while_busy(config, paths, action)
             return
         if action == "cancel":
             print("No active recording.")
@@ -837,105 +1150,192 @@ def dispatch(config: Config, paths: Paths, action: str) -> None:
             atomic(paths.state, json.dumps({"phase": "idle"}))
             print("Retained audio discarded. Saved transcript kept.")
             return
-        try:
-            config.check(recording=action in ("toggle", "start"))
-        except DictationError:
-            if action in ("toggle", "start"):
-                open_app(config)  # Most often setup is unfinished: show where to finish it.
-            raise
-        fd = lock(paths.runtime / "session.lock")
-        if fd is None:
-            raise DictationError("Session is busy.")
-        try:
-            if action == "transcribe":
-                finish(config, paths)
-                atomic(paths.state, json.dumps({"phase": "idle"}))
-                return
-            if paths.audio.exists() and paths.audio.stat().st_size:
-                if action in ("toggle", "start"):
-                    open_app(config)
-                raise DictationError(
-                    "Your last recording wasn’t transcribed yet. Retry or discard it in "
-                    "Clipboard+, then record again. (Or run --transcribe / --discard.)"
-                )
-            token = uuid.uuid4().hex
-            atomic(paths.state, json.dumps({"phase": "starting", "token": token}))
-            # Windows cannot inherit a POSIX file lock. Keep the command lock until
-            # the worker has acquired its own session lock and acknowledged startup.
-            os.close(fd)
-            fd = None
-            child = subprocess.Popen(
-                desktop.relaunch("dictation", "--worker", token),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **desktop.process_options(detached=True),
-            )
-            deadline = time.monotonic() + 8
-            while True:
-                current = read_json(paths.state)
-                if current.get("token") == token and current.get("phase") != "starting":
-                    if current.get("phase") in ("error", "interrupted"):
-                        raise DictationError(
-                            str(current.get("message") or "Session worker could not start.")
-                        )
-                    break
-                if child.poll() is not None:
-                    raise DictationError(
-                        "Session worker could not start; check your Python installation."
-                    )
-                if time.monotonic() >= deadline:
-                    child.terminate()
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        child.wait()
-                    raise DictationError("Session startup timed out. Try again.")
-                time.sleep(0.02)
-            print("Starting recording…")
-        finally:
-            if fd is not None:
-                os.close(fd)
+        start_worker(config, paths, action)
     finally:
         os.close(command_fd)
+
+
+COMMAND_FLAGS = (
+    "status",
+    "transcribe",
+    "cancel",
+    "copy-last",
+    "devices",
+    "doctor",
+    "init-config",
+    "watch",
+    "discard",
+    "setup",
+    "concise",
+    "review",
+    "copy-concise",
+    "record",
+    "setup-rewrite",
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="dictate-toggle",
+        description="Cross-platform local dictation with optional live drafts and HTTP transcription.",
+    )
+    group = parser.add_mutually_exclusive_group()
+    for flag in COMMAND_FLAGS:
+        group.add_argument("--" + flag, action="store_true")
+    group.add_argument("--worker", help=argparse.SUPPRESS)
+    setup = parser.add_argument_group(
+        "setup options", "Answers for --setup; without a terminal the defaults are used."
+    )
+    setup.add_argument("--language", choices=("en", "auto"), help="English or multilingual")
+    setup.add_argument("--model-file", metavar="PATH", help="use this GGML model, no download")
+    setup.add_argument("--mic", metavar="NAME", help="microphone name or index")
+    setup.add_argument(
+        "--share-usage",
+        action=argparse.BooleanOptionalAction,
+        help="share anonymous crash reports and usage statistics (off unless you say yes)",
+    )
+    setup.add_argument(
+        "--interactive", action="store_true", help="ask questions even when stdin is not a terminal"
+    )
+    setup.add_argument("--skip-mic-test", action="store_true", help="do not test the microphone")
+    return parser
+
+
+def print_status(config: Config, paths: Paths) -> None:
+    import workflow
+
+    current = workflow.snapshot(paths)
+    print(
+        json.dumps(
+            {
+                "phase": "idle",
+                **current,
+                "backend": config.s("backend"),
+                "retained_audio": paths.audio.exists(),
+                "live": config.b("live"),
+                "platform": desktop.platform_name(),
+                "config_file": str(paths.config),
+            },
+            indent=2,
+        )
+    )
+
+
+def list_devices(config: Config) -> int:
+    result = subprocess.run(
+        desktop.recorder_command(config.values, listing=True),
+        capture_output=True,
+        timeout=15,
+        check=False,
+        **desktop.process_options(),
+    )
+    device_output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+    print(device_output)
+    # FFmpeg's device-enumeration operation intentionally returns nonzero.
+    listed = "AVFoundation audio devices" in device_output or "(audio)" in device_output
+    return 0 if listed else result.returncode
+
+
+def run_rewriting(args: argparse.Namespace, config: Config, paths: Paths) -> None:
+    import rewriting
+
+    rewriting.run(
+        config,
+        paths,
+        "setup"
+        if args.setup_rewrite
+        else "concise"
+        if args.concise
+        else "copy"
+        if args.copy_concise
+        else "review",
+    )
+
+
+def run_worker(config: Config, paths: Paths, token: str) -> None:
+    worker_fd = lock(paths.runtime / "session.lock")
+    if worker_fd is None:
+        raise DictationError("A session already owns the recorder.")
+    worker(config, paths, worker_fd, token)
+
+
+def run_command(args: argparse.Namespace, config: Config, paths: Paths) -> int:
+    """Run the command the flags name against a valid configuration."""
+    if args.concise or args.review or args.copy_concise or args.setup_rewrite:
+        run_rewriting(args, config, paths)
+    elif args.worker:
+        run_worker(config, paths, args.worker)
+    elif args.status:
+        print_status(config, paths)
+    elif args.doctor:
+        config.check(recording=True)
+        print(
+            "Configured executables and model/endpoint are valid. Device and endpoint access still require a session."
+        )
+    elif args.devices:
+        return list_devices(config)
+    elif args.copy_last:
+        copy_text(config, paths)
+    elif args.watch or args.record:
+        import workflow
+
+        if args.record:
+            dispatch(config, paths, "start")
+        workflow.watch(paths)
+    elif args.discard:
+        dispatch(config, paths, "discard")
+    else:
+        dispatch(
+            config,
+            paths,
+            "cancel" if args.cancel else "transcribe" if args.transcribe else "toggle",
+        )
+    return 0
+
+
+def report_failure(config: Config | None, exc: Exception) -> int:
+    """Tell the user (notification and stderr) about an error that ended the command."""
+    # A DictationError is an expected, explained condition (setup unfinished, no
+    # speech…) shown to the user; only real failures are crash reports.
+    if not isinstance(exc, DictationError):
+        log.exception("dictation command failed")
+        telemetry.capture(exc, wait=True)
+    notify(
+        config,
+        str(exc)
+        if isinstance(exc, DictationError)
+        else "Dictation could not access a file or executable.",
+    )
+    print(
+        str(exc)
+        if isinstance(exc, DictationError)
+        else "Could not access settings, files, or an executable.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def main() -> int:
     os.umask(0o077)
     telemetry.install("engine")
     config: Config | None = None
-    parser = argparse.ArgumentParser(
-        prog="dictate-toggle",
-        description="Cross-platform local dictation with optional live drafts and HTTP transcription.",
-    )
-    group = parser.add_mutually_exclusive_group()
-    for flag in (
-        "status",
-        "transcribe",
-        "cancel",
-        "copy-last",
-        "devices",
-        "doctor",
-        "init-config",
-        "watch",
-        "discard",
-        "setup",
-        "concise",
-        "review",
-        "copy-concise",
-        "record",
-        "setup-rewrite",
-    ):
-        group.add_argument("--" + flag, action="store_true")
-    group.add_argument("--worker", help=argparse.SUPPRESS)
-    args = parser.parse_args()
+    args = build_parser().parse_args()
     try:
         paths = Paths()
         if args.setup:
             import onboarding
 
-            onboarding.run(paths)
+            onboarding.run(
+                paths,
+                onboarding.SetupOptions(
+                    language=args.language,
+                    model=args.model_file,
+                    device=args.mic,
+                    share_usage=args.share_usage,
+                    interactive=True if args.interactive else None,
+                    skip_mic_test=args.skip_mic_test,
+                ),
+            )
             return 0
         if args.init_config:
             private_dir(paths.config.parent)
@@ -944,97 +1344,9 @@ def main() -> int:
             print(f"Settings created: {paths.config}")
             return 0
         config = Config(paths)
-        if args.concise or args.review or args.copy_concise or args.setup_rewrite:
-            import rewriting
-
-            rewriting.run(
-                config,
-                paths,
-                "setup"
-                if args.setup_rewrite
-                else "concise"
-                if args.concise
-                else "copy"
-                if args.copy_concise
-                else "review",
-            )
-            return 0
-        if args.worker:
-            worker_fd = lock(paths.runtime / "session.lock")
-            if worker_fd is None:
-                raise DictationError("A session already owns the recorder.")
-            worker(config, paths, worker_fd, args.worker)
-        elif args.status:
-            import workflow
-
-            current = workflow.snapshot(paths)
-            print(
-                json.dumps(
-                    {
-                        "phase": "idle",
-                        **current,
-                        "backend": config.s("backend"),
-                        "retained_audio": paths.audio.exists(),
-                        "live": config.b("live"),
-                        "platform": desktop.platform_name(),
-                        "config_file": str(paths.config),
-                    },
-                    indent=2,
-                )
-            )
-        elif args.doctor:
-            config.check(recording=True)
-            print(
-                "Configured executables and model/endpoint are valid. Device and endpoint access still require a session."
-            )
-        elif args.devices:
-            result = subprocess.run(
-                desktop.recorder_command(config.values, listing=True),
-                capture_output=True,
-                timeout=15,
-                check=False,
-                **desktop.process_options(),
-            )
-            device_output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
-            print(device_output)
-            # FFmpeg's device-enumeration operation intentionally returns nonzero.
-            listed = "AVFoundation audio devices" in device_output or "(audio)" in device_output
-            return 0 if listed else result.returncode
-        elif args.copy_last:
-            copy_text(config, paths)
-        elif args.watch or args.record:
-            import workflow
-
-            if args.record:
-                dispatch(config, paths, "start")
-            workflow.watch(paths)
-        elif args.discard:
-            dispatch(config, paths, "discard")
-        else:
-            dispatch(
-                config,
-                paths,
-                "cancel" if args.cancel else "transcribe" if args.transcribe else "toggle",
-            )
-        return 0
+        return run_command(args, config, paths)
     except (DictationError, OSError, EOFError, subprocess.SubprocessError) as exc:
-        # A DictationError is an expected, explained condition (setup unfinished, no
-        # speech…) shown to the user; only real failures are crash reports.
-        if not isinstance(exc, DictationError):
-            telemetry.capture(exc, wait=True)
-        notify(
-            config,
-            str(exc)
-            if isinstance(exc, DictationError)
-            else "Dictation could not access a file or executable.",
-        )
-        print(
-            str(exc)
-            if isinstance(exc, DictationError)
-            else "Could not access settings, files, or an executable.",
-            file=sys.stderr,
-        )
-        return 1
+        return report_failure(config, exc)
 
 
 if __name__ == "__main__":

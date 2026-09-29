@@ -1,0 +1,37 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Clipboard+ version
+      description: Shown in the tray/menu-bar menu or Settings.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options: [DMG, Windows setup, AppImage, Source install script]
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and desktop (for example Ubuntu 24.04 GNOME Wayland, macOS 15, Windows 11)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: markdown
+    attributes:
+      value: Do not paste clipboard contents, transcripts or API keys. Report security problems privately, see SECURITY.md.

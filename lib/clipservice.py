@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
+import stat
 import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 import clipboardplus as cp
@@ -34,7 +37,49 @@ STALE_SECONDS = 35.0
 RETRY_SECONDS = 30.0
 ERROR_PAUSE_SECONDS = 1.0  # Keeps a failing watcher from spinning the CPU.
 SYNC_SOON_SECONDS = 5.0  # A local change is sent this soon.
+log = logging.getLogger("clipservice")  # Goes to stderr; the tray keeps it in logs/clipservice.log.
 SYNC_NOW = "clip-sync-now"  # Runtime file: sync at once (Settings, dictation).
+QUIT = "clip-quit"  # Runtime file: the tray asks the service to stop.
+PID_FILE = "clipservice.pid"
+MAX_SIGNAL_BYTES = 16  # Signal files carry a word or a digit; anything longer is not ours.
+
+
+def consume_signal(path: Path, accepted: frozenset[str]) -> bool:
+    """Claim a control file and say whether it was a valid request.
+
+    The file is first renamed to a name only this call knows (an atomic step, so two
+    readers, or a reader and the writer's next write, can never both take the same
+    request), and only then read. It must be a small regular file of this user (a link,
+    a folder, a foreign file or a long one is ignored) whose text is in `accepted`.
+    Whatever it was, it is gone afterwards, so an invalid file is not looked at again.
+    """
+    claimed = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.claimed")
+    try:
+        os.rename(path, claimed)
+    except OSError:
+        return False  # Absent, or another reader won the race.
+    try:
+        info = os.lstat(claimed)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_size > MAX_SIGNAL_BYTES
+            or (sys.platform != "win32" and info.st_uid != os.getuid())
+        ):
+            return False
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(claimed, flags), "rb") as stream:
+            text = stream.read(MAX_SIGNAL_BYTES + 1).decode("utf-8", "replace").strip()
+        return text in accepted
+    except OSError:
+        return False
+    finally:
+        try:
+            if stat.S_ISDIR(os.lstat(claimed).st_mode):
+                os.rmdir(claimed)
+            else:
+                os.unlink(claimed)
+        except OSError:
+            pass
 
 
 def _sha(text: str) -> str:
@@ -210,9 +255,7 @@ class Syncer:
         if self._running():
             return
         self._reload(now)
-        request = self._paths.runtime / SYNC_NOW
-        if request.exists():
-            request.unlink(missing_ok=True)
+        if consume_signal(self._paths.runtime / SYNC_NOW, frozenset({"", "1"})):
             if self._engine is not None:
                 self._due = now
         engine = self._engine
@@ -245,8 +288,13 @@ class Syncer:
             stamp = None
         if stamp == self._stamp:
             return
-        self._stamp = stamp
         key = cp.read_key(self._paths.config.parent) if stamp else ""
+        try:
+            info = path.stat()  # Reading may have moved a plaintext key into the keychain.
+            stamp = (info.st_mtime_ns, info.st_size, info.st_ino) if stamp else None
+        except OSError:
+            stamp = None
+        self._stamp = stamp
         if self._engine is not None:
             # A round for the previous key may have written account ids after the
             # window reset them. Do this after that round finishes, even when a new
@@ -260,6 +308,7 @@ class Syncer:
         try:
             engine.run_once()
         except Exception as exc:  # noqa: BLE001 - a bug or odd server data must not loop or kill the service.
+            log.error("sync crashed", exc_info=exc)
             telemetry.capture(exc, stage="sync")
             self._crashed = True
             self._due = self._clock() + clipsync.BACKOFF_MAX_SECONDS
@@ -431,11 +480,7 @@ class Service:
 
 
 def _quit_requested(paths: d.Paths) -> bool:
-    request = paths.runtime / "clip-quit"
-    if request.exists():
-        request.unlink(missing_ok=True)
-        return True
-    return False
+    return consume_signal(paths.runtime / QUIT, frozenset({"quit"}))
 
 
 def _store_problem(paths: d.Paths, exc: Exception) -> str:
@@ -470,7 +515,12 @@ def run(
     d.private_dir(paths.runtime)
     lock = desktop.lock(paths.runtime / "clipservice.lock")
     if lock is None:
-        return 0  # Already running.
+        return 0  # Already running: the lock is held by the one live service.
+    try:
+        d.atomic(paths.runtime / PID_FILE, str(os.getpid()))  # For diagnosis only.
+    except OSError:
+        pass
+    log.info("clipboard service started (pid %d)", os.getpid())
 
     def nap(seconds: float) -> None:
         # Sleeps in short slices so a quit request is honoured promptly.
@@ -478,7 +528,7 @@ def run(
             sleep(seconds)
             return
         end = time.monotonic() + seconds
-        while time.monotonic() < end and not (paths.runtime / "clip-quit").exists():
+        while time.monotonic() < end and not (paths.runtime / QUIT).exists():
             time.sleep(min(1.0, max(0.0, end - time.monotonic())))
 
     prefs = CachedPreferences(hotkeys.Preferences(paths))
@@ -492,6 +542,7 @@ def run(
                 try:
                     watcher = watcher_factory()
                 except clipwatch.Unavailable as exc:
+                    log.warning("clipboard watcher unavailable: %s", exc)
                     telemetry.capture(exc, level="warning", stage="watcher")
                     write_status(paths, "error", 0, str(exc), clock)
                     nap(retry_seconds)
@@ -500,6 +551,7 @@ def run(
                     try:
                         store = clipstore.Store(paths.clipboard)
                     except (clipstore.StoreError, sqlite3.DatabaseError) as exc:
+                        log.error("clipboard history cannot be opened: %s", exc)
                         telemetry.capture(exc, level="warning", stage="store")
                         write_status(paths, "error", 0, _store_problem(paths, exc), clock)
                         nap(retry_seconds)
@@ -529,12 +581,19 @@ def run(
         if store is not None:
             store.close()
         write_status(paths, "stopped", 0, "", clock)
+        (paths.runtime / PID_FILE).unlink(missing_ok=True)
         os.close(lock)
+        log.info("clipboard service stopped")
     return 0
 
 
 def main() -> int:
     os.umask(0o077)
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     telemetry.install("clipboard")
     return run(d.Paths())
 

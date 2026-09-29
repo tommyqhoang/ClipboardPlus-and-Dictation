@@ -1,7 +1,11 @@
 # Windows x64 installer. Run in a normal PowerShell terminal, not as Administrator.
-param([string]$Ref = 'main')
+param([string]$Ref = '')
 $ErrorActionPreference = 'Stop'
-if ($Ref -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid application ref.' }
+if ($Ref -and $Ref -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid application ref.' }
+$Repo = 'tommyqhoang/ClipboardPlus-and-Dictation'
+# Used only when the GitHub API cannot be reached; bump with each release.
+$PinnedTag = 'v1.4.0'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
     throw 'Automatic Windows install currently supports x64. ARM64 requires manual dependencies.'
 }
@@ -38,6 +42,12 @@ function Find-Python {
     }
     return $null
 }
+# winget checks each installer against the SHA-256 in its manifest; confirm FFmpeg works.
+if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
+    $ffmpeg = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Filter ffmpeg.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $ffmpeg) { throw 'FFmpeg was not found after installation.' }
+    $env:Path = $ffmpeg.DirectoryName + ';' + $env:Path
+}
 $pythonPath = Find-Python
 if (-not $pythonPath) {
     throw 'No Python 3 with Tk (tkinter) was found. Install Python 3.11 from python.org with the tcl/tk option, or restart PowerShell and rerun.'
@@ -60,8 +70,29 @@ try {
     } catch {
         Write-Warning "Speech engine setup failed: $_. Clipboard+ will still install; retry speech setup later."
     }
+    if (-not $Ref) {
+        try {
+            $Ref = (Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$Repo/releases/latest").tag_name
+        } catch { $Ref = $null }
+        if ($Ref -notmatch '^v?\d+\.\d+\.\d+$') { $Ref = $PinnedTag }
+    }
+    Write-Host "Installing release $Ref."
+    # Fail closed: the zip is unpacked only if it matches the checksum the release published.
+    $sums = Join-Path $work 'SHA256SUMS'
+    Invoke-WebRequest -UseBasicParsing "https://github.com/$Repo/releases/download/$Ref/SHA256SUMS" -OutFile $sums
     $archive = Join-Path $work 'app.zip'
-    Invoke-WebRequest -UseBasicParsing "https://github.com/tommyqhoang/ClipboardPlus-and-Dictation/archive/$Ref.zip" -OutFile $archive
+    $expected = $null
+    foreach ($line in Get-Content -LiteralPath $sums) {
+        if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and ($Matches[2] -eq "clipboardplus-source-$Ref.zip" -or $Matches[2] -eq "$Ref.zip")) {
+            $expected = $Matches[1].ToLowerInvariant()
+            break
+        }
+    }
+    if (-not $expected) { throw "Release $Ref has no published checksum for its source zip; refusing to install." }
+    Invoke-WebRequest -UseBasicParsing "https://github.com/$Repo/archive/refs/tags/$Ref.zip" -OutFile $archive
+    if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+        throw 'The downloaded application did not match its published checksum; nothing was installed.'
+    }
     $source = Join-Path $work 'source'
     Expand-Archive -LiteralPath $archive -DestinationPath $source
     $app = Get-ChildItem -LiteralPath $source -Directory | Select-Object -First 1

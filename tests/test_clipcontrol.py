@@ -157,6 +157,50 @@ class SupervisionTests(ControlCase):
         self.assertFalse((self.paths.runtime / "clip-quit").exists())
 
 
+class LoggingTests(ControlCase):
+    def test_service_output_goes_to_a_log_file_not_the_void(self):
+        self.enable()
+        seen = {}
+
+        def popen(command, **kwargs):
+            seen.update(kwargs)
+            kwargs["stderr"].write(b"Traceback: boom\n")
+            process = Mock()
+            process.poll.return_value = None
+            return process
+
+        control = clipcontrol.ClipboardControl(
+            self.paths,
+            self.prefs,
+            command=["/venv/python", "clipservice.py"],
+            popen=popen,
+            clock=lambda: self.now,
+            wall=lambda: self.wall,
+        )
+        control.supervise()
+        self.assertNotEqual(seen["stdout"], clipcontrol.subprocess.DEVNULL)
+        self.assertIs(seen["stdout"], seen["stderr"])
+        log = self.paths.cache / "logs" / "clipservice.log"
+        self.assertIn("Traceback: boom", log.read_text())
+
+    def test_an_unwritable_log_still_starts_the_service(self):
+        self.enable()
+        with patch.object(clipcontrol.logsetup, "open_stream", return_value=None):
+            self.control().supervise()
+        self.assertEqual(len(self.started), 1)
+
+    def test_a_crash_is_logged_when_the_service_is_restarted(self):
+        self.enable()
+        control = self.control()
+        control.supervise()
+        self.processes[0].poll.return_value = 1
+        self.now += clipcontrol.RESTART_SECONDS + 1
+        with patch.object(clipcontrol.logsetup, "get_logger") as get:
+            control.supervise()
+        get.return_value.error.assert_called_once()
+        self.assertEqual(len(self.started), 2)
+
+
 class PauseTests(ControlCase):
     def test_pause_for_an_hour_then_resume(self):
         self.enable()

@@ -102,6 +102,12 @@ ICONS = (
 )
 MODULES = (
     "telemetry.py",
+    "logsetup.py",
+    "permissions.py",
+    "cues.py",
+    "app_styles.py",
+    "app_settings.py",
+    "menubar_logic.py",
     "dictation.py",
     "desktop.py",
     "onboarding.py",
@@ -152,6 +158,18 @@ GUI_REQUIREMENTS = {
     "linux": ("pystray==0.19.5", "Pillow==12.3.0", "python-xlib==0.33"),
     "windows": ("pystray==0.19.5", "Pillow==12.3.0"),
 }
+
+
+GUI_REQUIREMENTS_FILE = REPOSITORY / "requirements-gui.txt"
+
+
+def gui_install_arguments(platform: str) -> list[str]:
+    """pip arguments for the private environment: the pinned requirements file
+    (environment markers pick this platform's lines), or the same pins inline for
+    a checkout that lacks the file."""
+    if GUI_REQUIREMENTS_FILE.is_file():
+        return ["-r", str(GUI_REQUIREMENTS_FILE)]
+    return list(GUI_REQUIREMENTS[platform])
 
 
 TK_HINT = {
@@ -224,12 +242,11 @@ def gui_environment(prefix: Path) -> Path:
     create = [base_python(platform), "-m", "venv", str(target)]
     if platform == "linux":
         create.insert(3, "--system-site-packages")  # Sees the distribution's GTK bindings.
-    requirements = GUI_REQUIREMENTS[platform]
     try:
         subprocess.run(create, check=True)
         subprocess.run(
             [str(candidate), "-m", "pip", "install", "--disable-pip-version-check", "--quiet"]
-            + list(requirements),
+            + gui_install_arguments(platform),
             check=True,
             timeout=600,
         )

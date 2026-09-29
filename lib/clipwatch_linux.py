@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import import_module
 from types import SimpleNamespace
 from typing import Any, Protocol
@@ -168,6 +168,16 @@ class X11Source:
         )
         d.flush()
         self._changed = False
+        self._owner_class = ""
+
+    @staticmethod
+    def _window_class(window: Any) -> str:
+        """The owner's WM_CLASS (for the password-manager list), or "" when it has none."""
+        try:
+            found = window.get_wm_class()
+            return " ".join(found) if found else ""
+        except Exception:  # noqa: BLE001 - a vanished window or no such property
+            return ""
 
     # -- changes -----------------------------------------------------------
     def _absorb(self, event: Any) -> None:
@@ -176,6 +186,7 @@ class X11Source:
             owner = getattr(event.owner, "id", event.owner)
             if owner:  # No owner means the clipboard was emptied, not copied to.
                 self._changed = True
+                self._owner_class = self._window_class(event.owner)
 
     def wait(self, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
@@ -206,6 +217,10 @@ class X11Source:
 
     # -- content -----------------------------------------------------------
     def read(self) -> Clip:
+        clip = self._read_content()
+        return replace(clip, source_app=self._owner_class) if self._owner_class else clip
+
+    def _read_content(self) -> Clip:
         targets = self._fetch_targets()
         choice = choose(targets)
         if choice.concealed:

@@ -42,6 +42,10 @@ class ServiceCase(unittest.TestCase):
         )
         environment.start()
         self.addCleanup(environment.stop)
+        # Setup checks the network and disk before a download; these tests never download.
+        preflight = patch.object(app_service.onboarding, "preflight_download")
+        preflight.start()
+        self.addCleanup(preflight.stop)
         self.paths = d.Paths()
         self.service = app_service.Service(self.paths)
 

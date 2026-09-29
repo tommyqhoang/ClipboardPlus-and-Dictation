@@ -14,6 +14,7 @@ WHISPER_COMMIT="48f628a84833905ee4a0658ee6d4a5c915ce1997"
 SKIP_MODEL=0
 SKIP_PACKAGES=0
 SKIP_DOWNLOAD=0
+ALLOW_UNVERIFIED_MODEL="${DICTATION_ALLOW_UNVERIFIED_MODEL:-0}"
 KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
 KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
 DEFAULT_BINDING="${DICTATION_BINDING:-<Shift><Super>d}"
@@ -282,11 +283,18 @@ install_whisper_from_source() {
     echo "$src_dir exists but is not a git checkout; remove it or set DICTATION_WHISPER_BIN." >&2
     return 1
   else
-    echo "Cloning whisper.cpp $WHISPER_VERSION into $src_dir"
-    git clone --depth 1 --branch "$WHISPER_VERSION" \
-      https://github.com/ggml-org/whisper.cpp.git "$src_dir" || return 1
+    # Fetch the pinned commit itself (the $WHISPER_VERSION tag is documentation and
+    # could be moved), then confirm what was checked out.
+    echo "Fetching whisper.cpp $WHISPER_VERSION ($WHISPER_COMMIT) into $src_dir"
+    if ! { git init -q "$src_dir" &&
+      git -C "$src_dir" fetch -q --depth 1 https://github.com/ggml-org/whisper.cpp.git "$WHISPER_COMMIT" &&
+      git -C "$src_dir" checkout -q FETCH_HEAD; }; then
+      rm -rf -- "$src_dir"
+      return 1
+    fi
     if [[ "$(git -C "$src_dir" rev-parse HEAD)" != "$WHISPER_COMMIT" ]]; then
       echo "Downloaded whisper.cpp source did not match the pinned commit." >&2
+      rm -rf -- "$src_dir"
       return 1
     fi
   fi
@@ -303,6 +311,36 @@ install_whisper_from_source() {
   echo "Built whisper-cli: $bin_path"
 }
 
+# Download URL to DEST, resuming a leftover DEST only when the server proves it
+# can continue from exactly that byte (206 + matching Content-Range); anything
+# else discards the partial file and starts over.
+download_model() {
+  local url="$1" dest="$2" size=0 headers status range chunk="${2}.chunk"
+  local common=(--proto '=https' --proto-redir '=https' --fail --location --retry 3
+    --retry-delay 2 --connect-timeout 15)
+  headers="$(mktemp)" || return 1
+  if [[ -s "$dest" ]]; then
+    size="$(wc -c <"$dest" | tr -d ' ')"
+    rm -f -- "$chunk"
+    if curl "${common[@]}" --header "Range: bytes=${size}-" --dump-header "$headers" \
+      --output "$chunk" "$url"; then
+      status="$(tr -d '\r' <"$headers" | awk 'toupper($1) ~ /^HTTP\// {s=$2} END {print s}')"
+      range="$(tr -d '\r' <"$headers" | awk -F': *' 'tolower($1)=="content-range" {r=$2} END {print r}')"
+      if [[ "$status" == 206 && "$range" == "bytes ${size}-"* ]]; then
+        cat -- "$chunk" >>"$dest" && rm -f -- "$chunk" "$headers"
+        return
+      elif [[ "$status" == 200 ]]; then
+        mv -f -- "$chunk" "$dest" && rm -f -- "$headers" # The server ignored the range: full file.
+        return
+      fi
+    fi
+    echo "The server cannot resume the earlier partial download; starting over."
+    rm -f -- "$chunk" "$dest"
+  fi
+  rm -f -- "$headers"
+  curl "${common[@]}" --output "$dest" "$url"
+}
+
 install_model() {
   local partial_dest="${MODEL_DEST}.part"
   local candidate="$MODEL_DEST"
@@ -315,14 +353,17 @@ install_model() {
     esac
   fi
 
+  if [[ -z "$expected_sha256" && "$ALLOW_UNVERIFIED_MODEL" != 1 ]]; then
+    echo "No SHA-256 is known for $MODEL_NAME. Set DICTATION_MODEL_SHA256, or pass" >&2
+    echo "--allow-unverified-model (DICTATION_ALLOW_UNVERIFIED_MODEL=1) to accept it unverified." >&2
+    return 1
+  fi
   mkdir -p "$MODEL_DIR" || return 1
   if [[ -s "$MODEL_DEST" ]]; then
     echo "Model already present: $MODEL_DEST"
   else
     echo "Downloading Whisper model: $MODEL_NAME"
-    curl --proto '=https' --proto-redir '=https' --fail --location --retry 3 \
-      --retry-delay 2 --connect-timeout 15 \
-      --continue-at - --output "$partial_dest" "$MODEL_URL" || return 1
+    download_model "$MODEL_URL" "$partial_dest" || return 1
     if [[ ! -s "$partial_dest" ]]; then
       echo "Model download completed without producing a usable file." >&2
       return 1
@@ -349,7 +390,7 @@ with path.open("rb") as stream:
             sys.exit("Model SHA-256 mismatch. Select a trusted model download.")
 PY
   if [[ -z "$expected_sha256" ]]; then
-    echo "Warning: this custom model has only a GGML header check. Set DICTATION_MODEL_SHA256 for full verification." >&2
+    echo "Warning: accepting $MODEL_NAME with only a GGML header check (--allow-unverified-model)." >&2
   fi
   if [[ "$candidate" == "$partial_dest" ]]; then
     mv -f "$partial_dest" "$MODEL_DEST" || return 1
@@ -414,8 +455,9 @@ main() {
       --no-packages) SKIP_PACKAGES=1 ;;
       --http) SKIP_MODEL=1 ;;
       --no-model) SKIP_DOWNLOAD=1 ;;
+      --allow-unverified-model) ALLOW_UNVERIFIED_MODEL=1 ;;
       --help)
-        echo "Usage: ./install.sh [--no-packages] [--http] [--no-model]"
+        echo "Usage: ./install.sh [--no-packages] [--http] [--no-model] [--allow-unverified-model]"
         return 0
         ;;
       *)

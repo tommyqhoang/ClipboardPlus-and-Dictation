@@ -81,6 +81,7 @@ class DesktopTests(unittest.TestCase):
             patch.dict(os.environ, {}, clear=True),
             patch.object(os, "getuid", return_value=1000, create=True),
             patch.object(Path, "home", return_value=Path("/users/tester")),
+            patch.object(desktop, "_runtime_fallback", return_value=Path("/run-fallback")),
         ):
             for system, expected in (
                 ("macos", "Application Support"),
@@ -592,7 +593,9 @@ class DesktopTests(unittest.TestCase):
                     commands = [call.args[0] for call in run.call_args_list]
                     self.assertIn("venv", commands[0])
                     self.assertEqual("--system-site-packages" in commands[0], platform == "linux")
-                    self.assertTrue(any(requirement in part for part in commands[1]))
+                    # pip reads the pinned file; the platform's package is in it.
+                    self.assertIn("-r", commands[1])
+                    self.assertIn(requirement, setup.GUI_REQUIREMENTS_FILE.read_text())
             python.parent.mkdir(parents=True)
             python.touch()
             with (

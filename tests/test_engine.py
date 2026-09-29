@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import dictation as d
 import engine
 
+WAV = d.wav_bytes(b"\x10\x00" * 2000)
+
 
 class FakeConfig:
     """The Config surface engine.py reads."""
@@ -84,7 +86,9 @@ class EngineTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         self.paths = d.Paths()
         d.private_dir(self.paths.runtime)
-        self.config = FakeConfig()
+        model = self.root / "model.bin"
+        model.write_bytes(b"model")
+        self.config = FakeConfig({"model": str(model)})
         self.config.paths = self.paths
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), WhisperLikeServer)
         self.addCleanup(self.server.server_close)
@@ -101,13 +105,13 @@ class EngineTests(unittest.TestCase):
 
     def test_a_registered_engine_transcribes(self):
         self.write_info()
-        text = engine.transcribe(self.config, self.paths, b"RIFFwav", timeout=5)
+        text = engine.transcribe(self.config, self.paths, WAV, timeout=5)
         self.assertEqual(text, "hello from the engine")
         # Use was noted, so the supervisor keeps the engine alive.
         self.assertTrue(engine.used_file(self.paths).exists())
 
     def test_no_registered_engine_means_fallback(self):
-        self.assertIsNone(engine.transcribe(self.config, self.paths, b"RIFFwav", timeout=5))
+        self.assertIsNone(engine.transcribe(self.config, self.paths, WAV, timeout=5))
 
     def test_a_stale_pointer_is_ignored(self):
         self.write_info(age=13 * 3600)
@@ -121,7 +125,7 @@ class EngineTests(unittest.TestCase):
             json.dumps({"port": 1, "pid": 1, "started": time.time()}),
         )
         with patch.object(engine, "touch") as touch:
-            self.assertIsNone(engine.transcribe(self.config, self.paths, b"RIFFwav", timeout=2))
+            self.assertIsNone(engine.transcribe(self.config, self.paths, WAV, timeout=2))
             touch.assert_not_called()
 
     def test_the_command_targets_this_machine_only(self):
@@ -189,6 +193,76 @@ class EngineTests(unittest.TestCase):
             )
         self.assertEqual(result, 3)
         self.assertFalse(engine.info_file(self.paths).exists())
+
+    def test_failures_are_classified_with_specific_messages(self):
+        import socket
+        import urllib.error
+
+        cases = (
+            (urllib.error.HTTPError("u", 500, "boom", {}, None), engine.Failure.HTTP_ERROR),  # type: ignore[arg-type]
+            (TimeoutError(), engine.Failure.TIMEOUT),
+            (socket.timeout(), engine.Failure.TIMEOUT),
+            (urllib.error.URLError(TimeoutError()), engine.Failure.TIMEOUT),
+            (ValueError("bad json"), engine.Failure.BAD_REPLY),
+            (ConnectionRefusedError(), engine.Failure.UNAVAILABLE),
+        )
+        cases[0][0].close()
+        for exc, kind in cases:
+            error = engine.classify(exc)
+            self.assertIs(error.kind, kind, repr(exc))
+            self.assertTrue(str(error))
+        self.assertIn("HTTP 500", str(engine.classify(cases[0][0])))
+        # Every kind has wording of its own.
+        self.assertEqual(len({str(engine.EngineError(kind)) for kind in engine.Failure}), 7)
+
+    def test_a_failed_request_records_why(self):
+        self.write_info()
+        with patch.object(engine.urllib.request.OpenerDirector, "open", side_effect=TimeoutError):
+            self.assertIsNone(engine.transcribe(self.config, self.paths, WAV, timeout=1))
+        assert engine.last_failure is not None
+        self.assertIs(engine.last_failure.kind, engine.Failure.TIMEOUT)
+        self.assertEqual(
+            engine.transcribe(self.config, self.paths, WAV, timeout=5), "hello from the engine"
+        )
+        self.assertIsNone(engine.last_failure)
+
+    def test_an_unreadable_reply_is_a_bad_reply(self):
+        self.write_info()
+        info = {"port": self.port, "pid": 1}
+        with (
+            patch.object(engine, "read_info", return_value=info),
+            patch.object(engine.json, "loads", return_value={"other": 1}),
+        ):
+            self.assertIsNone(engine.transcribe(self.config, self.paths, WAV, timeout=5))
+        assert engine.last_failure is not None
+        self.assertIs(engine.last_failure.kind, engine.Failure.BAD_REPLY)
+
+    def test_empty_audio_is_reported_not_sent(self):
+        self.write_info()
+        self.assertIsNone(engine.transcribe(self.config, self.paths, d.wav_bytes(b""), timeout=5))
+        assert engine.last_failure is not None
+        self.assertIs(engine.last_failure.kind, engine.Failure.EMPTY_AUDIO)
+
+    def test_start_reports_a_missing_model_or_server(self):
+        config = FakeConfig({"model": str(self.root / "absent.bin")})
+        config.paths = self.paths
+        self.assertFalse(engine.start(self.paths, config))
+        assert engine.last_failure is not None
+        self.assertIs(engine.last_failure.kind, engine.Failure.MODEL_MISSING)
+        with patch.object(engine, "server_binary", return_value=""):
+            self.assertFalse(engine.start(self.paths, self.config))
+        assert engine.last_failure is not None
+        self.assertIs(engine.last_failure.kind, engine.Failure.SERVER_MISSING)
+
+    def test_start_reports_a_launch_failure(self):
+        with (
+            patch.object(engine, "server_binary", return_value="/usr/bin/whisper-server"),
+            patch.object(engine, "_free_port", return_value=1234),
+            patch.object(engine.subprocess, "Popen", side_effect=OSError("no exec")),
+        ):
+            self.assertFalse(engine.start(self.paths, self.config))
+        assert engine.last_failure is not None
+        self.assertIs(engine.last_failure.kind, engine.Failure.UNAVAILABLE)
 
     def test_the_engine_is_started_detached_by_start(self):
         with (

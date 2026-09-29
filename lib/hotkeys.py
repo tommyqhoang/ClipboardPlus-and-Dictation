@@ -5,6 +5,7 @@ Windows/Linux tray. Pure data and files only; GUI toolkits live elsewhere.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import plistlib
 import re
@@ -19,6 +20,13 @@ from typing import Any, Literal
 
 import desktop
 import dictation as d
+
+try:
+    import logsetup
+
+    log = logsetup.get_logger("hotkeys")
+except ImportError:
+    log = logging.getLogger(__name__)
 
 # Shown wherever the app names itself. Identifiers, folders and the bundle id keep the
 # original "whisper-dictation" spelling so upgrades keep working.
@@ -173,6 +181,27 @@ class Shortcut:
             key.lower() if len(key) == 1 else key
         )
 
+    def qt(self) -> str:
+        """KDE's spelling: Ctrl+Shift+D (the Super key is Meta)."""
+        names = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "cmd": "Meta"}
+        return "+".join([names[name] for name in self.modifiers] + [self._xkb_key(False)])
+
+    def sway(self) -> str:
+        """Sway's spelling: Ctrl+Shift+d (Mod4 is the Super key)."""
+        names = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "cmd": "Mod4"}
+        return "+".join([names[name] for name in self.modifiers] + [self._xkb_key(True)])
+
+    def hyprland(self) -> tuple[str, str]:
+        """Hyprland's (modifiers, key): ("CTRL SHIFT", "D")."""
+        names = {"ctrl": "CTRL", "alt": "ALT", "shift": "SHIFT", "cmd": "SUPER"}
+        return " ".join(names[name] for name in self.modifiers), self._xkb_key(False)
+
+    def _xkb_key(self, lower: bool) -> str:
+        special = {"Space": "space", "Esc": "Escape"}
+        if self.key in special:
+            return special[self.key]
+        return self.key.lower() if lower and len(self.key) == 1 else self.key
+
 
 def default_shortcut(platform: str) -> Shortcut:
     """The same Control+Shift+D shortcut on every desktop."""
@@ -271,7 +300,8 @@ class Preferences:
     def read(self) -> dict[str, Any]:
         try:
             return d.read_json(self.path)
-        except (d.DictationError, OSError, ValueError):
+        except (d.DictationError, OSError, ValueError) as exc:
+            log.warning("could not read the preferences: %s", exc)
             return {}
 
     def stamp(self) -> tuple[int, int]:
@@ -331,9 +361,9 @@ class Preferences:
         return self.read().get("open_at_login", True) is not False
 
     def share_usage(self) -> bool:
-        """Anonymous crash reports and usage statistics (telemetry.py): on unless declined
-        (nothing is sent before setup, where this switch is shown)."""
-        return self.read().get("share_usage", True) is not False
+        """Anonymous crash reports and usage statistics (telemetry.py): off until the user
+        agrees, in setup or Settings (the same value telemetry.has_consent reads)."""
+        return self.read().get("share_usage") is True
 
     def auto_updates(self) -> bool:
         """Checking for app updates: on unless turned off in Settings."""
@@ -403,8 +433,8 @@ def bundle_login_command(bundle: str) -> list[str]:
     try:
         info = plistlib.loads((Path(bundle) / "Contents/Info.plist").read_bytes())
         name = info.get("CFBundleExecutable", name)
-    except (OSError, plistlib.InvalidFileException, ValueError):
-        pass
+    except (OSError, plistlib.InvalidFileException, ValueError) as exc:
+        log.warning("could not read the login bundle: %s", exc)
     executable = Path(bundle) / "Contents/MacOS" / name
     return [str(executable)] if executable.is_file() else ["/usr/bin/open", bundle]
 
@@ -417,8 +447,8 @@ def login_bundle_id(command: list[str]) -> str:
             identifier = info.get("CFBundleIdentifier")
             if identifier in (BUNDLE_ID, "com.apercallc.clipboardplus"):
                 return str(identifier)
-        except (OSError, ValueError, plistlib.InvalidFileException):
-            pass
+        except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+            log.warning("could not read the login item: %s", exc)
     return BUNDLE_ID
 
 
@@ -474,7 +504,8 @@ def set_login_item(
         }
         try:
             loaded = plistlib.loads(path.read_bytes())
-        except (OSError, plistlib.InvalidFileException, ValueError):
+        except (OSError, plistlib.InvalidFileException, ValueError) as exc:
+            log.warning("could not read the login agent: %s", exc)
             loaded = None
         d.atomic(path, plistlib.dumps(agent).decode("utf-8"))
         # launchd keeps a loaded agent's old definition (bootstrap of it is a no-op),
@@ -517,7 +548,8 @@ def start_login_item(run: Any = subprocess.run, sleep: Any = time.sleep) -> bool
                 text=True,
                 timeout=10,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("launchctl failed: %s", exc)
             return False
         if result.returncode == 0:
             return True
@@ -538,15 +570,16 @@ def _launchctl(action: str, argument: str, run: Any) -> None:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError):
-        pass
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("launchctl failed: %s", exc)
 
 
 def _menubar_is_idle() -> bool:
     """Whether the menu bar app is running; unloading its agent would quit it."""
     try:
         fd = desktop.lock(d.Paths().runtime / "menubar.lock")
-    except OSError:
+    except OSError as exc:
+        log.warning("could not take the login lock: %s", exc)
         return False
     if fd is None:
         return False
@@ -594,7 +627,8 @@ def record_status(
 def _status(paths: d.Paths, name: str) -> str:
     try:
         return (paths.runtime / name).read_text(encoding="utf-8")
-    except OSError:
+    except OSError as exc:
+        log.debug("could not read shortcut status: %s", exc)
         return "ok"
 
 
@@ -610,7 +644,8 @@ def shortcut_conflict(paths: d.Paths, name: str = "shortcut-status") -> Conflict
         return None
     try:
         data = json.loads(status)
-    except ValueError:
+    except ValueError as exc:
+        log.debug("unreadable shortcut status: %s", exc)
         return None
     return Conflict(str(data.get("conflict", "")), str(data.get("path", "")))
 
@@ -654,7 +689,8 @@ def gnome_conflict(shortcut: Shortcut, path: str, run: Any = subprocess.run) -> 
                     if _accelerator(value) == wanted:
                         action = parts[1].replace("-", " ")
                         return Conflict(f"the desktop’s “{action}” shortcut")
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("gsettings conflict lookup failed: %s", exc)
         return None
     return None
 
@@ -669,7 +705,8 @@ def gnome_release(path: str, run: Any = subprocess.run) -> bool:
         result = run(
             ["gsettings", "set", schema, "binding", ""], capture_output=True, text=True, timeout=10
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("gsettings release failed: %s", exc)
         return False
     return not result.returncode
 
@@ -727,7 +764,8 @@ def gnome_shortcut(
         gsettings("set", schema, "binding", "")
         if shortcut:
             gsettings("set", schema, "binding", shortcut.gnome())
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("gsettings binding failed: %s", exc)
         return False
     return True
 
@@ -751,7 +789,8 @@ def gnome_regrab(path: str, run: Any = subprocess.run) -> bool:
                 text=True,
                 timeout=10,
             )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("gsettings regrab failed: %s", exc)
         return False
     return True
 
@@ -778,8 +817,253 @@ def gnome_remove(
         remaining = [entry for entry in entries if entry.strip("'\"") != path]
         gsettings("set", *GNOME_LIST, "[" + ", ".join(remaining) + "]")
         gsettings("reset-recursively", schema)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("gsettings removal failed: %s", exc)
+
+
+# -- registering a shortcut on each Linux desktop -----------------------------------
+
+BACKENDS = ("gnome", "kde", "sway", "hyprland", "wayland", "x11")
+
+
+@dataclass
+class RegisterResult:
+    """How registering a global shortcut went, in words a user can act on.
+
+    `ok` is whether the desktop will run our command on the keys (`bool(result)` is
+    the same). `message` says what happened or what to do; `manual` is the exact line
+    or settings entry for a shortcut that has to be added by hand.
+    """
+
+    ok: bool
+    backend: str = ""
+    message: str = ""
+    manual: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def detect_backend(environ: dict[str, str] | None = None) -> str:
+    """Which Linux desktop's mechanism can bind a global shortcut for us.
+
+    One of BACKENDS. "wayland" is a Wayland compositor with no way for an app to
+    register a shortcut (no portal use here), "x11" the same for X11 desktops that
+    are not GNOME or KDE.
+    """
+    env = os.environ if environ is None else environ
+    current = env.get("XDG_CURRENT_DESKTOP", "").lower()
+    wayland = bool(env.get("WAYLAND_DISPLAY")) or env.get("XDG_SESSION_TYPE") == "wayland"
+    if env.get("HYPRLAND_INSTANCE_SIGNATURE") or "hyprland" in current:
+        return "hyprland"
+    if env.get("SWAYSOCK") or "sway" in current:
+        return "sway"
+    if "kde" in current or env.get("KDE_FULL_SESSION"):
+        return "kde"
+    if "gnome" in current or "unity" in current or "budgie" in current or "pop" in current:
+        return "gnome"
+    if shutil.which("gsettings") and not current:
+        return "gnome"  # No desktop named, but a GNOME settings daemon to ask.
+    return "wayland" if wayland else "x11"
+
+
+def manual_instructions(shortcut: Shortcut | None, command: Path | list[str], backend: str) -> str:
+    """The exact text to put in this desktop's configuration by hand."""
+    run = _gnome_command(command)
+    if shortcut is None:
+        return f"Run: {run}"
+    if backend == "sway":
+        return f"Add to ~/.config/sway/config:  bindsym {shortcut.sway()} exec {run}"
+    if backend == "hyprland":
+        modifiers, key = shortcut.hyprland()
+        return f"Add to ~/.config/hypr/hyprland.conf:  bind = {modifiers}, {key}, exec, {run}"
+    if backend == "kde":
+        return (
+            "System Settings, Keyboard, Shortcuts, Add New, Command or Script: "
+            f"command {run}, shortcut {shortcut.qt()}"
+        )
+    if backend == "gnome":
+        return f"Settings, Keyboard, Custom Shortcuts: command {run}, shortcut {shortcut.label()}"
+    return f"Bind {shortcut.label()} to this command in your desktop or window manager: {run}" + (
+        " (Wayland apps cannot register global shortcuts themselves.)"
+        if backend == "wayland"
+        else ""
+    )
+
+
+# The shortcut most recently bound at runtime for each name, so it can be unbound.
+_bound: dict[str, Shortcut] = {}
+
+
+def _tool(name: str) -> str | None:
+    return shutil.which(name)
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "shortcut"
+
+
+def _run(run: Any, args: list[str]) -> tuple[bool, str]:
+    """(worked, output or error text) for one helper command; never raises."""
+    try:
+        result = run(args, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("%s failed: %s", args[0], exc)
+        return False, str(exc)
+    text = (str(result.stdout) + " " + str(result.stderr)).strip()
+    if result.returncode or "error" in text.lower():
+        log.warning("%s reported: %s", args[0], text)
+        return False, text
+    return True, text
+
+
+def _register_sway(
+    shortcut: Shortcut | None, command: Path | list[str], key: str, run: Any
+) -> RegisterResult:
+    manual = manual_instructions(shortcut, command, "sway")
+    tool = _tool("swaymsg")
+    if tool is None:
+        return RegisterResult(False, "sway", "swaymsg was not found. " + manual, manual)
+    if key in _bound:
+        _run(run, [tool, "unbindsym", _bound.pop(key).sway()])
+    if shortcut is None:
+        return RegisterResult(True, "sway")
+    worked, text = _run(run, [tool, "bindsym", shortcut.sway(), "exec", _gnome_command(command)])
+    if not worked:
+        return RegisterResult(False, "sway", f"swaymsg refused it ({text}). {manual}", manual)
+    _bound[key] = shortcut
+    return RegisterResult(
+        True,
+        "sway",
+        f"{shortcut.label()} is set until Sway restarts. To keep it, {manual}",
+        manual,
+    )
+
+
+def _register_hyprland(
+    shortcut: Shortcut | None, command: Path | list[str], key: str, run: Any
+) -> RegisterResult:
+    manual = manual_instructions(shortcut, command, "hyprland")
+    tool = _tool("hyprctl")
+    if tool is None:
+        return RegisterResult(False, "hyprland", "hyprctl was not found. " + manual, manual)
+    if key in _bound:
+        modifiers, old = _bound.pop(key).hyprland()
+        _run(run, [tool, "keyword", "unbind", f"{modifiers}, {old}"])
+    if shortcut is None:
+        return RegisterResult(True, "hyprland")
+    modifiers, name = shortcut.hyprland()
+    worked, text = _run(
+        run, [tool, "keyword", "bind", f"{modifiers}, {name}, exec, {_gnome_command(command)}"]
+    )
+    # hyprctl prints "ok" on success and an error sentence otherwise.
+    if not worked or text.strip().lower() not in ("ok", ""):
+        return RegisterResult(False, "hyprland", f"hyprctl refused it ({text}). {manual}", manual)
+    _bound[key] = shortcut
+    return RegisterResult(
+        True,
+        "hyprland",
+        f"{shortcut.label()} is set until Hyprland restarts. To keep it, {manual}",
+        manual,
+    )
+
+
+def _register_kde(
+    shortcut: Shortcut | None, command: Path | list[str], name: str, run: Any
+) -> RegisterResult:
+    """Write KDE's own global-shortcut entry (a launcher plus a kglobalshortcutsrc key)."""
+    manual = manual_instructions(shortcut, command, "kde")
+    writer = _tool("kwriteconfig6") or _tool("kwriteconfig5")
+    if writer is None:
+        return RegisterResult(False, "kde", "kwriteconfig was not found. " + manual, manual)
+    service = f"clipboardplus-{_slug(name)}.desktop"
+    folder = Path.home() / ".local/share/applications"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / service).write_text(
+            "[Desktop Entry]\nType=Application\n"
+            f"Name={name}\nExec={_gnome_command(command)}\nNoDisplay=true\n"
+            "X-KDE-GlobalAccel-CommandShortcut=true\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.warning("could not write %s: %s", service, exc)
+        return RegisterResult(
+            False, "kde", f"Could not save the launcher ({exc}). {manual}", manual
+        )
+    value = shortcut.qt() if shortcut else "none"
+    worked, text = _run(
+        run,
+        [writer, "--file", "kglobalshortcutsrc", "--group", "services", "--group", service]
+        + ["--key", "_launch", value],
+    )
+    if not worked:
+        return RegisterResult(False, "kde", f"kwriteconfig failed ({text}). {manual}", manual)
+    if shortcut is None:
+        return RegisterResult(True, "kde")
+    return RegisterResult(
+        True,
+        "kde",
+        f"{shortcut.label()} is saved for KDE. It starts working after you log out and back "
+        f"in; if it doesn’t, {manual}",
+        manual,
+    )
+
+
+def register_shortcut(
+    shortcut: Shortcut | None,
+    command: Path | list[str],
+    *,
+    backend: str | None = None,
+    run: Any = subprocess.run,
+    path: str = GNOME_PATH,
+    name: str = DICTATION_SHORTCUT_NAME,
+) -> RegisterResult:
+    """Bind `shortcut` to `command` in whichever way this desktop allows.
+
+    None pauses it. A failure never raises: the result says why, and gives the exact
+    line or setting to add by hand, so the app can show it instead of failing silently.
+    """
+    backend = backend or detect_backend()
+    if backend == "sway":
+        return _register_sway(shortcut, command, path, run)
+    if backend == "hyprland":
+        return _register_hyprland(shortcut, command, path, run)
+    if backend == "kde":
+        return _register_kde(shortcut, command, name, run)
+    manual = manual_instructions(shortcut, command, backend)
+    if backend == "gnome" or shutil.which("gsettings"):
+        if gnome_shortcut(shortcut, command, run, path=path, name=name):
+            return RegisterResult(True, "gnome")
+        return RegisterResult(
+            False,
+            "gnome",
+            "GNOME’s settings could not be changed (is gsettings working?). " + manual,
+            manual,
+        )
+    if backend == "wayland":
+        message = "This Wayland desktop doesn’t let apps register a global shortcut. " + manual
+    else:
+        message = "This desktop has no shortcut service Clipboard+ can use. " + manual
+    return RegisterResult(False, backend, message, manual)
+
+
+def record_message(paths: d.Paths, message: str, name: str = "shortcut-status") -> None:
+    """Keep why a shortcut isn't working, next to its status, for the window to show."""
+    d.private_dir(paths.runtime)
+    target = paths.runtime / (name + "-message")
+    if message:
+        d.atomic(target, message)
+    else:
+        target.unlink(missing_ok=True)
+
+
+def shortcut_message(paths: d.Paths, name: str = "shortcut-status") -> str:
+    try:
+        return (paths.runtime / (name + "-message")).read_text(encoding="utf-8")
+    except OSError as exc:
+        log.debug("could not read the shortcut message: %s", exc)
+        return ""
 
 
 def open_link(url: str = CLIPBOARD_PLUS) -> None:

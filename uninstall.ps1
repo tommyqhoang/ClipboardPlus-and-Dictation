@@ -1,5 +1,13 @@
 # Uninstalls Clipboard+ for the current user. Run in a normal PowerShell terminal.
+#   .\uninstall.ps1            remove the app; keep history, settings, keys, models
+#   .\uninstall.ps1 -Purge     ALSO permanently delete all user data (irreversible)
+#   -Force                     with -Purge, skip the confirmation
+param([switch]$Purge, [switch]$Force)
 $ErrorActionPreference = 'Stop'
+if ($Purge -and -not $Force) {
+    $reply = Read-Host '-Purge permanently deletes all Clipboard+ user data (history, settings, account key, models). Continue? [y/N]'
+    if ($reply -notmatch '^[yY]') { $Purge = $false }
+}
 $prefix = Join-Path $env:LOCALAPPDATA 'WhisperDictation\App'
 $lib = Join-Path $prefix 'lib\whisper-dictation'
 $venvRoot = Join-Path $prefix 'share\whisper-dictation\venv'
@@ -9,6 +17,11 @@ if (-not (Test-Path -LiteralPath $python)) { $python = Join-Path $venvScripts 'p
 
 if (-not (Test-Path -LiteralPath (Join-Path $lib 'dictation.py'))) {
     Write-Host 'Clipboard+ is not installed for this user.'
+    if ($Purge) {
+        Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'WhisperDictation') -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $HOME '.local\share\whisper.cpp\models') -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host 'Purged leftover user data.'
+    }
     exit 0
 }
 
@@ -62,7 +75,7 @@ foreach ($name in $names) {
 # Only this app's own files.
 $modules = @(
     'telemetry', 'dictation', 'desktop', 'onboarding', 'rewriting', 'workflow', 'app',
-    'app_service', 'hotkeys', 'menubar', 'tray', 'clipboardplus', 'clipstore', 'clipwatch',
+    'app_service', 'browserauth', 'permissions', 'cues', 'app_styles', 'app_settings', 'menubar_logic', 'logsetup', 'hotkeys', 'menubar', 'tray', 'clipboardplus', 'clipstore', 'clipwatch',
     'clipwatch_linux', 'clipwatch_macos', 'clipwatch_windows', 'clipservice', 'clipsync',
     'clipcontrol', 'clipui', 'overlay', 'updates', 'engine'
 )
@@ -86,4 +99,13 @@ Remove-Item -LiteralPath (Join-Path $prefix '.dictation-install.json') -Force -E
 if (Test-Path -LiteralPath (Join-Path $venvRoot 'pyvenv.cfg')) {
     Remove-Item -LiteralPath $venvRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host 'Removed the command and runtime module. Models, settings, saved transcripts and clipboard history were retained.'
+if ($Purge) {
+    Start-Sleep -Seconds 1  # Let the tray and clipboard service see their quit files.
+    # Config/ holds clipboard/ (history database), the account key, telemetry-id,
+    # settings and models/; Cache/ holds recoverable audio.
+    Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'WhisperDictation') -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $HOME '.local\share\whisper.cpp\models') -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host 'Removed the command and runtime module, and PURGED all user data (history, settings, keys, telemetry id, models).'
+} else {
+    Write-Host 'Removed the command and runtime module. Models, settings, saved transcripts and clipboard history were retained (re-run with -Purge to delete them).'
+}

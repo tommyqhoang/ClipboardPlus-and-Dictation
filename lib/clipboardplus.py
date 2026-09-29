@@ -10,12 +10,13 @@ used for anything else. Standard library only.
 
 from __future__ import annotations
 
+import hashlib
 import http.client
+import importlib
 import json
 import os
 import re
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,10 +25,23 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import desktop
+
 if TYPE_CHECKING:
     from clipstore import Item
 
-API = "https://backend-production-74d4.up.railway.app"
+# The one place the service's host is named (telemetry.py builds its URL from it too).
+# CLIPBOARDPLUS_API points the app at another deployment (a staging server, a local
+# test server); only https:// hosts are accepted, because the key travels to it.
+DEFAULT_API = "https://backend-production-74d4.up.railway.app"
+
+
+def _api() -> str:
+    override = os.environ.get("CLIPBOARDPLUS_API", "").strip().rstrip("/")
+    return override if override.startswith("https://") and len(override) > 8 else DEFAULT_API
+
+
+API = _api()
 SITE = "https://clipboardplus.apercallc.com"
 # Opens the account page on its desktop app card, where keys for this app are made.
 ACCOUNT_URL = SITE + "/account.html#desktop"
@@ -70,7 +84,80 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def key_path(config_dir: Path) -> Path:
+    """The key file. With a system keychain it holds only a marker (not a secret) that
+    says the key is in the keychain, so a changed key is still noticed by its file time."""
     return config_dir / "clipboard-plus-key"
+
+
+KEYRING_SERVICE = "Clipboard+ desktop"
+KEYRING_MARKER = "keyring:v1"
+
+
+def _keyring() -> Any | None:
+    """The optional `keyring` package (macOS Keychain, Windows Credential Manager, Secret
+    Service), or None when it is missing, broken or switched off (CLIPBOARDPLUS_KEYRING=0).
+    Tests never touch a real keychain unless they ask for it."""
+    if os.environ.get("CLIPBOARDPLUS_KEYRING", "").lower() in ("0", "false", "off"):
+        return None
+    if "unittest" in sys.modules and not os.environ.get("CLIPBOARDPLUS_KEYRING_TESTS"):
+        return None
+    try:
+        return importlib.import_module("keyring")
+    except Exception:  # noqa: BLE001 - any import failure just means no keychain
+        return None
+
+
+def _keychain_name(config_dir: Path) -> str:
+    """The keychain entry name: one per configuration folder."""
+    return "api-key-" + hashlib.sha256(str(config_dir).encode("utf-8")).hexdigest()[:16]
+
+
+def _keychain_store(config_dir: Path, key: str) -> bool:
+    """Put the key in the system keychain; True only when it reads back identically."""
+    keyring = _keyring()
+    if keyring is None:
+        return False
+    try:
+        keyring.set_password(KEYRING_SERVICE, _keychain_name(config_dir), key)
+        return bool(keyring.get_password(KEYRING_SERVICE, _keychain_name(config_dir)) == key)
+    except Exception:  # noqa: BLE001 - no backend, a locked or refused keychain: use the file
+        return False
+
+
+def _keychain_read(config_dir: Path) -> str:
+    keyring = _keyring()
+    if keyring is None:
+        return ""
+    try:
+        found = keyring.get_password(KEYRING_SERVICE, _keychain_name(config_dir))
+        return clean_key(found) if isinstance(found, str) else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _keychain_delete(config_dir: Path) -> None:
+    keyring = _keyring()
+    if keyring is None:
+        return
+    try:
+        keyring.delete_password(KEYRING_SERVICE, _keychain_name(config_dir))
+    except Exception:  # noqa: BLE001 - nothing stored, or no backend
+        pass
+
+
+def _shred(path: Path) -> None:
+    """Overwrite a file's bytes in place, then delete it (best effort: journaling file
+    systems and SSDs may keep old blocks, which is why the keychain is preferred)."""
+    try:
+        size = path.stat().st_size
+        if path.is_file() and not path.is_symlink() and size:
+            with path.open("r+b") as stream:
+                stream.write(b"\0" * size)
+                stream.flush()
+                os.fsync(stream.fileno())
+    except OSError:
+        pass
+    path.unlink(missing_ok=True)
 
 
 def clean_key(value: str) -> str:
@@ -83,10 +170,28 @@ def clean_key(value: str) -> str:
 
 
 def read_key(config_dir: Path) -> str:
+    """The saved key, or "" when there is none. A key an older version left in the file
+    is moved into the keychain (when there is one) and the file's copy wiped."""
+    path = key_path(config_dir)
     try:
-        return clean_key(key_path(config_dir).read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8").strip()
     except (OSError, ValueError):
         return ""
+    if text == KEYRING_MARKER:
+        return _keychain_read(config_dir)
+    try:
+        key = clean_key(text)
+    except ValueError:
+        return ""
+    if _keychain_store(config_dir, key):
+        try:
+            _shred(path)
+            _write_private(config_dir, path, KEYRING_MARKER)
+        except OSError:
+            pass  # The key is safe in the keychain either way.
+    else:
+        desktop.restrict_to_owner(path)  # A file from before the permission rules.
+    return key
 
 
 def linked(config_dir: Path) -> bool:
@@ -94,26 +199,25 @@ def linked(config_dir: Path) -> bool:
 
 
 def _write_private(directory: Path, path: Path, text: str) -> None:
+    """Write an owner-only file atomically: mode 0600 from creation (whatever the umask),
+    an owner-only ACL on Windows, a fresh name then a rename."""
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # A fresh, owner-only file (mkstemp uses O_EXCL), then an atomic rename.
-    descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".clipboard-plus-")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-    if sys.platform != "win32":
-        path.chmod(0o600)
+    desktop.write_private(path, text)
 
 
 def save_key(config_dir: Path, value: str) -> None:
-    _write_private(config_dir, key_path(config_dir), clean_key(value))
+    """Keep the key in the system keychain when there is one (the file then holds only a
+    marker), otherwise in an owner-only file."""
+    key = clean_key(value)
+    if _keychain_store(config_dir, key):
+        _write_private(config_dir, key_path(config_dir), KEYRING_MARKER)
+    else:
+        _write_private(config_dir, key_path(config_dir), key)
 
 
 def remove_key(config_dir: Path) -> None:
-    key_path(config_dir).unlink(missing_ok=True)
+    _keychain_delete(config_dir)
+    _shred(key_path(config_dir))
     email_path(config_dir).unlink(missing_ok=True)
 
 

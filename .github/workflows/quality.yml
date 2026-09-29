@@ -1,5 +1,9 @@
 name: Quality
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call: # release.yml gates a release on these same checks.
 permissions:
   contents: read
 # A newer push replaces the run still going for the one before it.
@@ -32,9 +36,9 @@ jobs:
         if: runner.os == 'Linux'
       - run: ruff check lib tests tools packaging/checksum.py packaging/smoke_release.py setup-desktop.py && ruff format --check lib tests tools packaging/checksum.py packaging/smoke_release.py setup-desktop.py
       - run: mypy --strict lib tools packaging/checksum.py packaging/smoke_release.py setup-desktop.py
-      - run: shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh packaging/linux/build-appimage.sh packaging/linux/AppDir/AppRun packaging/macos/build-dmg.sh
+      - run: shellcheck bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh packaging/linux/build-appimage.sh packaging/linux/uninstall-appimage.sh packaging/linux/AppDir/AppRun packaging/macos/build-dmg.sh packaging/macos/uninstall.command
         if: runner.os == 'Linux'
-      - run: shfmt -d -i 2 -ci bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh packaging/linux/build-appimage.sh packaging/linux/AppDir/AppRun packaging/macos/build-dmg.sh
+      - run: shfmt -d -i 2 -ci bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh packaging/linux/build-appimage.sh packaging/linux/uninstall-appimage.sh packaging/linux/AppDir/AppRun packaging/macos/build-dmg.sh packaging/macos/uninstall.command
         if: runner.os == 'Linux'
       - name: Parse Windows scripts without running them
         if: runner.os == 'Windows'
@@ -45,13 +49,15 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile("$pwd/$script", [ref]$null, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
           }
-      - run: python -m pip install "pyobjc-framework-Cocoa==12.2.2" "Pillow==12.3.0"
+      # GUI pins live in requirements-gui.txt only (release.yml uses it too).
+      - run: python -m pip install -r requirements-gui.txt
         if: runner.os == 'macOS'
       - run: sh tests/with-xvfb.sh sh -c 'coverage run -m unittest discover -s tests -v && coverage combine && coverage report'
         if: runner.os == 'Linux'
       # The coverage floor is held on Linux, where every test runs; here Linux-only
-      # tests are skipped, so the report is shown but its total not enforced.
-      - run: coverage run -m unittest discover -s tests -v && coverage combine && coverage report --fail-under=0
+      # tests are skipped, so a lower floor guards against a platform silently
+      # running almost nothing.
+      - run: coverage run -m unittest discover -s tests -v && coverage combine && coverage report --fail-under=50
         if: runner.os != 'Linux'
       - run: python -m compileall -q lib setup-desktop.py
 
@@ -81,3 +87,16 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: docker run --rm -v "$PWD:/src:ro" "${{ matrix.image }}" bash /src/tests/verify-install.sh
+
+  dependency-audit:
+    # Known-vulnerability scan of every pinned requirement the app and the
+    # release builds install.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - run: python -m pip install pip-audit==2.9.0
+      - run: pip-audit -r requirements-release.txt

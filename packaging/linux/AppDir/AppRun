@@ -11,6 +11,12 @@ HERE="${APPDIR:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)}"
 BIN="$HERE/usr/bin"
 ENTRIES="tray app dictation engine overlay updates clipservice"
 
+# `--uninstall` removes this AppImage's desktop integration (see the script).
+if [ "${1:-}" = "--uninstall" ]; then
+  shift
+  exec bash "$HERE/usr/share/clipboardplus/uninstall-appimage.sh" "$@"
+fi
+
 entry="tray"
 if [ "$#" -gt 0 ]; then
   for candidate in $ENTRIES; do
@@ -20,6 +26,14 @@ if [ "$#" -gt 0 ]; then
       break
     fi
   done
+fi
+
+# Preflight: microphone capture on Linux shells out to the system `arecord`
+# (package alsa-utils); it is not bundled. Clipboard history works without it.
+if [ "$entry" = "tray" ] && ! command -v arecord >/dev/null 2>&1; then
+  msg="Clipboard+: 'arecord' was not found, so dictation cannot record. Install alsa-utils (for example: sudo apt install alsa-utils). Clipboard history is unaffected."
+  echo "$msg" >&2
+  command -v notify-send >/dev/null 2>&1 && notify-send "Clipboard+" "$msg" || true
 fi
 
 exec "$BIN/$entry" "$@"

@@ -11,6 +11,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed "s/__APP_VERSION__/$VERSION/g" "$ROOT/packaging/macos/Info.plist" >"$APP/Contents/Info.plist"
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/LICENSE" "$ROOT/THIRD-PARTY-NOTICES.md" "$APP/Contents/Resources/"
 cp -R "$DIST"/* "$APP/Contents/MacOS/"
 
 # --- Ad-hoc code signing ----------------------------------------------------
@@ -28,13 +29,24 @@ cp -R "$DIST"/* "$APP/Contents/MacOS/"
 # System Settings -> Privacy & Security -> "Open Anyway" step (or
 # `xattr -dr com.apple.quarantine`). That step is the real fix, tracked as a
 # follow-up; this keeps the unsigned build installable and loadable meanwhile.
-echo "Signing bundle (ad-hoc identity)…"
+# With APPLE_SIGNING_IDENTITY set (a "Developer ID Application: ..." identity
+# already in the keychain; release.yml imports it from secrets), sign for real:
+# hardened runtime, secure timestamp and the entitlements file, so the DMG can
+# be notarized. Otherwise fall back to the ad-hoc identity described above.
+ENTITLEMENTS="$ROOT/packaging/macos/entitlements.plist"
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  echo "Signing bundle (Developer ID: ${APPLE_SIGNING_IDENTITY})…"
+  sign() { codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$APPLE_SIGNING_IDENTITY" "$@"; }
+else
+  echo "Signing bundle (ad-hoc identity)…"
+  sign() { codesign --force --sign - "$@"; }
+fi
 while IFS= read -r -d '' f; do
   if file -b "$f" | grep -q 'Mach-O'; then
-    codesign --force --sign - "$f"
+    sign "$f"
   fi
 done < <(find "$APP/Contents/MacOS" -type f -print0)
-codesign --force --sign - "$APP"
+sign "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 STAGING="$ROOT/dist/dmg-staging"
@@ -67,6 +79,9 @@ echo "Installed. Launching Clipboard+…"
 open "$TARGET"
 EOF
 chmod +x "$STAGING/Install Clipboard+.command"
+cp "$ROOT/packaging/macos/uninstall.command" "$STAGING/Uninstall Clipboard+.command"
+chmod +x "$STAGING/Uninstall Clipboard+.command"
+cp "$ROOT/LICENSE" "$ROOT/THIRD-PARTY-NOTICES.md" "$STAGING/"
 
 hdiutil create -volname "Clipboard+" -srcfolder "$STAGING" -ov -format UDZO \
   "$ROOT/dist/Clipboard+.dmg"

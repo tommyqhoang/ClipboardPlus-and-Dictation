@@ -12,6 +12,7 @@ import hashlib
 import io
 import os
 import re
+import shutil
 import sqlite3
 import struct
 import sys
@@ -22,6 +23,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import desktop
 
 if TYPE_CHECKING:
     from clipboardplus import CloudItem
@@ -125,13 +128,40 @@ Tombstones = list[Tombstone]
 Ids = list[int]
 
 
+@contextmanager
+def _owner_only_umask() -> Iterator[None]:
+    """Files made inside this block (SQLite's database, -wal and -shm) are owner-only
+    from their first byte. The umask is process-wide, so the block is kept short."""
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
 def _private_dir(path: Path) -> Path:
     if path.is_symlink():
         raise StoreError(f"{path.name} must not be a symbolic link.")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.is_symlink() or not path.is_dir():
+        raise StoreError(f"{path.name} must be a plain folder.")
     if sys.platform != "win32":
+        if path.stat().st_uid != os.getuid():
+            raise StoreError(f"{path.name} must belong to you.")
         path.chmod(0o700)
+    else:
+        desktop.restrict_to_owner(path)  # Owner only; new files inside inherit it.
     return path
+
+
+def _create_private_file(path: Path) -> None:
+    """Make an empty owner-only file first, so SQLite opens ours instead of creating one."""
+    if path.is_symlink():
+        raise StoreError(f"{path.name} must not be a symbolic link.")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    os.close(os.open(path, flags, 0o600))
+    if sys.platform != "win32":
+        path.chmod(0o600)
 
 
 def _write_private(path: Path, data: bytes) -> None:
@@ -188,19 +218,21 @@ class Store:
         self._thumbs = _private_dir(self.directory / "thumbs")
         self._lock = threading.RLock()
         database = self.directory / "clips.db"
-        self._db = sqlite3.connect(database, timeout=5.0, check_same_thread=False)
-        self._db.isolation_level = None  # Transactions are explicit (see _transaction).
-        self._db.row_factory = sqlite3.Row
-        self._db.create_function("fold", 1, _fold, deterministic=True)
-        try:
-            self._db.execute("PRAGMA busy_timeout = 5000")
-            self._db.execute("PRAGMA journal_mode = WAL")
-            # Deleted clips are overwritten, not left readable in free pages.
-            self._db.execute("PRAGMA secure_delete = ON")
-            self._upgrade()
-        except BaseException:
-            self._db.close()
-            raise
+        _create_private_file(database)
+        with _owner_only_umask():
+            self._db = sqlite3.connect(database, timeout=5.0, check_same_thread=False)
+            self._db.isolation_level = None  # Transactions are explicit (see _transaction).
+            self._db.row_factory = sqlite3.Row
+            self._db.create_function("fold", 1, _fold, deterministic=True)
+            try:
+                self._db.execute("PRAGMA busy_timeout = 5000")
+                self._db.execute("PRAGMA journal_mode = WAL")
+                # Deleted clips are overwritten, not left readable in free pages.
+                self._db.execute("PRAGMA secure_delete = ON")
+                self._upgrade()
+            except BaseException:
+                self._db.close()
+                raise
         if sys.platform != "win32":
             for suffix in ("", "-wal", "-shm"):
                 candidate = database.with_name(database.name + suffix)
@@ -767,6 +799,40 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+
+def wipe(directory: Path) -> None:
+    """Erase the whole history folder: the database (and its -wal and -shm), sets aside
+    damaged copies, every image and thumbnail, then the folder itself. Used by
+    `uninstall --purge`; nothing is left to recover, and the account is not told.
+
+    Database files are overwritten with zeros before they are deleted (best effort on
+    journaling file systems and SSDs). A missing folder is fine; a symbolic link is
+    removed as the link it is, never followed.
+    """
+    if directory.is_symlink():
+        directory.unlink()
+        return
+    if not directory.is_dir():
+        return
+    for entry in directory.iterdir():
+        if entry.is_symlink() or entry.is_file():
+            try:
+                if entry.is_file() and not entry.is_symlink() and entry.name.startswith("clips.db"):
+                    size = entry.stat().st_size
+                    with entry.open("r+b") as stream:
+                        stream.write(b"\0" * size)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+            except OSError:
+                pass
+            entry.unlink(missing_ok=True)
+        elif entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+    try:
+        directory.rmdir()
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def _text_sha(raw: bytes) -> str:

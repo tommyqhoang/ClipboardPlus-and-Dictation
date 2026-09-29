@@ -18,6 +18,7 @@ import clipstore
 import desktop
 import dictation as d
 import hotkeys
+import logsetup
 
 HERE = Path(__file__).resolve().parent
 RESTART_SECONDS = 5.0  # Least time between starts.
@@ -116,15 +117,29 @@ class ClipboardControl:
         if self._process is not None and self._process.poll() is None:
             return
         now = self._clock()
+        if self._process is not None:
+            # The service this app started has ended: say how, so a crash leaves a trace.
+            code = self._process.poll()
+            if isinstance(code, int) and code != 0:
+                logsetup.get_logger("clipservice").error(
+                    "clipboard service exited with code %d; restarting", code
+                )
+            self._process = None
         if now < self._not_before or clipservice.running(self._paths):
             return
-        self._process = self._popen(
-            self._command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **desktop.process_options(detached=True),
-        )
+        # Its output goes to a rotating log file, not the void: crashes leave a trace.
+        output = logsetup.open_stream("clipservice")
+        try:
+            self._process = self._popen(
+                self._command,
+                stdin=subprocess.DEVNULL,
+                stdout=output or subprocess.DEVNULL,
+                stderr=output or subprocess.DEVNULL,
+                **desktop.process_options(detached=True),
+            )
+        finally:
+            if output is not None:
+                output.close()  # The child has its own copy of the descriptor.
         self._starts = [t for t in self._starts if now - t < CRASH_WINDOW] + [now]
         crashing = len(self._starts) >= CRASH_LIMIT
         self._not_before = now + (BACKOFF_SECONDS if crashing else RESTART_SECONDS)

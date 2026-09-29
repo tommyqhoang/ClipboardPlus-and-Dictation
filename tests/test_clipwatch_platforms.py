@@ -88,6 +88,24 @@ class MacTests(unittest.TestCase):
             **limits,
         )
 
+    def test_a_copy_from_a_password_manager_app_is_concealed(self):
+        for app, kept in (("com.bitwarden.desktop", False), ("com.apple.Safari", True)):
+            watcher = mac.MacWatcher(
+                self.board,
+                lambda tiff: b"",
+                pool=self.pool,
+                clock=self.clock,
+                sleep=self.clock.sleep,
+                frontmost=lambda app=app: app,
+            )
+            self.board.copy(**{"public__utf8-plain-text": "not a secret shape"})
+            expected = (
+                clipwatch.Clip(text="not a secret shape")
+                if kept
+                else clipwatch.Clip(concealed=True)
+            )
+            self.assertEqual(watcher.next_change(1), expected)
+
     def test_content_already_on_the_clipboard_at_start_is_not_captured(self):
         self.board.copy(**{"public__utf8-plain-text": "before"})
         watcher = self.watcher()
@@ -229,6 +247,21 @@ class WindowsTests(unittest.TestCase):
         return windows.WindowsWatcher(
             self.win32, dib_to_png, clock=self.clock, sleep=self.clock.sleep, **limits
         )
+
+    def test_a_copy_owned_by_a_password_manager_program_is_concealed(self):
+        for program, kept in (("KeePassXC.exe", False), ("notepad.exe", True)):
+            watcher = windows.WindowsWatcher(
+                self.win32,
+                lambda dib: b"",
+                clock=self.clock,
+                sleep=self.clock.sleep,
+                owner=lambda program=program: program,
+            )
+            self.win32.copy({windows.CF_UNICODETEXT: "plain words"})
+            expected = (
+                clipwatch.Clip(text="plain words") if kept else clipwatch.Clip(concealed=True)
+            )
+            self.assertEqual(watcher.next_change(1), expected)
 
     def test_content_already_on_the_clipboard_at_start_is_not_captured(self):
         self.win32.copy({windows.CF_UNICODETEXT: "before"})

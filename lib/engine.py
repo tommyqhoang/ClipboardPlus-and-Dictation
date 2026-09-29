@@ -12,8 +12,11 @@ slow, or dies, transcription quietly uses whisper-cli exactly as before.
 from __future__ import annotations
 
 import argparse
+import enum
 import json
+import logging
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -26,10 +29,79 @@ from typing import Any
 import desktop
 import dictation as d
 
+try:
+    import logsetup
+
+    log = logsetup.get_logger("engine")
+except ImportError:
+    log = logging.getLogger(__name__)
+
 IDLE_SECONDS = 30 * 60.0  # A quiet engine exits; the next dictation starts it again.
 STARTUP_SECONDS = 120.0  # Model load allowance before the engine is given up on.
 HEALTH_SECONDS = 1.0
 MAX_REPLY = 1024 * 1024
+
+
+class Failure(enum.Enum):
+    """Why the ready engine could not answer (transcription then uses whisper-cli)."""
+
+    SERVER_MISSING = "server_missing"  # No whisper-server binary was found.
+    MODEL_MISSING = "model_missing"  # The speech model file is not there.
+    TIMEOUT = "timeout"  # The engine did not answer in time.
+    HTTP_ERROR = "http_error"  # The engine answered with an error status.
+    EMPTY_AUDIO = "empty_audio"  # There was no audio to transcribe.
+    UNAVAILABLE = "unavailable"  # Could not connect (engine exited or still loading).
+    BAD_REPLY = "bad_reply"  # The reply was not the expected JSON.
+
+
+_MESSAGES = {
+    Failure.SERVER_MISSING: "The fast speech engine (whisper-server) isn’t installed; "
+    "using the slower whisper-cli. Reinstall Clipboard+ to get it.",
+    Failure.MODEL_MISSING: "The speech model file is missing. Open Clipboard+ and download "
+    "a model in Settings.",
+    Failure.TIMEOUT: "The speech engine took too long to answer. Try a shorter recording or "
+    "a smaller model.",
+    Failure.HTTP_ERROR: "The speech engine reported an error.",
+    Failure.EMPTY_AUDIO: "There was no audio to transcribe. Check your microphone.",
+    Failure.UNAVAILABLE: "The speech engine isn’t running yet; it starts with the next recording.",
+    Failure.BAD_REPLY: "The speech engine sent something unreadable.",
+}
+
+
+class EngineError(Exception):
+    """A classified engine failure; str() is a message safe to show the user."""
+
+    def __init__(self, kind: Failure, detail: str = "") -> None:
+        self.kind = kind
+        self.detail = detail
+        text = _MESSAGES[kind]
+        super().__init__(f"{text} ({detail})" if detail else text)
+
+
+def classify(exc: BaseException) -> EngineError:
+    """Sort a low-level exception from talking to the engine into an EngineError."""
+    if isinstance(exc, EngineError):
+        return exc
+    if isinstance(exc, urllib.error.HTTPError):
+        return EngineError(Failure.HTTP_ERROR, f"HTTP {exc.code}")
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, (TimeoutError, socket.timeout)) or isinstance(
+        reason, (TimeoutError, socket.timeout)
+    ):
+        return EngineError(Failure.TIMEOUT)
+    if isinstance(exc, ValueError):
+        return EngineError(Failure.BAD_REPLY)
+    return EngineError(Failure.UNAVAILABLE, exc.__class__.__name__)
+
+
+# The most recent problem, for a caller that wants to explain a fallback (None: none yet).
+last_failure: EngineError | None = None
+
+
+def _fail(error: EngineError) -> None:
+    global last_failure
+    last_failure = error
+    log.info("engine: %s", error)
 
 
 def server_binary(config: d.Config) -> str:
@@ -95,7 +167,10 @@ def read_info(paths: d.Paths, clock: Callable[[], float] = time.time) -> dict[st
         if not isinstance(started, (int, float)) or clock() - started > 12 * 3600:
             return None  # A leftover pointer from an old login session.
         return {"port": port, "pid": pid}
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log.debug("unreadable engine pointer: %s", exc)
         return None
 
 
@@ -116,8 +191,8 @@ def touch(paths: d.Paths) -> None:
     try:
         with used_file(paths).open("a"):
             pass
-    except OSError:
-        pass
+    except OSError as exc:
+        log.debug("could not note engine activity: %s", exc)
 
 
 # -- client ------------------------------------------------------------
@@ -125,6 +200,10 @@ def touch(paths: d.Paths) -> None:
 
 def transcribe(config: d.Config, paths: d.Paths, wav: bytes, timeout: float) -> str | None:
     """Text from the ready engine, or None when it is not usable (caller falls back)."""
+    global last_failure
+    if len(wav) <= 44:  # A WAV header and no samples.
+        _fail(EngineError(Failure.EMPTY_AUDIO))
+        return None
     info = read_info(paths)
     if info is None:
         return None
@@ -160,8 +239,12 @@ def transcribe(config: d.Config, paths: d.Paths, wav: bytes, timeout: float) -> 
             data = response.read(MAX_REPLY + 1)
         touch(paths)
         parsed = json.loads(data)
-        return str(parsed["text"]) if isinstance(parsed, dict) and "text" in parsed else None
-    except (OSError, ValueError):
+        if not isinstance(parsed, dict) or "text" not in parsed:
+            raise EngineError(Failure.BAD_REPLY)
+        last_failure = None
+        return str(parsed["text"])
+    except (OSError, ValueError, EngineError) as exc:
+        _fail(classify(exc))
         return None
 
 
@@ -176,8 +259,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def start(paths: d.Paths, config: d.Config) -> bool:
     """Begin starting the engine (it reports ready via engine.json). Never blocks."""
+    if not Path(config.s("model")).expanduser().is_file():
+        _fail(EngineError(Failure.MODEL_MISSING))
+        return False
     command = server_command(config, _free_port(), _public_dir(paths))
     if command is None:
+        _fail(EngineError(Failure.SERVER_MISSING))
         return False
     try:
         subprocess.Popen(
@@ -188,7 +275,8 @@ def start(paths: d.Paths, config: d.Config) -> bool:
             **desktop.process_options(detached=True),
         )
         return True
-    except OSError:
+    except OSError as exc:
+        _fail(EngineError(Failure.UNAVAILABLE, str(exc)))
         return False
 
 
@@ -214,7 +302,8 @@ def _healthy(port: int, timeout: float = HEALTH_SECONDS) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=timeout) as response:
             return int(response.status) == 200
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        log.debug("engine health check failed: %s", exc)
         return False
 
 
@@ -256,7 +345,7 @@ def supervise(paths: d.Paths, command: list[str]) -> int:
             time.sleep(5.0)
             try:
                 idle = time.time() - used_file(paths).stat().st_mtime
-            except OSError:
+            except OSError:  # Nobody has touched the marker: treat as long idle.
                 idle = float("inf")
             if idle > IDLE_SECONDS:
                 break

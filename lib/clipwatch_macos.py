@@ -11,6 +11,7 @@ import contextlib
 import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from importlib import import_module
 from typing import Any
 
@@ -39,6 +40,7 @@ class MacWatcher:
         *,
         pool: Callable[[], AbstractContextManager[Any]] = contextlib.nullcontext,
         poll: float = 0.5,
+        frontmost: Callable[[], str] = lambda: "",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         max_text: int = clipstore.MAX_TEXT_BYTES,
@@ -47,6 +49,7 @@ class MacWatcher:
         self._pasteboard = pasteboard
         self._to_png = to_png
         self._pool = pool
+        self._frontmost = frontmost  # Bundle id of the app in front: the likely copier.
         self._poll = poll
         self._clock = clock
         self._sleep = sleep
@@ -69,6 +72,14 @@ class MacWatcher:
             self._sleep(min(self._poll, remaining))
 
     def _read(self) -> Clip:
+        clip = self._read_content()
+        try:
+            source = self._frontmost()
+        except Exception:  # noqa: BLE001 - not knowing the app must never lose the copy
+            source = ""
+        return replace(clip, source_app=source) if source else clip
+
+    def _read_content(self) -> Clip:
         board = self._pasteboard
         types = {str(kind) for kind in (board.types() or [])}
         if types & CONCEALED_TYPES:
@@ -105,6 +116,16 @@ def tiff_to_png(tiff: bytes) -> bytes:
     return bytes(png) if png is not None else b""
 
 
+def frontmost_bundle() -> str:
+    """The bundle id of the frontmost application, or "" when unknown."""
+    try:
+        appkit = import_module("AppKit")
+        app = appkit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        return str(app.bundleIdentifier() or "") if app is not None else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def create() -> MacWatcher:
     try:
         appkit = import_module("AppKit")
@@ -114,5 +135,8 @@ def create() -> MacWatcher:
             "Clipboard history needs PyObjC in the app's private environment."
         ) from exc
     return MacWatcher(
-        appkit.NSPasteboard.generalPasteboard(), tiff_to_png, pool=objc.autorelease_pool
+        appkit.NSPasteboard.generalPasteboard(),
+        tiff_to_png,
+        pool=objc.autorelease_pool,
+        frontmost=frontmost_bundle,
     )

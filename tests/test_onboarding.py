@@ -49,10 +49,15 @@ class OnboardingTests(unittest.TestCase):
 
     def wizard(self, answers, platform="linux"):
         with (
-            patch("builtins.input", side_effect=answers),
+            patch(
+                "builtins.input", side_effect=[*answers, ""]
+            ),  # The last answer is the consent step.
             patch.object(onboarding.desktop, "platform_name", return_value=platform),
             patch.object(onboarding.subprocess, "run") as runner,
             patch.object(dictation.Config, "check"),
+            patch.object(onboarding, "is_interactive", return_value=True),
+            patch.object(onboarding, "preflight_download"),
+            patch.object(onboarding, "check_microphone", return_value=(True, "ok")),
             contextlib.redirect_stdout(io.StringIO()) as output,
         ):
             onboarding.run(self.paths)
@@ -267,7 +272,7 @@ class OnboardingTests(unittest.TestCase):
 
     def test_cli_setup_errors_are_friendly(self):
         result = subprocess.run(
-            [sys.executable, str(Path(dictation.__file__)), "--setup"],
+            [sys.executable, str(Path(dictation.__file__)), "--setup", "--interactive"],
             input="3\n",
             capture_output=True,
             text=True,

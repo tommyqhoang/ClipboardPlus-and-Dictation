@@ -1,12 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Usage: ./uninstall.sh [--purge | --keep-data] [--yes]
+#   (default)    remove the app; keep clipboard history, settings, the Clipboard+
+#                account key, the telemetry id, transcripts and downloaded models.
+#   --purge      ALSO permanently delete all of that user data (irreversible).
+#   --keep-data  never ask, never delete user data (for scripts).
+#   --yes        with --purge, skip the confirmation question.
+PURGE=0
+ASSUME_YES=0
+ASK=1
+for argument in "$@"; do
+  case "$argument" in
+    --purge) PURGE=1 ;;
+    --keep-data) ASK=0 ;;
+    --yes | -y) ASSUME_YES=1 ;;
+    -h | --help)
+      sed -n '3,8p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $argument (see --help)" >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ "$PURGE" == 0 && "$ASK" == 1 && -t 0 && -t 1 ]]; then
+  read -r -p "Also delete your clipboard history, settings, account key and downloaded models? [y/N] " reply || reply=""
+  if [[ "$reply" == [yY]* ]]; then
+    PURGE=1
+    ASSUME_YES=1
+  fi
+fi
+if [[ "$PURGE" == 1 && "$ASSUME_YES" == 0 ]]; then
+  read -r -p "--purge permanently deletes all Clipboard+ user data. Continue? [y/N] " reply || reply=""
+  [[ "$reply" == [yY]* ]] || PURGE=0
+fi
+
 BIN_DEST="${HOME}/.local/bin/dictate-toggle"
 KEYBINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/dictation/"
-KEYBINDING_SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${KEYBINDING_PATH}"
 
 APP_LIB="${HOME}/.local/lib/whisper-dictation"
 LEGACY_LIB="${HOME}/.local/lib" # Where versions before the app's own folder lived.
-MODULES="telemetry dictation desktop onboarding rewriting workflow app app_service hotkeys menubar tray clipboardplus clipstore clipwatch clipwatch_linux clipwatch_macos clipwatch_windows clipservice clipsync clipcontrol clipui overlay updates engine"
+MODULES="telemetry dictation desktop onboarding rewriting workflow app app_service browserauth permissions cues app_styles app_settings menubar_logic logsetup hotkeys menubar tray clipboardplus clipstore clipwatch clipwatch_linux clipwatch_macos clipwatch_windows clipservice clipsync clipcontrol clipui overlay updates engine"
 
 # Old versions used the shared ~/.local/lib folder. Its generic names may now
 # belong to another application, so remove them only when the old layout is ours.
@@ -84,11 +120,32 @@ if desktop.platform_name() == "macos":
                 folder.rmdir()
 PY
 fi
+# GNOME custom shortcuts (dictation and clipboard history), also for packaged
+# (AppImage) installs, which have no installed library to do this for us.
+HISTORY_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipboard-history/"
 if command -v gsettings >/dev/null 2>&1; then
-  if current="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null)"; then
-    updated="$(printf '%s' "$current" | sed "s#'${KEYBINDING_PATH}', ##g; s#, '${KEYBINDING_PATH}'##g; s#'${KEYBINDING_PATH}'##g")"
-    gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$updated"
-    gsettings reset-recursively "$KEYBINDING_SCHEMA"
+  for path in "$KEYBINDING_PATH" "$HISTORY_PATH"; do
+    if current="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null)"; then
+      updated="$(printf '%s' "$current" | sed "s#'${path}', ##g; s#, '${path}'##g; s#'${path}'##g")"
+      gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$updated"
+      gsettings reset-recursively "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${path}" 2>/dev/null || true
+    fi
+  done
+fi
+if [[ "$PURGE" == 1 ]]; then
+  # The account key may live in the OS keychain, which deleting files does not
+  # reach. Best effort, before the runtime module and venv are removed.
+  case "$(uname -s)" in
+    Darwin)
+      key_config="${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/dictation}"
+      key_config="${key_config:-$HOME/Library/Application Support/WhisperDictation}"
+      ;;
+    *) key_config="${XDG_CONFIG_HOME:-$HOME/.config}/dictation" ;;
+  esac
+  key_python="${HOME}/.local/share/whisper-dictation/venv/bin/python"
+  [[ -x "$key_python" ]] || key_python="$(command -v python3 || true)"
+  if [[ -n "$key_python" && -f "${APP_LIB}/clipboardplus.py" ]]; then
+    "$key_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import clipboardplus, pathlib; clipboardplus.remove_key(pathlib.Path(sys.argv[2]))' "$APP_LIB" "$key_config" 2>/dev/null || true
   fi
 fi
 rm -f "$BIN_DEST" \
@@ -121,4 +178,24 @@ VENV="${HOME}/.local/share/whisper-dictation/venv"
 if [[ -f "${VENV}/pyvenv.cfg" ]]; then
   rm -rf -- "$VENV"
 fi
-echo "Removed the command and runtime module. Models, settings, saved transcripts and clipboard history were retained."
+if [[ "$PURGE" == 1 ]]; then
+  sleep 1 # Let the tray and clipboard service see their quit files and exit.
+  case "$(uname -s)" in
+    Darwin)
+      config_dir="${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/dictation}"
+      config_dir="${config_dir:-$HOME/Library/Application Support/WhisperDictation}"
+      cache_dir="${XDG_CACHE_HOME:+$XDG_CACHE_HOME/dictation}"
+      cache_dir="${cache_dir:-$HOME/Library/Caches/WhisperDictation}"
+      ;;
+    *)
+      config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dictation"
+      cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dictation"
+      ;;
+  esac
+  # config_dir holds clipboard/ (history database), clipboard-plus-key (account
+  # key), telemetry-id, settings and models/; cache_dir holds recoverable audio.
+  rm -rf -- "$config_dir" "$cache_dir" "${HOME}/.local/share/whisper.cpp/models"
+  echo "Removed the command and runtime module, and PURGED all user data (history, settings, keys, telemetry id, models)."
+else
+  echo "Removed the command and runtime module. Models, settings, saved transcripts and clipboard history were retained (re-run with --purge to delete them)."
+fi

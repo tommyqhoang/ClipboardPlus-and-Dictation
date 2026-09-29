@@ -1,7 +1,8 @@
 """Anonymous crash reports (Sentry) and usage statistics (Google Analytics 4).
 
-On unless the user turns off "Share anonymous crash reports and usage statistics"
-(setup and Settings), sets DO_NOT_TRACK=1 or DICTATION_TELEMETRY=0. Usage reports
+Opt-in: nothing is sent until the user turns on "Share anonymous crash reports and
+usage statistics" (setup and Settings; see `set_consent`), and never with DO_NOT_TRACK=1
+or DICTATION_TELEMETRY=0. Withdrawing consent also discards the installation id. Usage reports
 contain an installation-random identifier, a fixed event name, approved feature
 choices and bounded counters. Crash reports contain the exception type and frames
 from this app only. Clipboard contents, transcripts, audio, file names or paths,
@@ -30,6 +31,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+import clipboardplus
 import desktop
 
 # Sentry project apercallc/clipboardplus-desktop. A DSN is a public client key.
@@ -37,10 +39,11 @@ SENTRY_DSN = (
     "https://c697e9ce83dad48da2dc775d930eac30@o4508955926396928.ingest.us.sentry.io/"
     "4512154615808000"
 )
-# Usage counts go to the Clipboard+ API (clipboardplus.API), which checks them against
-# a fixed schema before relaying them to Google Analytics. The previous
-# clipboardplus-api.apercallc.com host was never set up in DNS, so nothing arrived.
-ANALYTICS_URL = "https://backend-production-74d4.up.railway.app/api/telemetry/desktop"
+# Usage counts go to the Clipboard+ API, which checks them against a fixed schema before
+# relaying them to Google Analytics. The host is named once, in clipboardplus.API
+# (default DEFAULT_API there); set CLIPBOARDPLUS_API=https://host to use another
+# deployment for the account, sync and these statistics alike.
+ANALYTICS_URL = clipboardplus.API + "/api/telemetry/desktop"
 TIMEOUT = 4.0
 WAIT_SECONDS = 3.0  # How long a short-lived process waits for its report to go out.
 MAX_REPORTS = 20  # Per process: a failure loop never floods the project.
@@ -147,29 +150,55 @@ def _config_dir() -> Path:
     return desktop.roots()[0]
 
 
+def _read_preferences() -> dict[str, Any]:
+    try:
+        with (_config_dir() / "menubar.json").open(encoding="utf-8") as stream:
+            found = json.load(stream)
+    except (OSError, ValueError):
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def has_consent() -> bool:
+    """Whether the user explicitly agreed to share reports and statistics (default: no)."""
+    return _read_preferences().get(PREFERENCE) is True
+
+
+def set_consent(agreed: bool) -> None:
+    """Record the user's choice in the preferences (the same value the Settings switch
+    stores). Withdrawing it also discards the installation id, so a later opt-in starts
+    from a new, unrelated one."""
+    values = _read_preferences()
+    values[PREFERENCE] = bool(agreed)
+    try:
+        desktop.write_private(_config_dir() / "menubar.json", json.dumps(values, indent=2))
+    except OSError:
+        pass
+    if not agreed:
+        _forget_client_id()
+
+
+def _forget_client_id() -> None:
+    try:
+        (_config_dir() / "telemetry-id").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def allowed() -> bool:
-    """Whether the user lets anything be sent (the setting and the environment)."""
+    """Whether anything may be sent: the user consented and the environment does not forbid it."""
     if os.environ.get("DICTATION_TELEMETRY", "").lower() in ("0", "false", "off"):
         return False
     if os.environ.get("DO_NOT_TRACK", "") not in ("", "0"):
         return False
     if "unittest" in sys.modules and not os.environ.get("DICTATION_TELEMETRY_TESTS"):
         return False  # A test run never reports itself.
-
-    def read(name: str) -> dict[str, Any]:
-        try:
-            with (_config_dir() / name).open(encoding="utf-8") as stream:
-                found = json.load(stream)
-        except (OSError, ValueError):
-            return {}
-        return found if isinstance(found, dict) else {}
-
-    value = read("menubar.json").get(PREFERENCE)
-    if value is not None:
-        return value is True
-    # On by default, but only once setup, whose first step shows the switch, is done:
-    # nothing is sent before the user has seen the choice.
-    return read("welcome.json").get("complete") is True
+    if has_consent():
+        return True
+    # No consent (never given, or withdrawn by a switch that only saved the preference):
+    # make sure no identifier outlives it.
+    _forget_client_id()
+    return False
 
 
 def client_id() -> str:
@@ -183,10 +212,7 @@ def client_id() -> str:
         return known
     fresh = uuid.uuid4().hex
     try:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(fresh)
+        desktop.write_private(path, fresh)
     except OSError:
         pass
     return fresh
@@ -234,17 +260,49 @@ def system() -> dict[str, str]:
 
 # -- scrubbing ---------------------------------------------------------------
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-_SECRET = re.compile(r"\b(cp_live_|sk-|gsk_|ghp_)[A-Za-z0-9_-]{6,}|\b[A-Za-z0-9_-]{32,}\b")
-_URL_QUERY = re.compile(r"(https?://[^\s?#]+)[?#]\S*")
+_SECRET = re.compile(
+    r"\b(?:cp_live_|sk-|sk_live_|gsk_|ghp_|gho_|ghs_|github_pat_|xox[abprs]-|AIza|AKIA)[A-Za-z0-9_-]{6,}"
+    r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"
+    r"|\b[A-Za-z0-9_+/=-]{32,}\b"
+)
+_URL = re.compile(
+    r"(?P<scheme>[a-z][a-z0-9+.-]*)://(?:[^\s/@]+@)?(?P<host>[^\s/?#:]+)(?::\d+)?[^\s]*", re.I
+)
+_PATH = re.compile(r"(?:[A-Za-z]:\\|/)(?:[\w.@ -]+[\\/])+[\w.@ -]*")
+_IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+
+
+def _identity_words() -> list[str]:
+    """This machine's private names: account, computer and home folder."""
+    words = {str(Path.home())}
+    for name in ("USER", "USERNAME", "LOGNAME"):
+        words.add(os.environ.get(name, ""))
+    try:
+        words.add(platform.node())
+    except OSError:
+        pass
+    words.discard("/")
+    return sorted((w for w in words if len(w) >= 3), key=len, reverse=True)
 
 
 def scrub(text: str) -> str:
-    """Remove what could identify a person or leak data from a message."""
+    """Remove what could identify a person or leak data from a message: the home folder,
+    account and computer names, email addresses, URLs (kept as scheme and host only, so
+    tokens, queries, credentials and paths in them go), file paths outside the app,
+    IP addresses and anything that looks like a key or token."""
+    cleaned = text
     home = str(Path.home())
-    cleaned = text.replace(home, "~") if home not in ("", "/") else text
+    if home not in ("", "/"):
+        cleaned = cleaned.replace(home, "~")
+    cleaned = _URL.sub(lambda m: f"{m['scheme']}://{m['host']}", cleaned)
     cleaned = _EMAIL.sub("[email]", cleaned)
-    cleaned = _URL_QUERY.sub(r"\1", cleaned)
     cleaned = _SECRET.sub("[redacted]", cleaned)
+    cleaned = _IP.sub("[ip]", cleaned)
+    for word in _identity_words():
+        if word != home:
+            cleaned = re.sub(re.escape(word), "[name]", cleaned, flags=re.IGNORECASE)
+    # Paths: keep the file name only (the app's own frames carry no path at all).
+    cleaned = _PATH.sub(lambda m: "…/" + re.split(r"[\\/]", m.group(0).rstrip("\\/"))[-1], cleaned)
     return cleaned[:1000]
 
 
@@ -314,9 +372,9 @@ def _frames(trace: TracebackType | None) -> list[dict[str, Any]]:
             continue
         frames.append(
             {
-                "filename": path.name,
-                "module": path.stem,
-                "function": summary.name,
+                "filename": scrub(path.name),
+                "module": scrub(path.stem),
+                "function": scrub(summary.name),
                 "lineno": summary.lineno,
                 "in_app": ours,
             }

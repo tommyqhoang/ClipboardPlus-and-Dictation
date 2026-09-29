@@ -157,6 +157,88 @@ class InstallDependencyTests(unittest.TestCase):
             self.assertIn("REJECTED", result.stdout)
             self.assertFalse((root / "selected.bin").is_symlink())
 
+    def model_script(self, folder: str, extra: str = "") -> str:
+        root = Path(folder)
+        return (
+            f"MODEL_DIR={shlex.quote(folder)}; MODEL_NAME=ggml-custom.bin; "
+            f"MODEL_DEST={shlex.quote(str(root / 'ggml-custom.bin'))}; "
+            f"MODEL_LINK={shlex.quote(str(root / 'selected.bin'))}; "
+            f"PYTHON={shlex.quote(sys.executable)}; "
+            "download_model() { printf 'lmggDATA' > \"$2\"; }; " + extra
+        )
+
+    def test_custom_model_without_a_checksum_is_refused_unless_explicitly_allowed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            refused = self.run_script(
+                self.model_script(folder, "set +e; install_model; echo RC=$?")
+            )
+            self.assertIn("RC=1", refused.stdout)
+            self.assertIn("--allow-unverified-model", refused.stderr)
+            self.assertFalse((Path(folder) / "ggml-custom.bin").exists())
+            allowed = self.run_script(
+                self.model_script(
+                    folder, "set +e; ALLOW_UNVERIFIED_MODEL=1; install_model; echo RC=$?"
+                )
+            )
+            self.assertIn("RC=0", allowed.stdout)
+            self.assertTrue((Path(folder) / "ggml-custom.bin").exists())
+
+    def test_the_flag_is_accepted_by_main(self):
+        result = self.run_script("main --help; echo $ALLOW_UNVERIFIED_MODEL")
+        self.assertIn("--allow-unverified-model", result.stdout)
+
+    def run_resume(self, server: str, partial: bytes = b"lmgg-AAAA") -> tuple[str, bytes]:
+        """download_model against a fake curl; returns (stdout, final file)."""
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "m.part"
+            dest.write_bytes(partial)
+            curl = (
+                "curl() { local out='' hdr='' range='' prev='' a; "
+                'for a in "$@"; do [[ "$prev" == --output ]] && out="$a"; '
+                '[[ "$prev" == --dump-header ]] && hdr="$a"; '
+                '[[ "$prev" == --header ]] && range="$a"; prev="$a"; done; ' + server + "; }; "
+            )
+            result = self.run_script(
+                curl + f"download_model https://x/model {shlex.quote(str(dest))}; echo rc=$?"
+            )
+            self.assertIn("rc=0", result.stdout, result.stderr)
+            return result.stdout, dest.read_bytes()
+
+    def test_resume_appends_only_on_a_matching_206(self):
+        _, data = self.run_resume(
+            "printf 'HTTP/2 206\\r\\ncontent-range: bytes 9-13/14\\r\\n\\r\\n' > \"$hdr\"; "
+            'printf BBBB > "$out"'
+        )
+        self.assertEqual(data, b"lmgg-AAAABBBB")
+
+    def test_resume_restarts_when_the_range_does_not_match(self):
+        for headers in (
+            "HTTP/2 206\\r\\ncontent-range: bytes 0-3/4\\r\\n\\r\\n",
+            "HTTP/2 416\\r\\n\\r\\n",
+        ):
+            with self.subTest(headers=headers):
+                out, data = self.run_resume(
+                    'if [[ -n "$range" ]]; then '
+                    f'printf \'{headers}\' > "$hdr"; printf JUNK > "$out"; '
+                    'else printf FULLFILE > "$out"; fi'
+                )
+                self.assertEqual(data, b"FULLFILE")
+                self.assertIn("starting over", out)
+
+    def test_resume_takes_the_whole_file_when_the_server_ignores_the_range(self):
+        _, data = self.run_resume(
+            'printf \'HTTP/2 200\\r\\n\\r\\n\' > "$hdr"; printf FULLFILE > "$out"'
+        )
+        self.assertEqual(data, b"FULLFILE")
+
+    def test_whisper_source_is_fetched_by_pinned_commit(self):
+        text = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertRegex(text, r'WHISPER_COMMIT="[0-9a-f]{40}"')
+        self.assertIn(
+            'fetch -q --depth 1 https://github.com/ggml-org/whisper.cpp.git "$WHISPER_COMMIT"', text
+        )
+        self.assertIn('rev-parse HEAD)" != "$WHISPER_COMMIT"', text)
+
 
 if __name__ == "__main__":
     unittest.main()

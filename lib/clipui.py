@@ -107,10 +107,14 @@ class ClipboardPage:
         entry.bind("<Escape>", lambda _: self.escape())
         entry.bind("<Down>", lambda _: self.move(1))
         entry.bind("<Up>", lambda _: self.move(-1))
+        # The chosen row's star, label and delete have keys too, for anyone not using a mouse.
+        entry.bind("<Control-s>", lambda _: self.star_selected())
+        entry.bind("<F2>", lambda _: self.label_selected())
+        entry.bind("<Control-Delete>", lambda _: self.delete_selected())
         # A placeholder (ttk has none): shown while the box is empty.
         self.placeholder = ttk.Label(
             search,
-            text="Search your clipboard   ·   ↑ ↓ to choose, Enter to copy",
+            text="Search your clipboard   ·   ↑ ↓ to choose, Enter to copy, Ctrl+S to star",
             style="Placeholder.TLabel",
         )
         self.placeholder.bind("<Button-1>", lambda _: entry.focus_set())
@@ -669,6 +673,34 @@ class ClipboardPage:
         if row is not None:
             row.item = self.store.get(item_id) or row.item
             self._show_label(row)
+
+    def _selected_id(self) -> int | None:
+        if self.pending_search is not None:
+            self.run_pending_search()
+        if not self.rows:
+            return None
+        return self.rows[min(self.selected, len(self.rows) - 1)].item.id
+
+    def star_selected(self) -> str:
+        """Ctrl+S: star or unstar the chosen row."""
+        item_id = self._selected_id()
+        if item_id is not None:
+            self.toggle_favorite(item_id)
+        return "break"
+
+    def label_selected(self) -> str:
+        """F2: name the chosen row (a favorite), like the Add label action."""
+        item_id = self._selected_id()
+        if item_id is not None:
+            self.edit_label(item_id)
+        return "break"
+
+    def delete_selected(self) -> str:
+        """Ctrl+Delete: delete the chosen row (a favorite asks first)."""
+        item_id = self._selected_id()
+        if item_id is not None:
+            self.delete(item_id)
+        return "break"
 
     def copy_selected(self) -> str:
         """Enter: copy the chosen row (the top one until the arrow keys move)."""

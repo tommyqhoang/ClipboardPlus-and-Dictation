@@ -184,7 +184,7 @@ class SettingsTests(ModeCase):
     def test_setup_privacy_switch_persists_immediately(self):
         self.window.choose_features()
         self.assertIn("Privacy", self.texts())
-        self.assertTrue(self.window.share_usage.get())  # Shown on, with the off switch.
+        self.assertFalse(self.window.share_usage.get())  # Opt-in: shown off until agreed.
         widgets = [self.window.frame]
         while widgets:
             widget = widgets.pop()
@@ -198,9 +198,9 @@ class SettingsTests(ModeCase):
         else:
             self.fail("Privacy switch was not rendered")
         toggle.invoke()
-        self.assertFalse(self.prefs.share_usage())
-        toggle.invoke()
         self.assertTrue(self.prefs.share_usage())
+        toggle.invoke()
+        self.assertFalse(self.prefs.share_usage())
 
     def test_deleting_all_clipboard_data_asks_first_and_never_touches_the_cloud(self):
         store = clipstore.Store(self.paths.clipboard)

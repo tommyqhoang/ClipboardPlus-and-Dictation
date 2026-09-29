@@ -346,6 +346,7 @@ class TrayTests(unittest.TestCase):
     def test_gnome_hotkey_binds_toggle_command(self):
         taken = hotkeys.Conflict("Old dictation", hotkeys.GNOME_LIST_PREFIX + "custom0/")
         with (
+            patch.object(hotkeys, "detect_backend", return_value="gnome"),
             patch.object(hotkeys, "gnome_shortcut", return_value=True) as bind,
             patch.object(hotkeys, "gnome_conflict", return_value=taken),
         ):
@@ -435,6 +436,7 @@ class TrayTests(unittest.TestCase):
             patch.object(tray.desktop, "platform_name", return_value="linux"),  # macOS: menubar.py.
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install") as install,
+            patch.object(tray, "tray_available", return_value=True),
             # Neither is installed where only the standard library is (Python 3.10/3.14 CI).
             patch.dict(sys.modules, {"pystray": fake, "PIL": MagicMock()}),
             patch.object(tray, "Tray") as made,
@@ -444,6 +446,70 @@ class TrayTests(unittest.TestCase):
         made.assert_called_once()
         made.return_value.icon.run.assert_called_once_with(setup=made.return_value.started)
         self.assertFalse((self.paths.runtime / "menubar-quit").exists())
+
+    def desktop_answering(self, desktop_name, owned, which="/usr/bin/gdbus"):
+        answer = SimpleNamespace(returncode=0, stdout=f"({owned},)\n")
+        return (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": desktop_name}),
+            patch.object(tray.shutil, "which", return_value=which),
+            patch.object(tray.subprocess, "run", return_value=answer),
+        )
+
+    def test_gnome_without_appindicator_has_no_tray(self):
+        patches = self.desktop_answering("ubuntu:GNOME", "false")
+        with patches[0], patches[1], patches[2], patches[3]:
+            self.assertFalse(tray.tray_available())
+
+    def test_gnome_with_appindicator_and_other_desktops_have_a_tray(self):
+        patches = self.desktop_answering("ubuntu:GNOME", "true")
+        with patches[0], patches[1], patches[2], patches[3]:
+            self.assertTrue(tray.tray_available())
+        patches = self.desktop_answering("KDE", "false")
+        with patches[0], patches[1], patches[2], patches[3]:
+            self.assertTrue(tray.tray_available())
+        patches = self.desktop_answering("GNOME", "false", which=None)  # Can't ask: assume yes.
+        with patches[0], patches[1], patches[2], patches[3]:
+            self.assertTrue(tray.tray_available())
+        with patch.object(tray.desktop, "platform_name", return_value="windows"):
+            self.assertTrue(tray.tray_available())
+
+    def test_a_failing_bus_query_assumes_a_tray(self):
+        patches = self.desktop_answering("GNOME", "false")
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patch.object(tray.subprocess, "run", side_effect=OSError),
+        ):
+            self.assertTrue(tray.tray_available())
+
+    def test_missing_tray_is_explained_and_the_window_opens_once(self):
+        with (
+            patch.object(tray.d, "notify") as notify,
+            patch.object(tray, "open_app_window") as window,
+            patch("sys.stderr"),
+        ):
+            tray.announce_missing_tray(self.paths)
+            tray.announce_missing_tray(self.paths)
+        self.assertEqual(notify.call_count, 1)
+        self.assertIn("appindicatorsupport@rgcjonas.gmail.com", notify.call_args.args[1])
+        window.assert_called_once_with()
+
+    def test_main_tells_the_user_when_there_is_no_tray_and_still_runs(self):
+        fake = MagicMock()
+        with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),
+            patch.object(tray.desktop, "has_display", return_value=True),
+            patch.object(tray.telemetry, "install"),
+            patch.object(tray, "tray_available", return_value=False),
+            patch.object(tray, "announce_missing_tray") as announce,
+            patch.dict(sys.modules, {"pystray": fake, "PIL": MagicMock()}),
+            patch.object(tray, "Tray") as made,
+        ):
+            self.assertEqual(tray.main(), 0)
+        announce.assert_called_once()
+        made.return_value.icon.run.assert_called_once()
 
     def use_features(self, dictation, clipboard):
         hotkeys.Preferences(self.paths).save(features=hotkeys.Features(dictation, clipboard))

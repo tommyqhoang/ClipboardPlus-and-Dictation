@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import http.server
 import secrets
 import threading
@@ -14,6 +15,27 @@ from typing import Any
 
 import clipboardplus
 
+TIMEOUT_SECONDS = 180  # A hard limit on the whole sign-in.
+MAX_BAD_REQUESTS = 25  # Something is hammering the port: give up rather than keep listening.
+SITE_ORIGIN = clipboardplus.SITE
+
+
+def request_allowed(headers: Any) -> bool:
+    """Whether a callback request looks like the browser navigating back from the site.
+
+    The only legitimate caller is the browser following the sign-in page's redirect, a
+    top-level navigation. A request that names another Origin, or that a page made itself
+    (a script fetch, an image, a form from a page on this machine) is refused.
+    """
+    origin = headers.get("Origin")
+    if origin is not None and origin != SITE_ORIGIN:
+        return False
+    if headers.get("Sec-Fetch-Site", "cross-site") not in ("cross-site", "none"):
+        return False
+    if headers.get("Sec-Fetch-Mode", "navigate") != "navigate":
+        return False
+    return bool(headers.get("Sec-Fetch-Dest", "document") == "document")
+
 
 class BrowserSignIn:
     def __init__(self) -> None:
@@ -22,11 +44,24 @@ class BrowserSignIn:
         self.state = secrets.token_urlsafe(32)
         self.code = ""
         self.denied = False
+        self.bad_requests = 0
+        self._lock = threading.Lock()
 
     def callback(self, path: str) -> bool:
+        """Accept the first valid callback only; every later one is refused (single use)."""
+        with self._lock:
+            if self.code or self.denied:
+                return False
+            return self._accept(path)
+
+    def _accept(self, path: str) -> bool:
         url = urllib.parse.urlsplit(path)
         query = urllib.parse.parse_qs(url.query)
-        if url.path != "/callback" or query.get("state") != [self.state]:
+        states = query.get("state", [])
+        # Constant time, so the state cannot be guessed a character at a time.
+        if url.path != "/callback" or len(states) != 1:
+            return False
+        if not hmac.compare_digest(states[0].encode("utf-8"), self.state.encode("utf-8")):
             return False
         codes = query.get("code", [])
         if (
@@ -53,7 +88,9 @@ class BrowserSignIn:
                 if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":  # type: ignore[attr-defined]
                     self.send_error(400)
                     return
-                accepted = flow.callback(self.path)
+                accepted = request_allowed(self.headers) and flow.callback(self.path)
+                if not accepted:
+                    flow.bad_requests += 1
                 body = (
                     b"Sign-in received. You can return to Clipboard+."
                     if accepted
@@ -89,8 +126,10 @@ class BrowserSignIn:
                 )
                 if not webbrowser.open(clipboardplus.SITE + "/account.html?" + query + "#desktop"):
                     raise clipboardplus.AuthError("Couldn’t open your browser. Try again.")
-                deadline = time.monotonic() + 180
+                deadline = time.monotonic() + TIMEOUT_SECONDS
                 while not self.code and not self.denied and not self.cancelled.is_set():
+                    if self.bad_requests >= MAX_BAD_REQUESTS:
+                        raise clipboardplus.AuthError("Sign-in was interrupted. Try again.")
                     if time.monotonic() >= deadline:
                         raise clipboardplus.AuthError(
                             "Sign-in timed out. Try again when you’re ready."

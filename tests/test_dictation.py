@@ -227,7 +227,7 @@ class DictationTests(unittest.TestCase):
             paste.return_value = False
             self.paths.audio.write_bytes(b"audio")
             self.assertEqual(d.finish(self.config, self.paths, auto_paste=True), "copied")
-            self.assertIn("Ready to paste", told.call_args.args[1])
+            self.assertIn("Ctrl+V", told.call_args.args[1])  # Says how to finish by hand.
 
     def test_paste_uses_platform_helper_and_never_falls_back_across_wayland(self):
         with (
@@ -769,11 +769,11 @@ install_gnome_shortcut
 source "$1/install.sh"
 HOME="$2"
 git() {
-  if [[ "$1" == clone ]]; then
-    printf '%s\n' "$*" >"$HOME/clone-arguments"
-    destination="${!#}"
-    mkdir -p "$destination/.git"
-  else
+  if [[ "$1" == init ]]; then
+    mkdir -p "${!#}/.git"
+  elif [[ "$3" == fetch ]]; then
+    printf '%s\n' "$*" >"$HOME/fetch-arguments"
+  elif [[ "$3" == rev-parse ]]; then
     printf '%s\n' "$WHISPER_COMMIT"
   fi
 }
@@ -794,9 +794,9 @@ install_whisper_from_source
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        clone = (home / "clone-arguments").read_text()
-        self.assertIn("--branch v1.8.7", clone)
-        self.assertIn("ggml-org/whisper.cpp.git", clone)
+        fetch = (home / "fetch-arguments").read_text()
+        self.assertIn("ggml-org/whisper.cpp.git", fetch)
+        self.assertRegex(fetch, r"\b[0-9a-f]{40}\b")  # the pinned commit, not a movable tag
         self.assertTrue((home / ".local/opt/whisper.cpp-v1.8.7/build/bin/whisper-cli").exists())
 
     @unittest.skipIf(sys.platform == "win32", "Debian shell installer")
@@ -808,6 +808,7 @@ MODEL_DEST="$2/ggml-test.bin"
 MODEL_LINK="$2/selected.bin"
 MODEL_NAME=ggml-test.bin
 MODEL_URL=https://example.invalid/model
+ALLOW_UNVERIFIED_MODEL=1
 download_mode="$3"
 curl() {
   local target=""
