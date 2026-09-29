@@ -89,7 +89,7 @@ TK_MODIFIERS = {
     "Alt_R": "alt",
     "Option_L": "alt",
     "Option_R": "alt",
-    "Meta_L": "alt",
+    "Meta_L": "alt",  # X11's Meta is Alt; macOS differs, see tk_modifier.
     "Meta_R": "alt",
     "Shift_L": "shift",
     "Shift_R": "shift",
@@ -100,6 +100,22 @@ TK_MODIFIERS = {
     "Command_L": "cmd",
     "Command_R": "cmd",
 }
+# Tk's Aqua port reports the Command key as Meta_L/Meta_R and Option as Alt_L/Alt_R.
+TK_MODIFIERS_MACOS = {**TK_MODIFIERS, "Meta_L": "cmd", "Meta_R": "cmd"}
+# Bits of a Tk key event's `state`, per platform. Tk Aqua: Command is Mod1, Option is Mod2.
+# X11: Alt is Mod1, Super is Mod4 (Mod2 is usually NumLock). Windows: only these three
+# (Mod1 is NumLock there); the Windows key is never in `state`, so it is tracked by keysym.
+TK_STATE_MASKS = {
+    "macos": {"shift": 0x1, "ctrl": 0x4, "cmd": 0x8, "alt": 0x10},
+    "linux": {"shift": 0x1, "ctrl": 0x4, "alt": 0x8, "cmd": 0x40},
+    "windows": {"shift": 0x1, "ctrl": 0x4, "alt": 0x20000},
+}
+KINDS = ("dictation", "history")
+KIND_NAMES = {"dictation": "dictation", "history": "clipboard history"}
+# Files in the runtime folder that the window and the tray or menu bar share.
+CAPTURE_FLAGS = {"dictation": "shortcut-capture", "history": "history-shortcut-capture"}
+HEARD_SECONDS = 30.0  # How long "heard it" stays true after a press.
+
 CLIPBOARD_PLUS = "https://clipboardplus.apercallc.com"
 # The macOS bundle identity; setup-desktop.py's Info.plist CFBundleIdentifier stays
 # the same value (kept here so both files migrate it together).
@@ -127,6 +143,37 @@ GNOME_BUILT_IN = (
 )
 
 
+SYSTEM_NAMES = {"macos": "macOS", "windows": "Windows", "linux": "your desktop"}
+# Combinations the system owns and never hands to an app, per platform: (modifiers in
+# MODIFIER_ORDER, keys). Not exhaustive on purpose: the desktop's own list can be looked
+# up live on GNOME (gnome_conflict), and a registration the system refuses is reported.
+RESERVED: dict[str, tuple[tuple[tuple[str, ...], frozenset[str]], ...]] = {
+    "macos": (
+        (("cmd",), frozenset({"Space", "Tab", "Q", "H", "M", "W"})),
+        (("shift", "cmd"), frozenset({"3", "4", "5", "Q", "Tab"})),
+        # ⌥⌘D shows and hides the Dock; ⌥⌘Esc is Force Quit; ⌥⌘Space is Finder search.
+        (("alt", "cmd"), frozenset({"D", "Esc", "Space", "H", "M"})),
+        (("ctrl",), frozenset({"Space"})),  # Input source.
+        (("ctrl", "cmd"), frozenset({"Space", "Q"})),  # Emoji and lock screen.
+    ),
+    "windows": (
+        (("cmd",), frozenset("DELMIRXASPKGHNTUBCWZOV") | {"Space", "Tab", *string.digits}),
+        (("shift", "cmd"), frozenset({"S", "M", "V", "Tab"})),
+        (("alt", "cmd"), frozenset({"D", "B", "K", "H"})),
+        (("alt",), frozenset({"Tab", "Space", "F4", "Esc"})),
+        (("ctrl",), frozenset({"Esc"})),
+        (("ctrl", "shift"), frozenset({"Esc"})),  # Task Manager.
+        (("ctrl", "alt"), frozenset({"Tab"})),
+    ),
+    "linux": (
+        (("cmd",), frozenset("LDASVMNP") | {"Space", "Tab", *string.digits}),
+        (("shift", "cmd"), frozenset({"Tab"})),
+        (("alt",), frozenset({"Tab", "Space", "F4", "Esc"})),
+        (("ctrl", "alt"), frozenset({"Tab", "T"})),  # Switch windows; terminal on GNOME.
+    ),
+}
+
+
 def canonical(modifiers: Any) -> tuple[str, ...]:
     present = set(modifiers)  # A generator would be consumed by the first lookup.
     return tuple(name for name in MODIFIER_ORDER if name in present)
@@ -147,8 +194,8 @@ class Shortcut:
         ordered = sorted(self.modifiers, key=lambda name: name != "cmd")
         return "+".join([names[name] for name in ordered] + [self.key])
 
-    def problem(self) -> str:
-        """Why this cannot be a global shortcut, or an empty string."""
+    def basic_problem(self) -> str:
+        """Why this cannot be a global shortcut on any desktop, or an empty string."""
         if self.key not in KEYS:
             return "Use a letter, number, Space, or F1–F12."
         if self.key in FUNCTION_KEYS:
@@ -158,6 +205,25 @@ class Shortcut:
         if self.modifiers in (("ctrl",), ("cmd",)) and self.key in set("ACFHMNOPQSTVWXYZ"):
             return "Most apps already use that shortcut. Add Alt/Option or Shift."
         return ""
+
+    def reserved(self, platform: str | None = None) -> str:
+        """A sentence saying which desktop owns these keys, or an empty string.
+
+        Only combinations the system never lets an app have are listed; GNOME's own and
+        custom shortcuts are looked up live instead (gnome_conflict).
+        """
+        platform = platform or desktop.platform_name()
+        for modifiers, keys in RESERVED.get(platform, ()):
+            if self.modifiers == modifiers and self.key in keys:
+                return (
+                    f"{self.label(platform)} is used by {SYSTEM_NAMES.get(platform, 'your system')} "
+                    "itself, so it can’t be a global shortcut. Choose another."
+                )
+        return ""
+
+    def problem(self, platform: str | None = None) -> str:
+        """Why this cannot be a global shortcut here, or an empty string."""
+        return self.basic_problem() or self.reserved(platform)
 
     def mac_key_code(self) -> int:
         return MAC_KEY_CODES[self.key]
@@ -204,26 +270,35 @@ class Shortcut:
 
 
 def default_shortcut(platform: str) -> Shortcut:
-    """The same Control+Shift+D shortcut on every desktop."""
-    return Shortcut(("ctrl", "shift"), "D")
+    """The same shortcut on every desktop: ⌘⇧D on macOS, Win+Shift+D on Windows and
+    Super+Shift+D on Linux (the `cmd` modifier is each system's own key).
+
+    Ctrl+Shift+D was the default before; it did not work everywhere (the Windows and
+    Linux tray could not hear it, and browsers and terminals take it first). It stays
+    one click away as a preset, and anyone who saved a shortcut keeps theirs.
+    """
+    return Shortcut(("shift", "cmd"), "D")
 
 
 DEFAULT = default_shortcut(desktop.platform_name())
-# Keep earlier defaults available as alternatives.
-PRESETS = tuple(
-    dict.fromkeys(
-        (
-            DEFAULT,
-            Shortcut(("shift", "cmd"), "D"),
-            # Alt+Space opens the window menu on GNOME and Windows, so only macOS offers it.
-            *((Shortcut(("alt",), "Space"),) if desktop.platform_name() == "macos" else ()),
-            Shortcut(("ctrl", "alt"), "Space"),
-            Shortcut(("ctrl", "shift"), "Space"),
-            Shortcut(("ctrl", "alt", "shift"), "D"),
-            Shortcut(("ctrl", "alt"), "D"),  # The earlier default, one click away.
-        )
+
+
+def presets(platform: str) -> tuple[Shortcut, ...]:
+    """The one-click choices in the recorder: the default first, then earlier defaults and
+    alternatives that no system reserves on `platform`."""
+    options = (
+        default_shortcut(platform),
+        Shortcut(("ctrl", "shift"), "D"),  # The earlier default.
+        Shortcut(("ctrl", "alt"), "D"),  # The one before that.
+        # Alt+Space opens the window menu on GNOME and Windows, so only macOS offers it.
+        *((Shortcut(("alt",), "Space"),) if platform == "macos" else ()),
+        Shortcut(("ctrl", "alt"), "Space"),
+        Shortcut(("ctrl", "alt", "shift"), "D"),
     )
-)
+    return tuple(dict.fromkeys(item for item in options if not item.problem(platform)))
+
+
+PRESETS = presets(desktop.platform_name())
 
 
 def default_history_shortcut(platform: str) -> Shortcut:
@@ -232,15 +307,19 @@ def default_history_shortcut(platform: str) -> Shortcut:
 
 
 DEFAULT_HISTORY = default_history_shortcut(desktop.platform_name())
-HISTORY_PRESETS = tuple(
-    dict.fromkeys(
-        (
-            DEFAULT_HISTORY,
-            Shortcut(("ctrl", "alt", "shift"), "V"),
-            Shortcut(("ctrl", "alt"), "H"),
-        )
+
+
+def history_presets(platform: str) -> tuple[Shortcut, ...]:
+    options = (
+        default_history_shortcut(platform),
+        Shortcut(("ctrl", "shift"), "F"),  # The earlier default.
+        Shortcut(("ctrl", "alt", "shift"), "V"),
+        Shortcut(("ctrl", "alt"), "H"),
     )
-)
+    return tuple(dict.fromkeys(item for item in options if not item.problem(platform)))
+
+
+HISTORY_PRESETS = history_presets(desktop.platform_name())
 
 
 def from_mac_event(key_code: int, flags: int, characters: str) -> Shortcut:
@@ -248,12 +327,52 @@ def from_mac_event(key_code: int, flags: int, characters: str) -> Shortcut:
     return Shortcut(canonical(n for n in EVENT_FLAGS if flags & EVENT_FLAGS[n]), key)
 
 
-def from_tk(keysym: str, held: set[str]) -> Shortcut | None:
-    """A shortcut from a Tk key press, or None while only modifiers are held."""
-    if keysym in TK_MODIFIERS:
+def tk_modifier(keysym: str, platform: str | None = None) -> str:
+    """The modifier a Tk keysym stands for on this platform, or an empty string."""
+    platform = platform or desktop.platform_name()
+    table = TK_MODIFIERS_MACOS if platform == "macos" else TK_MODIFIERS
+    return table.get(keysym, "")
+
+
+def modifiers_from_state(state: int, platform: str | None = None) -> set[str]:
+    """The modifiers a Tk key event's `state` bit mask says are down."""
+    masks = TK_STATE_MASKS.get(platform or desktop.platform_name(), TK_STATE_MASKS["linux"])
+    return {name for name, mask in masks.items() if state & mask}
+
+
+def from_tk(
+    keysym: str,
+    held: set[str],
+    state: int = 0,
+    keycode: int = 0,
+    platform: str | None = None,
+) -> Shortcut | None:
+    """A shortcut from a Tk key press, or None while only modifiers are held.
+
+    Modifiers are the keys tracked as held plus the event's `state` mask (Tk's Aqua port
+    misses modifier releases, so on macOS the mask alone decides when it has anything).
+    The key comes from the keysym; when that is not a usable key (Option+D types "∂" on
+    a Mac) the hardware key code decides.
+    """
+    platform = platform or desktop.platform_name()
+    if tk_modifier(keysym, platform):
         return None
+    from_state = modifiers_from_state(state, platform)
+    modifiers = (from_state or held) if platform == "macos" else (from_state | held)
     key = TK_NAMES.get(keysym) or (keysym.upper() if len(keysym) == 1 else keysym)
-    return Shortcut(canonical(held), key)
+    if key not in KEYS and platform == "macos":
+        key = MAC_KEY_NAMES.get(keycode & 0xFFFF, key)  # Aqua: virtual key code, low 16 bits.
+    return Shortcut(canonical(modifiers), key)
+
+
+def choice_problem(shortcut: Shortcut, other: Shortcut | None, other_kind: str) -> str:
+    """Why this cannot be chosen (unusable, or already the other feature's), else empty."""
+    problem = shortcut.problem()
+    if problem or other is None or other != shortcut:
+        return problem
+    return (
+        f"{shortcut.label()} already belongs to {KIND_NAMES[other_kind]}. Choose a different one."
+    )
 
 
 @dataclass(frozen=True)
@@ -320,7 +439,8 @@ class Preferences:
         if not isinstance(modifiers, list) or not isinstance(key, str):
             return default
         shortcut = Shortcut(canonical(modifiers), key)
-        return default if shortcut.problem() else shortcut
+        # A saved shortcut stays even if a later release reserves its keys.
+        return default if shortcut.basic_problem() else shortcut
 
     def shortcut(self) -> Shortcut:
         return self._shortcut(self.read().get("shortcut"), DEFAULT)
@@ -603,6 +723,7 @@ def _migrate_former_agents(home: Path | None, run: Any) -> None:
 
 
 HISTORY_STATUS = "history-shortcut-status"
+STATUS_NAMES = {"dictation": "shortcut-status", "history": HISTORY_STATUS}
 
 
 @dataclass(frozen=True)
@@ -715,6 +836,34 @@ def _gnome_command(command: Path | list[str]) -> str:
     return shlex.join(command) if isinstance(command, list) else shlex.quote(str(command))
 
 
+# Appended to the command a desktop runs on a shortcut press (GNOME, KDE, Sway, Hyprland
+# run it themselves, so the app never sees the key). The command then records that it was
+# heard, first thing, and Settings can say "it works". A binding without the marker still
+# runs the same command; it just can't be acknowledged.
+VIA_SHORTCUT = "--via-shortcut"
+
+
+def via_shortcut(command: Path | list[str]) -> list[str]:
+    """`command` with the acknowledgement marker (once) as an argument list."""
+    parts = list(command) if isinstance(command, list) else [str(command)]
+    return parts if VIA_SHORTCUT in parts else [*parts, VIA_SHORTCUT]
+
+
+def acknowledge(paths: d.Paths, kind: str) -> bool:
+    """Record that this kind's shortcut was just pressed. Called first by the command the
+    desktop runs (see VIA_SHORTCUT); never raises, since a press must go on to work."""
+    try:
+        prefs = Preferences(paths)
+        shortcut = prefs.shortcut() if kind == "dictation" else prefs.history_shortcut()
+        if shortcut is None:
+            return False
+        record_heard(paths, kind, shortcut)
+    except (OSError, ValueError, d.DictationError) as exc:
+        log.warning("could not record the %s shortcut press: %s", kind, exc)
+        return False
+    return True
+
+
 def history_command(lib: Path, python: str | None = None) -> list[str]:
     """What the clipboard history shortcut runs: the window, opened on its Clipboard tab.
 
@@ -810,7 +959,8 @@ def gnome_remove(
         return str(result.stdout).strip()
 
     try:
-        if gsettings("get", schema, "command") != repr(_gnome_command(command)):
+        ours = (repr(_gnome_command(command)), repr(_gnome_command(via_shortcut(command))))
+        if gsettings("get", schema, "command") not in ours:
             return
         current = gsettings("get", *GNOME_LIST)
         entries = [entry.strip() for entry in current.strip("[]").split(",") if entry.strip()]
@@ -1025,6 +1175,7 @@ def register_shortcut(
     line or setting to add by hand, so the app can show it instead of failing silently.
     """
     backend = backend or detect_backend()
+    command = via_shortcut(command)
     if backend == "sway":
         return _register_sway(shortcut, command, path, run)
     if backend == "hyprland":
@@ -1064,6 +1215,79 @@ def shortcut_message(paths: d.Paths, name: str = "shortcut-status") -> str:
     except OSError as exc:
         log.debug("could not read the shortcut message: %s", exc)
         return ""
+
+
+def record_heard(paths: d.Paths, kind: str, shortcut: Shortcut, now: float | None = None) -> None:
+    """Note that the registered shortcut was just pressed, for the window to show."""
+    d.private_dir(paths.runtime)
+    payload = {"at": time.time() if now is None else now, "shortcut": shortcut.label()}
+    d.atomic(paths.runtime / f"shortcut-heard-{kind}", json.dumps(payload))
+
+
+def heard_at(paths: d.Paths, kind: str, shortcut: Shortcut) -> float | None:
+    """When this very shortcut was last pressed and acknowledged, or None."""
+    try:
+        data = json.loads((paths.runtime / f"shortcut-heard-{kind}").read_text(encoding="utf-8"))
+        when, label = float(data["at"]), str(data["shortcut"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.debug("no shortcut ack: %s", exc)
+        return None
+    return when if label == shortcut.label() else None
+
+
+def heard_recently(
+    paths: d.Paths,
+    kind: str,
+    shortcut: Shortcut,
+    now: float | None = None,
+    within: float = HEARD_SECONDS,
+) -> bool:
+    """Whether this very shortcut was pressed in the last `within` seconds."""
+    when = heard_at(paths, kind, shortcut)
+    if when is None:
+        return False
+    age = (time.time() if now is None else now) - when
+    return -2.0 <= age <= within
+
+
+def record_outcome(
+    paths: d.Paths, kind: str, shortcut: Shortcut, heard: bool, now: float | None = None
+) -> None:
+    """Keep how a "test your shortcut" ended, so Home and Settings stay truthful later."""
+    d.private_dir(paths.runtime)
+    payload = {
+        "at": time.time() if now is None else now,
+        "shortcut": shortcut.label(),
+        "result": "heard" if heard else "silent",
+    }
+    d.atomic(paths.runtime / f"shortcut-test-{kind}", json.dumps(payload))
+
+
+def shortcut_outcome(paths: d.Paths, kind: str, shortcut: Shortcut) -> str:
+    """ "heard" (this shortcut's press reached us), "silent" (a test ended without hearing
+    it, and no press since), or "untested"."""
+    pressed = heard_at(paths, kind, shortcut)
+    try:
+        data = json.loads((paths.runtime / f"shortcut-test-{kind}").read_text(encoding="utf-8"))
+        when, label, result = float(data["at"]), str(data["shortcut"]), str(data["result"])
+    except (OSError, ValueError, KeyError, TypeError):
+        when, label, result = 0.0, "", ""
+    tested = label == shortcut.label()
+    if pressed is not None and (not tested or pressed >= when):
+        return "heard"
+    if tested and result == "heard":
+        return "heard"
+    return "silent" if tested and result == "silent" else "untested"
+
+
+def log_location(name: str) -> str:
+    """Where a component's log file is, for messages that send the user there."""
+    try:
+        import logsetup
+
+        return str(logsetup.log_dir() / f"{name}.log")
+    except (ImportError, OSError):
+        return f"the {name}.log file in the app's logs folder"
 
 
 def open_link(url: str = CLIPBOARD_PLUS) -> None:

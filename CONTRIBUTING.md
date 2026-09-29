@@ -27,6 +27,31 @@ CI (`.github/workflows/quality.yml`) runs the same on Linux, macOS and Windows.
 
 By contributing you agree your work is licensed under the MIT license.
 
+## Platform parity
+
+Every fix and feature ships to macOS, Windows and Linux together. Where to make a change:
+
+- `lib/app.py` (the window) and the shared modules (`hotkeys.py`, `clipcontrol.py`,
+  `clipstore.py`, `updates.py`, `app_service.py`) are one code path for all platforms.
+- `lib/menubar.py` is the macOS menu bar; `lib/tray.py` is the Linux and Windows tray
+  (`lib/traymenu.py` adds thumbnails on Linux). A change to one usually needs the other.
+  Move logic both need into a shared module (as `clipcontrol.preview_text` does) rather
+  than copying it.
+- `tests/test_platform_parity.py` fails when a menu capability exists in one of the two
+  files and not the other. If a difference is deliberate, list it in `ALLOWED` there,
+  with the reason.
+- Shortcuts are one code path: defaults, presets, reserved combinations and the
+  candidate list are in `hotkeys.py` and `shortcut_test.py`, the "Test it" widget is
+  `shortcut_panel.py` (used by `app.py` for Settings, the recorder, Home and the
+  tutorial). A press is acknowledged with `hotkeys.record_heard` by the macOS menu bar
+  and the Windows tray, and on Linux by the command the desktop runs (`--via-shortcut`,
+  added by `hotkeys.register_shortcut`). A new shortcut backend must pass the marker on
+  and accept the `cmd` modifier (Win, Super, ⌘).
+- A release publishes only when the macOS, Windows and Linux builds all succeed and pass
+  their tests, so a platform that breaks blocks everyone. Known limit: the Windows tray
+  (pystray) cannot draw pictures in menu items, so image clips are text there
+  ("Image 1280×720"); macOS and Linux show a thumbnail.
+
 ## Releasing
 
 Run `python tools/bump_version.py X.Y.Z`, commit, and merge to `main`. The release

@@ -75,7 +75,7 @@ foreach ($name in $names) {
 # Only this app's own files.
 $modules = @(
     'telemetry', 'dictation', 'desktop', 'onboarding', 'rewriting', 'workflow', 'app',
-    'app_service', 'browserauth', 'permissions', 'cues', 'app_styles', 'app_settings', 'menubar_logic', 'logsetup', 'hotkeys', 'menubar', 'tray', 'clipboardplus', 'clipstore', 'clipwatch',
+    'app_service', 'browserauth', 'permissions', 'cues', 'app_styles', 'app_settings', 'menubar_logic', 'logsetup', 'hotkeys', 'shortcut_test', 'shortcut_panel', 'menubar', 'tray', 'traymenu', 'clipboardplus', 'clipstore', 'clipwatch',
     'clipwatch_linux', 'clipwatch_macos', 'clipwatch_windows', 'clipservice', 'clipsync',
     'clipcontrol', 'clipui', 'overlay', 'updates', 'engine'
 )

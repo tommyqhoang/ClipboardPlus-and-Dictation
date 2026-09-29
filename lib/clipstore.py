@@ -29,10 +29,15 @@ import desktop
 if TYPE_CHECKING:
     from clipboardplus import CloudItem
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 META_CURSOR = "sync_cursor"  # When the account last synced fine.
 META_CLEAR = "clear_pending"  # A clear-everywhere the account has not been told about.
 META_CLEARED = "cleared_at"  # When the history was last cleared: older account items stay out.
+# Retention removed synced items up to this time (account copies are left alone, and the
+# older non-favorite ones must not come back as new items).
+META_PRUNED = "pruned_until"
+META_RECONCILED = "reconciled_at"  # When the account listing last checked for web deletions.
+META_RECONCILE_NOW = "reconcile_now"  # "1": check the account listing on the next round.
 MAX_TEXT_BYTES = 1_000_000
 MAX_LABEL_CHARS = 100
 MAX_IMAGE_BYTES = 10_000_000
@@ -69,7 +74,8 @@ CREATE TABLE IF NOT EXISTS items (
     cloud_favorite INTEGER NOT NULL DEFAULT 0,
     dirty INTEGER NOT NULL DEFAULT 1,
     sync_skip INTEGER NOT NULL DEFAULT 0,
-    cloud_label TEXT NOT NULL DEFAULT ''
+    cloud_label TEXT NOT NULL DEFAULT '',
+    synced_at REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS items_created ON items (created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS items_cloud_key ON items (cloud_key) WHERE cloud_key != '';
@@ -111,6 +117,7 @@ class Item:
     dirty: bool
     sync_skip: bool
     cloud_label: str = ""  # The label the account holds.
+    synced_at: float = 0.0  # When the account last confirmed this item (0: before tracking).
 
 
 @dataclass(frozen=True)
@@ -253,10 +260,15 @@ class Store:
                 for statement in _SCHEMA.split(";"):
                     if statement.strip():
                         db.execute(statement)
-                if version == 1:
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(items)")}
+                if "cloud_label" not in columns:
                     # Version 1 only ever held the account's own labels.
                     db.execute("ALTER TABLE items ADD COLUMN cloud_label TEXT NOT NULL DEFAULT ''")
                     db.execute("UPDATE items SET cloud_label = label")
+                if "synced_at" not in columns:
+                    # Version 3 records when the account last confirmed an item; existing
+                    # ones count as old (0).
+                    db.execute("ALTER TABLE items ADD COLUMN synced_at REAL NOT NULL DEFAULT 0")
                 db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -297,6 +309,7 @@ class Store:
             dirty=bool(row["dirty"]),
             sync_skip=bool(row["sync_skip"]),
             cloud_label=row["cloud_label"],
+            synced_at=row["synced_at"],
         )
 
     def get(self, item_id: int) -> Item | None:
@@ -536,9 +549,34 @@ class Store:
             ).fetchall()
         self._evict_over_cap(images, doomed, favorite=False, cap_mb=image_cache_mb)
         self._evict_over_cap(images, doomed, favorite=True, cap_mb=favorite_cache_mb)
+        self._note_pruned(doomed)
+        # Local only, by design: retention never deletes anything from the account.
         self._remove(sorted(doomed), tombstones=False)
         self._remove_stray_files(stamp)
         return len(doomed)
+
+    def _note_pruned(self, doomed: set[int]) -> None:
+        """Remember how far retention reached into the synced history.
+
+        The account still holds those copies, so a later pull must not add them back
+        here as new items (the sync engine skips older non-favorite account items).
+        """
+        if not doomed:
+            return
+        marks = ",".join("?" * len(doomed))
+        with self._lock:
+            row = self._db.execute(
+                f"SELECT MAX(created_at) AS newest FROM items WHERE id IN ({marks}) "
+                "AND cloud_id != '' AND favorite = 0",
+                tuple(doomed),
+            ).fetchone()
+        if row is None or row["newest"] is None:
+            return
+        try:
+            before = float(self.meta_get(META_PRUNED) or 0.0)
+        except ValueError:
+            before = 0.0
+        self.meta_set(META_PRUNED, repr(max(before, float(row["newest"]))))
 
     @staticmethod
     def _evict_over_cap(
@@ -642,6 +680,7 @@ class Store:
         cloud_favorite: bool | None = None,
         updated_at: float | None = None,
         cloud_label: str | None = None,
+        now: float | None = None,
     ) -> None:
         """Record that the account has this item (holding `cloud_label`, when given).
 
@@ -661,28 +700,42 @@ class Store:
             ) == held
             db.execute(
                 "UPDATE items SET cloud_key = ?, cloud_favorite = ?, dirty = ?, "
-                "cloud_label = COALESCE(?, cloud_label) WHERE id = ?",
-                (cloud_key, int(held), 0 if current else 1, cloud_label, item_id),
+                "cloud_label = COALESCE(?, cloud_label), synced_at = ? WHERE id = ?",
+                (
+                    cloud_key,
+                    int(held),
+                    0 if current else 1,
+                    cloud_label,
+                    time.time() if now is None else now,
+                    item_id,
+                ),
             )
 
     def link(
-        self, item_id: int, cloud_id: str, cloud_favorite: bool, cloud_key: str | None = None
+        self,
+        item_id: int,
+        cloud_id: str,
+        cloud_favorite: bool,
+        cloud_key: str | None = None,
+        now: float | None = None,
     ) -> None:
         """Tie an item to the account's copy. `cloud_key` is that copy's key (its time
         and text as the account holds them), which may differ from the local item's."""
+        stamp = time.time() if now is None else now
         with self._transaction() as db:
             if cloud_key is None:
                 db.execute(
-                    "UPDATE items SET cloud_id = ?, cloud_favorite = ? WHERE id = ?",
-                    (cloud_id, int(cloud_favorite), item_id),
+                    "UPDATE items SET cloud_id = ?, cloud_favorite = ?, synced_at = ? WHERE id = ?",
+                    (cloud_id, int(cloud_favorite), stamp, item_id),
                 )
             else:
                 db.execute(
-                    "UPDATE items SET cloud_id = ?, cloud_favorite = ?, cloud_key = ? WHERE id = ?",
-                    (cloud_id, int(cloud_favorite), cloud_key, item_id),
+                    "UPDATE items SET cloud_id = ?, cloud_favorite = ?, cloud_key = ?, "
+                    "synced_at = ? WHERE id = ?",
+                    (cloud_id, int(cloud_favorite), cloud_key, stamp, item_id),
                 )
 
-    def add_cloud(self, item: CloudItem, cloud_key: str) -> Item | None:
+    def add_cloud(self, item: CloudItem, cloud_key: str, now: float | None = None) -> Item | None:
         """Insert an item the account has and this device does not (never sent back)."""
         raw = item.text.encode("utf-8", "replace")
         if not raw.strip() or len(raw) > MAX_TEXT_BYTES:
@@ -695,8 +748,8 @@ class Store:
                 return None
             cursor = db.execute(
                 "INSERT INTO items (kind, text, bytes, sha, created_at, updated_at, favorite, "
-                "label, source, cloud_id, cloud_key, cloud_favorite, dirty, cloud_label) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?, ?, ?, 0, ?)",
+                "label, source, cloud_id, cloud_key, cloud_favorite, dirty, cloud_label, synced_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cloud', ?, ?, ?, 0, ?, ?)",
                 (
                     kind,
                     clean,
@@ -710,6 +763,7 @@ class Store:
                     cloud_key,
                     int(item.favorite),
                     item.label,
+                    time.time() if now is None else now,
                 ),
             )
             return self._fetch(db, int(cursor.lastrowid or 0))
@@ -771,16 +825,116 @@ class Store:
                 (tombstone.cloud_id, tombstone.cloud_key, tombstone.deleted_at),
             )
 
+    def reconcile_candidates(self, cutoff: float) -> Items:
+        """Synced items with nothing unsent that the account confirmed at or before `cutoff`.
+
+        These are the only items a missing account copy may remove here: text and links
+        with an account id, no pending favorite, label or upload, no deletion waiting.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM items WHERE cloud_id != '' AND kind IN ('text', 'url') "
+                "AND dirty = 0 AND favorite = cloud_favorite AND label = cloud_label "
+                "AND synced_at <= ? AND cloud_id NOT IN (SELECT cloud_id FROM tombstones) "
+                "ORDER BY id",
+                (cutoff,),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
+    def synced_count(self) -> int:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM items WHERE cloud_id != '' AND kind IN ('text', 'url')"
+            ).fetchone()
+        return int(row[0])
+
+    def relink_since(self, stamp: float) -> int:
+        """Send again what was copied here after `stamp` and may have been cleared away.
+
+        A copy made while an account clear was on its way can be uploaded and then
+        deleted by that clear. It stays in this history, so it is sent as new.
+        """
+        with self._transaction() as db:
+            cursor = db.execute(
+                "UPDATE items SET cloud_id = '', cloud_key = '', cloud_favorite = 0, "
+                "cloud_label = '', synced_at = 0, dirty = 1 WHERE cloud_id != '' "
+                "AND source != 'cloud' AND kind IN ('text', 'url') AND created_at > ?",
+                (stamp,),
+            )
+            return int(cursor.rowcount)
+
+    def restore(self, item: Item, image: bytes = b"") -> Item | None:
+        """Put back an item that was just deleted here (Undo), exactly as it was.
+
+        While the account has not yet been told about the deletion, the pending
+        tombstone is withdrawn and the item keeps its account link, so nothing is sent
+        or deleted. Once the account was told, it comes back as a new item and uploads.
+        """
+        if item.kind == "image":
+            restored = self.add_image(image, source=item.source, now=item.created_at)
+        else:
+            if self.find_text(item.text) is not None:
+                return self.add_text(item.text, source=item.source)  # Copied again since.
+            restored = self.add_text(item.text, source=item.source, now=item.created_at)
+        if restored is None:
+            return None
+        with self._transaction() as db:
+            held = False
+            if item.cloud_id or item.cloud_key:
+                cursor = db.execute(
+                    "DELETE FROM tombstones WHERE rowid = (SELECT rowid FROM tombstones "
+                    "WHERE cloud_id = ? AND cloud_key = ? LIMIT 1)",
+                    (item.cloud_id, item.cloud_key),
+                )
+                held = cursor.rowcount > 0
+            if held:
+                db.execute(
+                    "UPDATE items SET favorite = ?, label = ?, updated_at = ?, cloud_id = ?, "
+                    "cloud_key = ?, cloud_favorite = ?, cloud_label = ?, synced_at = ?, "
+                    "dirty = ? WHERE id = ?",
+                    (
+                        int(item.favorite),
+                        item.label,
+                        item.updated_at,
+                        item.cloud_id,
+                        item.cloud_key,
+                        int(item.cloud_favorite),
+                        item.cloud_label,
+                        item.synced_at,
+                        int(item.dirty),
+                        restored.id,
+                    ),
+                )
+            else:
+                db.execute(
+                    "UPDATE items SET favorite = ?, label = ?, updated_at = ? WHERE id = ?",
+                    (
+                        int(item.favorite),
+                        item.label if item.favorite else "",
+                        max(item.updated_at, restored.updated_at),
+                        restored.id,
+                    ),
+                )
+            return self._fetch(db, restored.id)
+
     def reset_sync(self) -> None:
         """Forget the account: every text and link is new to the next one you connect."""
         with self._transaction() as db:
             db.execute(
                 "UPDATE items SET cloud_id = '', cloud_key = '', cloud_favorite = 0, "
-                "cloud_label = '', sync_skip = 0, dirty = CASE WHEN kind IN ('text', 'url') THEN 1 ELSE 0 END"
+                "cloud_label = '', synced_at = 0, sync_skip = 0, dirty = CASE WHEN kind IN ('text', 'url') THEN 1 ELSE 0 END"
             )
             db.execute("DELETE FROM tombstones")
             db.execute(
-                "DELETE FROM meta WHERE key IN (?, ?, ?)", (META_CURSOR, META_CLEAR, META_CLEARED)
+                "DELETE FROM meta WHERE key IN (?, ?, ?, ?, ?, ?)",
+                (
+                    META_CURSOR,
+                    META_CLEAR,
+                    META_CLEARED,
+                    META_PRUNED,
+                    META_RECONCILED,
+                    META_RECONCILE_NOW,
+                ),
             )
 
     def drop_tombstones(self) -> None:

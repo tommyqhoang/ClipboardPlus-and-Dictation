@@ -457,9 +457,9 @@ class PageTests(PageCase):
         self.assertEqual(len(self.page.rows), 1)
         self.assertEqual(self.page.query.get(), "")
 
-    def test_clearing_defaults_to_this_device_only(self):
+    def test_clearing_defaults_to_everywhere_when_linked(self):
         dialog = clipui.ClearDialog(self.root, linked=True)
-        self.assertEqual(dialog.scope.get(), "device")
+        self.assertEqual(dialog.scope.get(), "everywhere")
         dialog.cancel()
 
     def test_unstarring_under_the_favorites_filter_drops_the_row(self):
@@ -597,22 +597,46 @@ class WindowTests(PageCase):
             self.window.save_size()
         self.assertEqual(self.window.saved_size(), (900, 640))
 
-    def test_the_history_shortcut_is_chosen_in_settings(self):
+    def open_settings(self):
         with (
             patch.object(self.service, "completed", return_value=True),
             patch.object(self.service, "microphones", return_value=["Mic"]),
         ):
             self.window.settings()
-        self.assertTrue(any("Open clipboard history" in t for t in self.texts()))
-        box = next(
-            w
-            for w in self.all_widgets()
-            if w.winfo_class() == "TCombobox" and "Off" in w.cget("values")
-        )
-        box.set("Off")
-        box.event_generate("<<ComboboxSelected>>")
+
+    def test_the_history_shortcut_has_a_row_with_change_and_turn_off(self):
+        self.open_settings()
+        self.assertTrue(any("Open clipboard history:" in t for t in self.texts()))
+        self.assertEqual(len(self.buttons("Change…")), 2)  # Dictation's and the history's.
+        self.assertEqual(len(self.buttons("Turn off")), 1)
+        with (
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+        ):
+            self.buttons("Turn off")[0].invoke()
         self.assertIsNone(hotkeys.Preferences(self.paths).history_shortcut())
         self.assertIn("off", self.window.status.get())
+        self.assertTrue(any("Open clipboard history: Off" in t for t in self.texts()))
+        self.assertEqual(self.buttons("Turn off"), [])
+
+    def test_changing_the_history_shortcut_uses_the_same_recorder(self):
+        self.open_settings()
+        self.buttons("Change…")[0].invoke()  # The history row is created last.
+        self.assertEqual(self.window.page, "shortcut")
+        self.assertEqual(self.window.shortcut_kind, "history")
+        self.assertTrue((self.paths.runtime / "history-shortcut-capture").exists())
+        self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
+        self.window.consider_shortcut(hotkeys.Shortcut(("ctrl", "alt"), "K"))
+        self.window.save_shortcut()
+        self.assertEqual(self.window.page, "shortcut")  # Stays to test the new one.
+        self.window.shortcut_test_done(hotkeys.Shortcut(("ctrl", "alt"), "K"))
+        self.assertEqual(self.window.page, "settings")
+        self.assertFalse((self.paths.runtime / "history-shortcut-capture").exists())
+        self.assertEqual(
+            hotkeys.Preferences(self.paths).history_shortcut(),
+            hotkeys.Shortcut(("ctrl", "alt"), "K"),
+        )
+        self.assertIn("Clipboard history shortcut", self.window.status.get())
 
     def test_changing_the_dictation_shortcut_returns_to_settings(self):
         with (
@@ -620,11 +644,13 @@ class WindowTests(PageCase):
             patch.object(self.service, "microphones", return_value=["Mic"]),
         ):
             self.window.settings()
-            self.buttons("Change…")[0].invoke()
+            self.buttons("Change…")[-1].invoke()  # The dictation row is created first.
             self.assertEqual(self.window.page, "shortcut")
             self.assertTrue((self.paths.runtime / "shortcut-capture").exists())
             self.window.captured = hotkeys.Shortcut(("ctrl", "alt"), "K")
             self.window.save_shortcut()
+            self.assertEqual(self.window.page, "shortcut")  # Stays to test the new one.
+            self.window.shortcut_test_done(hotkeys.Shortcut(("ctrl", "alt"), "K"))
         self.assertEqual(self.window.page, "settings")
         self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
         self.assertEqual(hotkeys.Preferences(self.paths).shortcut().key, "K")

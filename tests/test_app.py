@@ -29,6 +29,7 @@ class ServiceCase(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.folder = Path(temporary.name)
+        self.addCleanup(support.release_logs, self.folder)
         environment = patch.dict(
             os.environ,
             {
@@ -887,8 +888,147 @@ class WindowTests(ServiceCase):
             self.gui.hotkeys.Preferences(self.paths).shortcut(),
             self.gui.hotkeys.Shortcut(("ctrl", "alt"), "Space"),
         )
-        self.assertEqual(self.window.page, "closed")
+        # Saving stays on the page to test the shortcut; Done closes the window.
+        self.assertEqual(self.window.page, "shortcut")
         self.assertFalse(capture.exists())
+        self.assertIn("Test your shortcut", self.texts())
+        self.window.shortcut_done()
+        self.assertEqual(self.window.page, "closed")
+
+    def both_features(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+
+    def press(self, keysym, state=0, keycode=0):
+        return self.window.shortcut_key(
+            SimpleNamespace(keysym=keysym, state=state, keycode=keycode)
+        )
+
+    @patch.object(desktop, "platform_name", Mock(return_value="linux"))  # X11 key masks below.
+    def test_the_history_recorder_writes_its_own_flag_and_saves_the_history_shortcut(self):
+        self.both_features()
+        self.window.shortcut_page(back=self.window.home, kind="history")
+        history_flag = self.paths.runtime / "history-shortcut-capture"
+        self.assertTrue(history_flag.exists())
+        self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
+        self.assertTrue(any("clipboard history shortcut" in t.lower() for t in self.texts()))
+        self.press("k", state=0x4 | 0x8)  # Ctrl+Alt+K (X11 masks).
+        self.assertNotIn("disabled", self.window.save_shortcut_button.state())
+        self.window.save_shortcut()
+        self.assertEqual(
+            hotkeys.Preferences(self.paths).history_shortcut(),
+            hotkeys.Shortcut(("ctrl", "alt"), "K"),
+        )
+        self.assertEqual(hotkeys.Preferences(self.paths).shortcut(), hotkeys.DEFAULT)
+        self.assertFalse(history_flag.exists())
+        self.assertEqual(self.window.page, "shortcut")  # Stays to test it.
+        self.finder("TButton", "Done")[0].invoke()
+        self.assertEqual(self.window.page, "home")
+        self.assertIn("Clipboard history shortcut", self.window.status.get())
+
+    def test_the_history_recorder_rejects_the_dictation_shortcut_and_the_reverse(self):
+        self.both_features()
+        prefs = hotkeys.Preferences(self.paths)
+        self.window.shortcut_page(back=self.window.home, kind="history")
+        self.window.consider_shortcut(prefs.shortcut())
+        self.assertIn("dictation", self.window.shortcut_hint.cget("text"))
+        self.assertIn("disabled", self.window.save_shortcut_button.state())
+        self.assertIsNone(self.window.captured)
+        self.window.shortcut_done()
+        self.window.shortcut_page(back=self.window.home, kind="dictation")
+        self.window.consider_shortcut(prefs.history_shortcut())
+        self.assertIn("clipboard history", self.window.shortcut_hint.cget("text"))
+        self.assertIn("disabled", self.window.save_shortcut_button.state())
+        # Nothing to conflict with while the other feature is off.
+        prefs.save(features=hotkeys.Features(True, False))
+        self.window.shortcut_page(back=self.window.home, kind="dictation")
+        self.window.consider_shortcut(prefs.history_shortcut())
+        self.assertNotIn("disabled", self.window.save_shortcut_button.state())
+
+    def test_the_history_recorder_can_turn_the_shortcut_off_and_offers_presets(self):
+        self.both_features()
+        self.window.shortcut_page(back=self.window.home, kind="history")
+        self.assertTrue(self.finder("TButton", hotkeys.HISTORY_PRESETS[1].label()))
+        self.finder("TButton", hotkeys.HISTORY_PRESETS[1].label())[0].invoke()
+        self.assertEqual(self.window.captured, hotkeys.HISTORY_PRESETS[1])
+        self.finder("TButton", "Turn off")[0].invoke()
+        self.assertIsNone(hotkeys.Preferences(self.paths).history_shortcut())
+        self.assertFalse((self.paths.runtime / "history-shortcut-capture").exists())
+        self.assertIn("off", self.window.status.get())
+        # Dictation has no Off: it always needs a shortcut.
+        self.window.shortcut_page(back=self.window.home, kind="dictation")
+        self.assertEqual(self.finder("TButton", "Turn off"), [])
+        self.assertTrue(self.finder("TButton", hotkeys.PRESETS[1].label()))
+
+    def finder(self, kind, text):
+        found, stack = [], [self.window.root]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            if widget.winfo_class() == kind and widget.cget("text") == text:
+                found.append(widget)
+        return found
+
+    def test_option_letters_and_command_are_recorded_the_way_a_mac_reports_them(self):
+        with patch.object(desktop, "platform_name", return_value="macos"):
+            self.window.shortcut_page()
+            # Option+Shift+D: Tk sees "∂"-like keysym, Option is Mod2, key code 2.
+            self.press("∂", state=0x10 | 0x1, keycode=(ord("∂") << 16) | 2)
+            self.assertEqual(self.window.shortcut_label.cget("text"), "⌥⇧D")
+            self.assertNotIn("disabled", self.window.save_shortcut_button.state())
+            # Command reports Meta_L; the mask says Mod1.
+            self.assertEqual(self.press("Meta_L", state=0x8), "break")
+            self.press("d", state=0x8 | 0x1, keycode=2)
+            self.assertEqual(self.window.shortcut_label.cget("text"), "⇧⌘D")
+            self.press("Return", state=0x8)  # Not bare: a modifier is held.
+            self.assertEqual(self.window.page, "shortcut")
+
+    def test_settings_show_ready_then_heard_and_stop_polling_on_leaving(self):
+        self.both_features()
+        prefs = hotkeys.Preferences(self.paths)
+        with (
+            patch.object(desktop, "platform_name", return_value="macos"),
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+        ):
+            self.window.settings()
+            self.assertEqual(len(self.window.shortcut_tests), 2)
+            ready = [t for t in self.texts() if t.startswith("Ready")]
+            self.assertEqual(len(ready), 2)
+            self.assertTrue(any(prefs.shortcut().label("macos") in t for t in ready))
+            hotkeys.record_heard(self.paths, "history", prefs.history_shortcut())
+            self.window.poll_shortcut_tests()
+            self.assertTrue(any(t.startswith("✓ Heard") for t in self.texts()))
+            self.assertEqual(len([t for t in self.texts() if t.startswith("Ready")]), 1)
+            self.assertIsNotNone(self.window.shortcut_poll)
+            self.window.home()  # Leaving the page stops the polling.
+            self.assertIsNone(self.window.shortcut_poll)
+            self.assertEqual(self.window.shortcut_tests, [])
+
+    def test_settings_show_the_reason_and_the_log_when_registration_failed(self):
+        self.both_features()
+        hotkeys.record_status(self.paths, False, hotkeys.HISTORY_STATUS)
+        hotkeys.record_message(self.paths, "It is already used by macOS.", hotkeys.HISTORY_STATUS)
+        with (
+            patch.object(desktop, "platform_name", return_value="macos"),
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+        ):
+            self.window.settings()
+            texts = self.texts()
+        self.assertTrue(any("already used by macOS" in t and "menubar.log" in t for t in texts))
+        self.assertFalse(any(t.startswith("✓") for t in texts))
+
+    def test_linux_settings_also_test_shortcuts_since_the_command_leaves_an_ack(self):
+        self.both_features()
+        with (
+            patch.object(desktop, "platform_name", return_value="linux"),
+            patch.object(self.service, "completed", return_value=True),
+            patch.object(self.service, "microphones", return_value=["Mic"]),
+        ):
+            self.window.settings()
+        self.assertEqual(len(self.window.shortcut_tests), 2)
+        self.assertEqual(len(self.finder("TButton", "Test it")), 2)
+        self.assertIsNotNone(self.window.shortcut_poll)
 
     def test_the_mouse_wheel_scrolls_a_long_page(self):
         seen = []

@@ -31,6 +31,9 @@ class FakeCloud:
         self.calls: list[tuple[Any, ...]] = []
         self.failures: dict[str, list[Exception]] = {}
         self.pushed: list[list[clipstore.Item]] = []
+        # Listings to hand out, in order, instead of the account's real ids (the last one
+        # repeats): lets a test make a page fail, be partial, or disagree with itself.
+        self.listings: list[cp.Listing] = []
 
     def _enter(self, name: str, *detail: Any) -> None:
         self.calls.append((name, *detail))
@@ -127,6 +130,18 @@ class FakeCloud:
     def clear(self, *, favorites: bool) -> None:
         self._enter("clear", favorites)
         self.items = {k: v for k, v in self.items.items() if v.favorite and not favorites}
+
+    def list_ids(self) -> cp.Listing:
+        self._enter("list")
+        if self.listings:
+            return self.listings.pop(0) if len(self.listings) > 1 else self.listings[0]
+        return cp.Listing(frozenset(self.items), True)
+
+    def web_delete(self, item: cp.CloudItem, *, tell: bool = True) -> None:
+        """Delete on the web; `tell` also puts it in the pull's deletedItems."""
+        self.items.pop(item.id, None)
+        if tell:
+            self.removed.append(cp.Removed(item.kind, item.created_ms, item.text[:200]))
 
 
 class SyncCase(unittest.TestCase):

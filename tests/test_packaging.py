@@ -35,8 +35,14 @@ class MacBundleSigningTests(unittest.TestCase):
         self.assertIn("codesign --force --sign -", script)
         self.assertIn('codesign --verify --deep --strict --verbose=2 "$APP"', script)
         # The per-file signing loop must re-sign dylibbundler-modified
-        # binaries, i.e. iterate Contents/MacOS, not just the top-level exe.
-        self.assertIn('find "$APP/Contents/MacOS"', script)
+        # binaries, i.e. iterate the whole bundle (executables in Contents/MacOS and the
+        # relocated _internal in Contents/Resources), not just the top-level exe.
+        self.assertIn('find "$APP/Contents" -type f', script)
+        # codesign rejects PyInstaller's _internal folder inside Contents/MacOS, so it
+        # lives in Resources with a symlink left behind.
+        self.assertIn('ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"', script)
+        # Only executables may remain in Contents/MacOS; data files there fail codesign.
+        self.assertIn("grep -q 'Mach-O'", script)
         bundle_sign_pos = script.index('sign "$APP"')
         verify_pos = script.index("codesign --verify")
         self.assertLess(bundle_sign_pos, verify_pos, "verification must follow bundling signing")
@@ -103,9 +109,17 @@ class ReleasePipelineTests(unittest.TestCase):
     def setUp(self):
         self.release = read(".github", "workflows", "release.yml")
 
+    def test_two_release_runs_never_overlap_or_cancel_each_other(self):
+        # The draft job deletes and recreates the draft, so runs queue instead.
+        self.assertRegex(
+            self.release,
+            r"(?m)^concurrency:\n  group: release\n  cancel-in-progress: false\n",
+        )
+
     def test_a_version_bump_on_main_releases_automatically(self):
         self.assertIn("branches: [main]", self.release)
-        self.assertIn('paths: ["lib/desktop.py"]', self.release)
+        # No paths filter: a release that failed is retried by the next push.
+        self.assertNotIn("paths:", self.release)
         self.assertIn("needs.plan.outputs.release == 'true'", self.release)
         self.assertIn("uses: ./.github/workflows/quality.yml", self.release)
         # Built as a draft and published last, so no half-built release is public.

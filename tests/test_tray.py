@@ -18,6 +18,7 @@ import clipcontrol
 import clipstore
 import dictation as d
 import hotkeys
+import support
 import tray
 
 
@@ -122,6 +123,7 @@ class TrayTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         folder = Path(temporary.name)
+        self.addCleanup(support.release_logs, folder)
         environment = patch.dict(
             os.environ,
             {
@@ -147,6 +149,11 @@ class TrayTests(unittest.TestCase):
         popen = patch.object(tray.subprocess, "Popen")
         self.popen = popen.start()
         self.addCleanup(popen.stop)
+        # Popen is patched process-wide, so the `icacls` call that locks down a new
+        # folder on Windows would get a mock; that lock-down is tested in test_desktop.
+        restrict = patch.object(d.desktop, "restrict_to_owner", return_value=True)
+        restrict.start()
+        self.addCleanup(restrict.stop)
         # ClipboardControl captures Popen as a default argument when imported,
         # before the patch above. Replace that bound value too or tests launch a
         # real clipboard service that writes into the temporary directory.
@@ -355,7 +362,10 @@ class TrayTests(unittest.TestCase):
             self.assertEqual(gnome.conflict, taken)
             self.assertTrue(gnome.register(None))
             self.assertIsNone(gnome.conflict)
-        self.assertEqual(bind.call_args.args[1].name, "dictate-toggle")
+        # The desktop runs the command with the marker that lets the press be acknowledged
+        # (register_shortcut adds it; the tray's own command stays the bare launcher).
+        self.assertEqual(Path(bind.call_args.args[1][0]).name, "dictate-toggle")
+        self.assertEqual(bind.call_args.args[1][-1], "--via-shortcut")
 
     def test_gnome_hotkey_defaults_to_persistent_relaunch_when_frozen(self):
         # bin/dictate-toggle only exists for a source install; a packaged build
@@ -707,6 +717,68 @@ class TrayTests(unittest.TestCase):
         self.assertFalse((self.paths.runtime / "shortcut-capture").exists())
         self.assertNotIn(None, self.tray.hotkey.registered)
 
+    def test_the_history_recorder_pauses_both_shortcuts_and_applies_its_choice(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        self.tray.tick()
+        window = tray.desktop.lock(self.paths.runtime / "app.lock")  # The window is open.
+        self.addCleanup(os.close, window)
+        capture = self.paths.runtime / "history-shortcut-capture"
+        capture.write_text("capturing")
+        self.tray.tick()
+        self.assertIsNone(self.tray.hotkey.registered[-1])
+        self.assertIsNone(self.tray.history_key.registered[-1])
+        chosen = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        hotkeys.Preferences(self.paths).save(history_shortcut=chosen)
+        self.tray.tick()  # Still recording: nothing registers behind the recorder's back.
+        self.assertIsNone(self.tray.history_key.registered[-1])
+        capture.unlink()
+        self.tray.tick()
+        self.assertEqual(self.tray.hotkey.registered[-1], self.tray.shortcut)
+        self.assertEqual(self.tray.history_key.registered[-1], chosen)
+        status = hotkeys.shortcut_working(self.paths, hotkeys.HISTORY_STATUS)
+        self.assertTrue(status)
+
+    def test_history_recording_closed_without_a_choice_registers_the_old_one_again(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))
+        self.tray.tick()
+        old = self.tray.history
+        self.assertEqual(old, hotkeys.DEFAULT_HISTORY)
+        window = tray.desktop.lock(self.paths.runtime / "app.lock")
+        self.addCleanup(os.close, window)
+        capture = self.paths.runtime / "history-shortcut-capture"
+        capture.write_text("capturing")
+        self.tray.tick()
+        capture.unlink()
+        self.tray.tick()
+        self.assertEqual(self.tray.history_key.registered[-1], old)
+
+    def test_a_history_capture_left_by_a_closed_window_is_cleared(self):
+        (self.paths.runtime / "history-shortcut-capture").write_text("capturing")
+        self.tray.tick()  # No window holds app.lock: the flag is stale.
+        self.assertFalse((self.paths.runtime / "history-shortcut-capture").exists())
+        self.assertNotIn(None, self.tray.hotkey.registered)
+
+    def test_a_pressed_shortcut_is_acknowledged_for_the_window(self):
+        self.tray.tick()
+        with patch.object(self.tray, "pressed") as pressed:
+            self.tray.hotkey_dictation()
+        pressed.assert_called_once()
+        self.assertTrue(hotkeys.heard_recently(self.paths, "dictation", self.tray.shortcut))
+        self.assertFalse(hotkeys.heard_recently(self.paths, "history", hotkeys.DEFAULT_HISTORY))
+        self.tray.history = hotkeys.DEFAULT_HISTORY
+        with patch.object(self.tray, "open_history") as opened:
+            self.tray.hotkey_history()
+        opened.assert_called_once()
+        self.assertTrue(hotkeys.heard_recently(self.paths, "history", hotkeys.DEFAULT_HISTORY))
+
+    def test_a_press_still_works_when_the_ack_cannot_be_written(self):
+        with (
+            patch.object(hotkeys, "record_heard", side_effect=OSError("full")),
+            patch.object(self.tray, "pressed") as pressed,
+        ):
+            self.tray.hotkey_dictation()
+        pressed.assert_called_once()
+
     def test_registration_result_is_shared_and_explained(self):
         self.tray.hotkey.refuse.add(hotkeys.PRESETS[1])
         with patch.object(tray.desktop, "platform_name", return_value="linux"):
@@ -774,8 +846,33 @@ class TrayTests(unittest.TestCase):
 
         self.assertEqual(clipcontrol.preview_text(make("  hello   world  ")), "hello world")
         self.assertEqual(clipcontrol.preview_text(make("x" * 80)), "x" * 60 + "…")
-        self.assertEqual(clipcontrol.preview_text(make("", kind="image")), "Image (640×480)")
+        self.assertEqual(clipcontrol.preview_text(make("", kind="image")), "Image 640×480")
         self.assertEqual(clipcontrol.preview_text(make("raw", label=" My Label ")), "My Label")
+
+    def test_image_rows_look_up_their_thumbnail(self):
+        thumb = Path(self.tray.paths.runtime) / "thumb.png"
+        thumb.write_bytes(b"png")
+        picture = dataclasses.replace(ITEM, kind="image", thumb_file="t.png", width=8, height=4)
+        self.tray.rows = [picture, ITEM]
+        self.tray.store = MagicMock()
+        self.tray.store.thumb_path.return_value = thumb
+        rows = [entry for entry in self.items() if id(entry) in self.tray.row_items]
+        self.assertEqual(len(rows), tray.MENU_ROWS)
+        self.assertEqual(self.tray.row_thumb(rows[0]), thumb)
+        self.assertIsNone(self.tray.row_thumb(rows[1]))  # Text clip.
+        self.assertIsNone(self.tray.row_thumb(rows[5]))  # Beyond the list.
+        self.assertIsNone(self.tray.row_thumb(object()))  # Not a recent row.
+        self.assertEqual(rows[0].text(None), "Image 8×4")  # Text stays as the fallback.
+        self.tray.store.thumb_path.return_value = None  # The thumbnail file is gone.
+        self.assertIsNone(self.tray.row_thumb(rows[0]))
+
+    def test_fake_backend_keeps_text_rows(self):
+        self.assertFalse(self.tray.thumbnails)  # Only pystray's GTK backends draw pictures.
+
+    def test_image_label_wording(self):
+        picture = dataclasses.replace(ITEM, kind="image", width=1280, height=720)
+        self.assertEqual(clipcontrol.image_label(picture), "Image 1280×720")
+        self.assertEqual(clipcontrol.image_label(dataclasses.replace(picture, width=0)), "Image")
 
     def test_second_launch_shows_the_running_apps_window(self):
         # Clicking the launcher while the tray runs must surface the window, not do nothing.

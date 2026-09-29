@@ -15,6 +15,7 @@ import clipservice
 import desktop
 import dictation as d
 import hotkeys
+import support
 
 
 class ControlCase(unittest.TestCase):
@@ -22,6 +23,7 @@ class ControlCase(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         folder = Path(temporary.name)
+        self.addCleanup(support.release_logs, folder)
         environment = patch.dict(
             os.environ,
             {
@@ -75,6 +77,16 @@ class HistoryShortcutTests(ControlCase):
         control._stamp = None  # The file's time may not have moved within this test.
         self.assertTrue(control.changed())
         self.assertIsNone(control.history_shortcut())
+
+    def test_a_new_history_shortcut_chosen_in_the_window_is_noticed(self):
+        self.enable()
+        control = self.control()
+        control.changed()
+        chosen = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        self.prefs.save(history_shortcut=chosen)
+        self.assertTrue(control.changed())  # The menu bar and tray re-register on this.
+        self.assertEqual(control.history_shortcut(), chosen)
+        self.assertFalse(control.changed())
 
 
 class SupervisionTests(ControlCase):

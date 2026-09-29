@@ -15,9 +15,9 @@ system dependency for microphone capture even there (see `packaging/README.md`).
 
 | Platform | Launcher | Local dependencies |
 | --- | --- | --- |
-| Linux (apt, dnf, pacman, zypper) | Top bar icon (starts at login), application menu, GNOME Ctrl+Shift+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray, Pillow and python-xlib in a private venv |
-| macOS | Menu bar icon from `/Applications/Clipboard+.app` (starts at login), ⌃⇧D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC and Pillow in a private venv |
-| Windows x64 | System tray icon (starts at login), Start Menu, Ctrl+Shift+D | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp; pystray and Pillow in a private venv |
+| Linux (apt, dnf, pacman, zypper) | Top bar icon (starts at login), application menu, GNOME Super+Shift+D | Python/Tk, ALSA tools, Wayland clipboard, whisper.cpp, AppIndicator; pystray, Pillow and python-xlib in a private venv |
+| macOS | Menu bar icon from `/Applications/Clipboard+.app` (starts at login), ⇧⌘D | Homebrew Python/Tk, FFmpeg, whisper.cpp; PyObjC and Pillow in a private venv |
+| Windows x64 | System tray icon (starts at login), Start Menu, Win+Shift+D | Python/Tk, FFmpeg, C++ runtime, checksum-pinned whisper.cpp; pystray and Pillow in a private venv |
 
 The Windows bootstrap currently pins whisper.cpp 1.8.7 and verifies the upstream
 release digest. Linux uses the distribution package when one exists (Debian/Ubuntu, Fedora); the source fallback
@@ -72,7 +72,12 @@ The clipboard service then syncs on its own thread (so a slow network never dela
 capture): about every minute, five seconds after a new copy, and when asked from
 Settings or after a dictation. It pushes new text and links (100 per request,
 never images), pulls the account's items and deletions, mirrors favorites and
-deletes, and can clear the account's history. Every step is idempotent, so an
+deletes, and can clear the account's history (saved before the local clear, and
+repeated until the account accepts it). Deletions made on the web arrive in the pull;
+about every 30 minutes, and on Sync now, the engine also compares the history with the
+account's complete listing and drops items the account no longer has (see
+`clipsync.Engine._reconcile` for the safety rules). Retention pruning never touches the
+account. Every step is idempotent, so an
 interrupted round is simply repeated; network failures back off from 30 seconds to
 10 minutes, and a refused key stops syncing until the user signs in again.
 

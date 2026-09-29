@@ -1,7 +1,7 @@
 [project]
 name = "clipboardplus"
 # Kept equal to lib/desktop.py APP_VERSION; tests/test_packaging.py enforces it.
-version = "1.4.0"
+version = "1.4.2"
 description = "Clipboard+ and Dictation: local clipboard history and on-device voice dictation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,6 +33,13 @@ files = ["lib", "setup-desktop.py"]
 # PyObjC ships without type information; its decorators are untyped.
 module = "menubar"
 disable_error_code = ["untyped-decorator"]
+
+[[tool.mypy.overrides]]
+# PyGObject is a system package (python3-gi): present on some machines and CI images and
+# not others, and untyped where present, so it must never change the result.
+module = ["gi", "gi.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false
 
 [tool.coverage.run]
 branch = true

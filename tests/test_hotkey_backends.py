@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,7 +16,7 @@ import dictation as d
 import hotkeys
 
 SHORTCUT = hotkeys.Shortcut(("ctrl", "shift"), "D")
-COMMAND = Path("/home/me/.local/bin/dictate-toggle")
+COMMAND = PurePosixPath("/home/me/.local/bin/dictate-toggle")  # Backends are Linux-only.
 
 
 def finished(code=0, out="", err=""):
@@ -97,7 +97,7 @@ class SwayTests(BackendTests):
         self.assertTrue(result)
         self.assertEqual(
             run.calls[0],
-            ["/usr/bin/swaymsg", "bindsym", "Ctrl+Shift+d", "exec", str(COMMAND)],
+            ["/usr/bin/swaymsg", "bindsym", "Ctrl+Shift+d", "exec", f"{COMMAND} --via-shortcut"],
         )
         self.assertIn("until Sway restarts", result.message)
         self.assertIn("bindsym Ctrl+Shift+d exec", result.manual)
@@ -138,7 +138,12 @@ class HyprlandTests(BackendTests):
         self.assertTrue(result)
         self.assertEqual(
             run.calls[0],
-            ["/usr/bin/hyprctl", "keyword", "bind", f"CTRL SHIFT, D, exec, {COMMAND}"],
+            [
+                "/usr/bin/hyprctl",
+                "keyword",
+                "bind",
+                f"CTRL SHIFT, D, exec, {COMMAND} --via-shortcut",
+            ],
         )
         self.assertIn("bind = CTRL SHIFT, D, exec,", result.manual)
 

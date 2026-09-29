@@ -33,7 +33,7 @@ fi
 if [ "$entry" = "tray" ] && ! command -v arecord >/dev/null 2>&1; then
   msg="Clipboard+: 'arecord' was not found, so dictation cannot record. Install alsa-utils (for example: sudo apt install alsa-utils). Clipboard history is unaffected."
   echo "$msg" >&2
-  command -v notify-send >/dev/null 2>&1 && notify-send "Clipboard+" "$msg" || true
+  if command -v notify-send >/dev/null 2>&1; then notify-send "Clipboard+" "$msg" || true; fi
 fi
 
 exec "$BIN/$entry" "$@"

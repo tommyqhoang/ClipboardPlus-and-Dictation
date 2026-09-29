@@ -3,14 +3,19 @@ name: Release
 # does it consistently) and merge to main. If v<APP_VERSION> has not been released
 # yet, the tests run, all three installers are built, and the release (with its
 # tag) is published only once everything succeeded. Re-running on the same version
-# is a no-op. "Run workflow" rebuilds a version whose release does not exist yet.
+# is a no-op, and a failed release is retried by the next push to main (or by
+# "Run workflow"), because no release exists for that version until it is complete.
 on:
   push:
     branches: [main]
-    paths: ["lib/desktop.py"]
   workflow_dispatch:
 permissions:
   contents: write
+# Two runs for one version must never overlap: the draft job deletes and recreates the
+# draft release. A newer run waits for the one going; it never cancels it halfway.
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   plan:
     runs-on: ubuntu-latest

@@ -258,8 +258,22 @@ class Service:
             raise d.DictationError("Clipboard+ is having trouble right now. Try again shortly.")
         self._link_clipboard_plus(cleaned, "")
 
-    def sync_clipboard_now(self) -> None:
-        """Ask the clipboard service to sync at once."""
+    def sync_clipboard_now(self, *, reconcile: bool = False) -> None:
+        """Ask the clipboard service to sync at once.
+
+        With `reconcile` the round also compares this history with the account's full
+        listing, so items deleted on the web (or a web "clear all") leave this device now
+        rather than at the next 30-minute check.
+        """
+        if reconcile and self.paths.clipboard.exists():
+            try:
+                store = clipstore.Store(self.paths.clipboard)
+                try:
+                    clipsync.request_reconcile(store)
+                finally:
+                    store.close()
+            except (sqlite3.Error, clipstore.StoreError):
+                pass  # Only a shortcut to an earlier check; the regular one still runs.
         d.private_dir(self.paths.runtime)
         d.atomic(self.paths.runtime / clipservice.SYNC_NOW, "1")
 
@@ -280,18 +294,47 @@ class Service:
     def clear_clipboard(
         self, store: clipstore.Store, *, everywhere: bool, keep_favorites: bool
     ) -> int:
-        """Clear the history on this device, and in the account too when asked."""
+        """Clear the history on this device, and in the account (so the web) when asked.
+
+        Clearing the account is remembered first, then the local history is cleared, so a
+        crash in between can never leave "cleared here, the account never told". The
+        clipboard service sends it to the account on its next round (started now) and
+        repeats it until the account accepts. `clipboard_clear_progress` tells how far
+        that got. Without a linked account only this device is cleared.
+        """
         everywhere = everywhere and self.clipboard_plus_linked()
-        count = store.clear(keep_favorites=keep_favorites, tombstones=everywhere)
         # The next sync must not bring back what was just cleared (images never sync).
+        # Stamped before the clear, so a copy made during it is kept and syncs.
         store.meta_set(clipstore.META_CLEARED, repr(time.time()))
         if everywhere:
             clipsync.request_clear(store, favorites=not keep_favorites)
+        count = store.clear(keep_favorites=keep_favorites, tombstones=everywhere)
+        if everywhere:
             self.sync_clipboard_now()
         return count
 
+    def clipboard_clear_progress(self, store: clipstore.Store) -> str:
+        """Where a clear-everywhere stands.
+
+        "done" (nothing waiting for the account: it is cleared, or no clear was asked),
+        "working" (the service is on it), "waiting" (offline or the service is not
+        running; it finishes by itself when back online) or "reconnect" (the account
+        refused this device's key).
+        """
+        if not store.meta_get(clipstore.META_CLEAR):
+            return "done"
+        state = self.clipboard_plus_state()
+        if state.kind == "reconnect":
+            return "reconnect"
+        if state.kind == "connected" and state.sync in ("ok", "syncing"):
+            return "working"
+        return "waiting"
+
     def delete_clipboard_data(self) -> None:
-        """Erase the clipboard history, images and sync state on this device."""
+        """Erase the clipboard history, images and sync state on this device only.
+
+        The Clipboard+ account is not told: its copy (and the web dashboard) stay.
+        """
         store = clipstore.Store(self.paths.clipboard)
         try:
             store.wipe()

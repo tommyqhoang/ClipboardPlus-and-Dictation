@@ -72,6 +72,7 @@ from Foundation import (  # type: ignore[import-not-found]
     NSIndexSet,
     NSMutableIndexSet,
     NSObject,
+    NSRunLoopCommonModes,
     NSTimer,
 )
 
@@ -134,6 +135,13 @@ class GlobalHotKey:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         carbon.UnregisterEventHotKey.argtypes = [ctypes.c_void_p]
+        for call in (
+            carbon.InstallEventHandler,
+            carbon.RegisterEventHotKey,
+            carbon.UnregisterEventHotKey,
+            carbon.GetEventParameter,
+        ):
+            call.restype = ctypes.c_int32  # OSStatus
         carbon.GetEventParameter.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint32,
@@ -145,54 +153,101 @@ class GlobalHotKey:
         ]
         self.carbon = carbon
         self.target = carbon.GetApplicationEventTarget()
-        self.callbacks: dict[int, Any] = {DICTATION_ID: callback}
+        self.callbacks: dict[int, Any] = {}
         self.refs: dict[int, ctypes.c_void_p] = {}
+        self.install_status = 0  # OSStatus of InstallEventHandler; anything but 0 is fatal.
+        self.last_status = 0  # OSStatus of the latest RegisterEventHotKey.
+        self.failures: dict[int, menubar_logic.HotKeyFailure] = {}
+        self.on(DICTATION_ID, callback)
 
         def pressed(_call: Any, event: Any, _data: Any) -> int:
-            which = EventHotKeyID()
-            status = carbon.GetEventParameter(
-                event,
-                fourcc("----"),  # kEventParamDirectObject
-                fourcc("hkid"),  # typeEventHotKeyID
-                None,
-                ctypes.sizeof(which),
-                None,
-                ctypes.byref(which),
-            )
-            action = self.callbacks.get(which.id if status == 0 else DICTATION_ID)
-            if action is not None:
-                action()
+            # Whatever happens here, Carbon must get noErr back: ctypes would swallow a
+            # Python error silently and the shortcut would just seem to do nothing.
+            try:
+                which = EventHotKeyID()
+                status = carbon.GetEventParameter(
+                    event,
+                    fourcc("----"),  # kEventParamDirectObject
+                    fourcc("hkid"),  # typeEventHotKeyID
+                    None,
+                    ctypes.sizeof(which),
+                    None,
+                    ctypes.byref(which),
+                )
+                if status != 0:
+                    log.warning("GetEventParameter failed (%d); treating it as dictation", status)
+                hotkey_id = which.id if status == 0 else DICTATION_ID
+                log.info("shortcut %d pressed", hotkey_id)
+                action = self.callbacks.get(hotkey_id)
+                if action is None:
+                    log.warning("shortcut %d was pressed but nothing handles it", hotkey_id)
+                else:
+                    action()
+            except Exception:  # noqa: BLE001 - nothing may escape into Carbon.
+                log.exception("the shortcut handler failed")
             return 0
 
         # Keep a reference: the C side holds only a raw pointer to this thunk.
         self.handler = HANDLER(pressed)
         spec = EventTypeSpec(fourcc("keyb"), 5)  # kEventHotKeyPressed
-        carbon.InstallEventHandler(self.target, self.handler, 1, ctypes.byref(spec), None, None)
+        self.install_status = int(
+            carbon.InstallEventHandler(self.target, self.handler, 1, ctypes.byref(spec), None, None)
+        )
+        if self.install_status != 0:
+            log.error("InstallEventHandler failed with OSStatus %d", self.install_status)
+        else:
+            log.info("shortcut handler installed")
 
     def on(self, hotkey_id: int, callback: Any) -> None:
-        self.callbacks[hotkey_id] = callback
+        name = {DICTATION_ID: "dictation", HISTORY_ID: "history"}.get(hotkey_id, str(hotkey_id))
+        self.callbacks[hotkey_id] = menubar_logic.guarded(callback, log, name)
 
     def register(self, shortcut: hotkeys.Shortcut, hotkey_id: int = DICTATION_ID) -> bool:
         self.unregister(hotkey_id)
+        self.failures.pop(hotkey_id, None)
         ref = ctypes.c_void_p()
         key_code, modifiers = menubar_logic.carbon_hotkey(shortcut)
-        status = self.carbon.RegisterEventHotKey(
-            key_code,
-            modifiers,
-            EventHotKeyID(fourcc("WDct"), hotkey_id),
-            self.target,
-            0,
-            ctypes.byref(ref),
-        )
-        if status != 0:
+        status = 0
+        if self.install_status == 0:
+            status = int(
+                self.carbon.RegisterEventHotKey(
+                    key_code,
+                    modifiers,
+                    EventHotKeyID(fourcc("WDct"), hotkey_id),
+                    self.target,
+                    0,
+                    ctypes.byref(ref),
+                )
+            )
+            self.last_status = status
+        failure = menubar_logic.registration_failure(status, self.install_status)
+        if failure is not None:
+            self.failures[hotkey_id] = failure
+            log.warning(
+                "could not register %s (id %d): %s, OSStatus %d",
+                shortcut.label("macos"),
+                hotkey_id,
+                failure.kind,
+                failure.status,
+            )
             return False
         self.refs[hotkey_id] = ref
+        log.info("registered %s (id %d)", shortcut.label("macos"), hotkey_id)
         return True
+
+    def reason(self, hotkey_id: int, label: str) -> str:
+        """Why the latest registration of this shortcut failed, in words for the user."""
+        failure = self.failures.get(hotkey_id)
+        if failure is None:
+            return ""
+        return failure.message(label, hotkeys.log_location("menubar"))
 
     def unregister(self, hotkey_id: int = DICTATION_ID) -> None:
         ref = self.refs.pop(hotkey_id, None)
         if ref is not None:
-            self.carbon.UnregisterEventHotKey(ref)
+            status = int(self.carbon.UnregisterEventHotKey(ref))
+            if status != 0:
+                log.warning("UnregisterEventHotKey failed with OSStatus %d", status)
 
 
 def template(name: str, template_image: bool = True) -> Any:
@@ -268,7 +323,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.clip = clipcontrol.ClipboardControl(self.paths, self.preferences)
         self.dictation_registered = False
         self.history: hotkeys.Shortcut | None = None  # The history shortcut registered now.
-        self.capturing = False  # The window is recording a new dictation shortcut.
+        self.capturing = False  # The window is recording a new shortcut (either kind).
         self.view: tuple[Any, ...] | None = None
         self.shortcut = self.preferences.shortcut()
         self.phase = ""
@@ -292,18 +347,20 @@ class Controller(NSObject):  # type: ignore[misc]
         self.item.button().setTarget_(self)
         self.item.button().setAction_("togglePopover:")
         self.build_popover()
-        self.hotkey = GlobalHotKey(self.pressed)
-        self.hotkey.on(HISTORY_ID, lambda: self.open_window("--clipboard"))
+        # Carbon calls these from inside its event handler: they only note the press and
+        # schedule the real work for the next run-loop turn (see hotkey_pressed).
+        self.hotkey = GlobalHotKey(lambda: self.hotkey_pressed("dictation"))
+        self.hotkey.on(HISTORY_ID, lambda: self.hotkey_pressed("history"))
         self.hotkey_ok = True
         if self.clip.features().dictation:
             self.hotkey_ok = self.hotkey.register(self.shortcut)
             self.dictation_registered = True
-            hotkeys.record_status(self.paths, self.hotkey_ok)
+            self.record_registration("dictation", self.shortcut, self.hotkey_ok)
         if not self.hotkey_ok:
             self.warn(
                 "Shortcut unavailable",
-                f"{self.shortcut.label()} is already used by another app. "
-                "Choose a different shortcut from the menu bar icon.",
+                self.hotkey.reason(DICTATION_ID, self.shortcut.label())
+                + " Choose a different one from Settings.",
             )
         self.sync_login_item()
         self.clip.changed()  # The first look is not a change.
@@ -335,7 +392,8 @@ class Controller(NSObject):  # type: ignore[misc]
     def build_popover(self) -> None:
         """A Maccy-style quick view: clicking the icon shows recent clips, a search
         field and Clear History, plus a slim dictation header/footer. Everything else
-        (shortcut presets, Open at Login, pausing capture) lives in Settings now."""
+        (shortcut presets, Open at Login) lives in Settings now; pausing capture is
+        tray-only for now (see tests/test_platform_parity.py)."""
         self.popover = NSPopover.alloc().init()
         self.popover.setBehavior_(NSPopoverBehaviorTransient)
         self.popover.setContentSize_(NSMakeSize(POPOVER_WIDTH, POPOVER_HEIGHT))
@@ -450,6 +508,39 @@ class Controller(NSObject):  # type: ignore[misc]
     # -- actions ----------------------------------------------------------
     @objc.python_method
     @objc.python_method
+    def hotkey_pressed(self, kind: str) -> None:
+        """A registered shortcut fired, inside Carbon's callback: never block here.
+
+        Hand the work to the run loop (a modal alert or a slow call inside the handler
+        would leave macOS waiting on us), then tell the window we heard it.
+        """
+        selector = "dictationRequested:" if kind == "dictation" else "historyRequested:"
+        self.performSelector_withObject_afterDelay_inModes_(
+            selector, None, 0.0, [NSRunLoopCommonModes]
+        )
+        shortcut = self.shortcut if kind == "dictation" else self.history
+        if shortcut is not None:
+            try:
+                hotkeys.record_heard(self.paths, kind, shortcut)
+            except OSError:
+                log.exception("could not record that the %s shortcut was heard", kind)
+
+    def dictationRequested_(self, _sender: Any) -> None:
+        self.pressed()
+
+    def historyRequested_(self, _sender: Any) -> None:
+        self.open_window("--clipboard")
+
+    @objc.python_method
+    def record_registration(self, kind: str, shortcut: hotkeys.Shortcut | None, ok: bool) -> None:
+        """Tell the window whether a shortcut registered and, if not, exactly why."""
+        name = hotkeys.STATUS_NAMES[kind]
+        hotkeys.record_status(self.paths, ok, name)
+        hotkey_id = DICTATION_ID if kind == "dictation" else HISTORY_ID
+        reason = "" if ok or shortcut is None else self.hotkey.reason(hotkey_id, shortcut.label())
+        hotkeys.record_message(self.paths, reason, name)
+
+    @objc.python_method
     def pressed(self) -> None:
         if not self.service.ready():
             self.open_window("--setup")
@@ -536,13 +627,10 @@ class Controller(NSObject):  # type: ignore[misc]
             self.shortcut, self.hotkey_ok = shortcut, True
             self.preferences.save(shortcut=shortcut)
         else:
+            reason = self.hotkey.reason(DICTATION_ID, shortcut.label())
             self.hotkey_ok = self.hotkey.register(self.shortcut)
-            self.warn(
-                "Shortcut unavailable",
-                f"{shortcut.label()} is already used by another app. "
-                f"Keeping {self.shortcut.label()}.",
-            )
-        hotkeys.record_status(self.paths, self.hotkey_ok)
+            self.warn("Shortcut unavailable", f"{reason} Keeping {self.shortcut.label()}.")
+        self.record_registration("dictation", self.shortcut, self.hotkey_ok)
         self.view = None
         if self.popover.isShown():
             self.refresh_popover_header()
@@ -615,46 +703,58 @@ class Controller(NSObject):  # type: ignore[misc]
         if features.dictation and not self.dictation_registered:
             self.hotkey_ok = self.hotkey.register(self.shortcut)
             self.dictation_registered = True
-            hotkeys.record_status(self.paths, self.hotkey_ok)
+            self.record_registration("dictation", self.shortcut, self.hotkey_ok)
         elif not features.dictation and self.dictation_registered:
             self.hotkey.unregister()
             self.dictation_registered = False
         history = self.clip.history_shortcut()
-        if history != self.history:
+        if history != self.history and not self.capturing:  # Resumed when recording ends.
             self.history = history
             self.hotkey.unregister(HISTORY_ID)
             ok = history is None or self.hotkey.register(history, HISTORY_ID)
-            hotkeys.record_status(self.paths, ok, hotkeys.HISTORY_STATUS)
+            self.record_registration("history", history, ok)
         if self.popover.isShown():
             self.refresh_popover_layout()
         self.view = None  # Redraw the status icon.
 
     @objc.python_method
-    @objc.python_method
-    def follow_window_shortcut(self) -> None:
-        """Pause the dictation shortcut while the window records a new one, then use it."""
-        flag = self.paths.runtime / "shortcut-capture"
-        capturing = flag.exists()
-        if capturing and not self.capturing:
+    def window_is_recording(self) -> bool:
+        """Whether the window has a shortcut recorder open (either kind)."""
+        flags = [self.paths.runtime / name for name in hotkeys.CAPTURE_FLAGS.values()]
+        present = [flag for flag in flags if flag.exists()]
+        if present and not self.capturing:
             window = desktop.lock(self.paths.runtime / "app.lock")
             if window is not None:  # A crashed window left the flag behind.
                 os.close(window)
-                flag.unlink(missing_ok=True)
-                capturing = False
+                for flag in present:
+                    flag.unlink(missing_ok=True)
+                return False
+        return bool(present)
+
+    @objc.python_method
+    def follow_window_shortcut(self) -> None:
+        """Pause the shortcuts while the window records a new one, then use the result.
+
+        Either recorder pauses both shortcuts, so pressing the other one's keys while
+        choosing doesn't start dictation or open the history.
+        """
+        capturing = self.window_is_recording()
         if capturing == self.capturing:
             return
         self.capturing = capturing
         if capturing:
             self.hotkey.unregister()
+            self.hotkey.unregister(HISTORY_ID)
+            self.history = None  # Registered again when recording ends.
             return
-        if not self.clip.features().dictation:
-            return
-        chosen = self.preferences.shortcut()
-        if chosen != self.shortcut:
-            self.apply_shortcut(chosen)
-        else:
-            self.hotkey_ok = self.hotkey.register(self.shortcut)
-            hotkeys.record_status(self.paths, self.hotkey_ok)
+        if self.clip.features().dictation:
+            chosen = self.preferences.shortcut()
+            if chosen != self.shortcut:
+                self.apply_shortcut(chosen)
+            else:
+                self.hotkey_ok = self.hotkey.register(self.shortcut)
+                self.record_registration("dictation", self.shortcut, self.hotkey_ok)
+        self.apply_features()  # Registers the history shortcut again, or its new choice.
 
     @objc.python_method
     @objc.python_method

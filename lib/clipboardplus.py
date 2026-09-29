@@ -489,6 +489,23 @@ class Pull:
     deleted: list[Removed]
 
 
+@dataclass(frozen=True)
+class Listing:
+    """The ids the account holds, and whether that list can be trusted as everything.
+
+    `complete` is True only when every page was read, every row had a valid id, and the
+    last page said there is no more. Anything else (an error page, an odd row, a cap)
+    leaves it False, and callers must then not conclude that a missing id was deleted.
+    """
+
+    ids: frozenset[str]
+    complete: bool
+
+
+LIST_PAGE = 200
+LIST_MAX_ITEMS = 20_000  # More than this is treated as "not everything".
+
+
 def _epoch(stamp: object, fallback: float) -> float:
     if isinstance(stamp, str):
         try:
@@ -597,6 +614,31 @@ class Cloud:
             [item for item in map(_cloud_item, items) if item],
             [gone for gone in map(_removed, deleted) if gone],
         )
+
+    def list_ids(self) -> Listing:
+        """Page through `GET /api/clipboard` (the route `clear` already uses)."""
+        found: set[str] = set()
+        offset = 0
+        while offset < LIST_MAX_ITEMS:
+            page = self._call(
+                "GET", f"/api/clipboard?limit={LIST_PAGE}&offset={offset}", parse=True
+            )
+            rows = page.get("items")
+            if not isinstance(rows, list):
+                return Listing(frozenset(found), False)
+            before = len(found)
+            for row in rows:
+                identifier = row.get("id") if isinstance(row, dict) else None
+                if not isinstance(identifier, str) or not UUID.fullmatch(identifier):
+                    return Listing(frozenset(found), False)
+                found.add(identifier)
+            more = page.get("hasMore")
+            if more is False:
+                return Listing(frozenset(found), True)
+            if more is not True or not rows or len(found) == before:
+                return Listing(frozenset(found), False)  # No explicit end, or no progress.
+            offset += len(rows)
+        return Listing(frozenset(found), False)
 
     def push(self, items: list[Item]) -> None:
         """Upload text and links (images never leave the device), 100 per request."""

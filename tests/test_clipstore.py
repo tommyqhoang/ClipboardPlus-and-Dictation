@@ -499,7 +499,9 @@ class ConcurrencyAndSchemaTests(StoreCase):
     def test_a_version_1_database_gains_the_account_label_column(self):
         directory = self.directory.parent / "v1"
         directory.mkdir()
-        schema = clipstore._SCHEMA.replace(",\n    cloud_label TEXT NOT NULL DEFAULT ''", "")
+        schema = clipstore._SCHEMA.replace(
+            ",\n    cloud_label TEXT NOT NULL DEFAULT ''", ""
+        ).replace(",\n    synced_at REAL NOT NULL DEFAULT 0", "")
         with contextlib.closing(sqlite3.connect(directory / "clips.db")) as raw:
             raw.executescript(schema)
             raw.execute(

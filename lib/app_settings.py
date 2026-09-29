@@ -61,11 +61,13 @@ def home_text(
     working: bool,
     platform: str,
     detail: str = "",
+    outcome: str = "",
 ) -> tuple[str, str]:
     """The Home page's title and subtitle for the state of the dictation shortcut.
 
     `conflict` is a hotkeys.Conflict (or None); `detail` is why registration failed, as
     recorded by the tray, and is shown instead of a generic hint when there is one.
+    `outcome` is how the last "test your shortcut" went (hotkeys.shortcut_outcome).
     """
     paste = "Command\u00a0+\u00a0V" if platform == "macos" else "Ctrl\u00a0+\u00a0V"
     if platform == "linux":
@@ -77,10 +79,14 @@ def home_text(
             "first, so dictation doesn’t start. Until you fix it, record from here.",
         )
     if working:
+        note = {
+            "silent": " The last test didn’t hear it: use Test your shortcut below.",
+            "untested": " Not sure it works yet? Use Test your shortcut below.",
+        }.get(outcome, "")
         return (
             f"Press {shortcut} to dictate",
             f"It works in any app: press it, speak, press it again, then paste with {paste}. "
-            "You don’t need this window.",
+            "You don’t need this window." + note,
         )
     if platform == "linux":
         return (
@@ -88,12 +94,47 @@ def home_text(
             (
                 detail
                 or "This desktop can’t set shortcuts automatically. In your keyboard settings, "
-                f"assign {shortcut} to ~/.local/bin/dictate-toggle."
+                f"assign {shortcut} to ~/.local/bin/dictate-toggle --via-shortcut."
             )
             + " Until then, record from here.",
         )
     return (
         f"{shortcut} is taken",
-        f"Another app already uses {shortcut}. Choose a different shortcut below. "
-        "Until then, record from here.",
+        (detail or f"Another app already uses {shortcut}. Choose a different shortcut below.")
+        + " Until then, record from here.",
     )
+
+
+def shortcut_problem(label: str, platform: str, detail: str, command: str) -> str:
+    """Why a shortcut is not working, for its row in Settings. `detail` is what the tray or
+    menu bar recorded; `command` is what to assign by hand on a desktop with no service."""
+    if detail:
+        return detail
+    if platform == "linux":
+        return (
+            "This desktop can’t set shortcuts automatically. In your keyboard settings, "
+            f"assign {label} to: {command}"
+        )
+    return f"Another app already uses {label}. Choose another."
+
+
+def shortcut_test_text(
+    label: str,
+    heard: bool,
+    working: bool,
+    reason: str,
+    log_path: str,
+    platform: str,
+    outcome: str = "",
+) -> str:
+    """The line under a shortcut in Settings: how to test it, that it was just heard, or
+    why it can't be. The same on every platform (on Linux the command the desktop runs
+    leaves the acknowledgement)."""
+    if not working:
+        why = reason or "Clipboard+ couldn’t register it."
+        return why if log_path in why else f"{why} Log: {log_path}"
+    if heard:
+        return f"✓ Heard {label} just now"
+    if outcome == "silent":
+        return f"The last test didn’t hear {label}. Press Test it to try again."
+    return f"Ready — press {label} anywhere to test it"

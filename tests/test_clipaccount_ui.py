@@ -480,18 +480,20 @@ class ClearDialogTests(AccountCase):
         dialog.confirm()
         self.assertEqual(dialog.result, (False, True))
 
-    def test_with_an_account_the_scope_is_asked_and_defaults_to_this_device(self):
+    def test_with_an_account_the_scope_is_asked_and_defaults_to_everywhere(self):
         dialog = self.make(linked=True)
         labels = " | ".join(self.labels(dialog))
         self.assertIn("This device only", labels)
         self.assertIn("Everywhere", labels)
+        self.assertIn("web dashboard too", labels)
+        self.assertIn("still shows it", labels)  # What "this device only" leaves behind.
         self.assertIn("images", labels)
         dialog.confirm()
-        self.assertEqual(dialog.result, (False, True))  # The account is cleared only by choice.
+        self.assertEqual(dialog.result, (True, True))  # History is one thing: the web clears too.
         dialog = self.make(linked=True)
-        dialog.scope.set("everywhere")
+        dialog.scope.set("device")  # Keeping the account's copy is the explicit choice.
         dialog.confirm()
-        self.assertEqual(dialog.result, (True, True))
+        self.assertEqual(dialog.result, (False, True))
 
     def test_everywhere_without_favorites_is_returned_as_chosen(self):
         dialog = self.make(linked=True)
@@ -543,7 +545,7 @@ class ClipboardPageClearTests(AccountCase):
             self.page.clear()
         self.assertEqual(self.store.count(), 0)
         self.assertTrue(float(self.store.meta_get(clipstore.META_CLEARED)) > 0)
-        self.assertEqual(self.window.status.get(), "Cleared 2 items.")
+        self.assertEqual(self.window.status.get(), "Cleared 2 items.")  # No account: no pretence.
         images = self.paths.clipboard / "images"
         self.assertEqual([p for p in images.iterdir() if p.suffix == ".png"], [])
 
@@ -552,6 +554,84 @@ class ClipboardPageClearTests(AccountCase):
         with patch.object(self.page, "ask_clear", return_value=None):
             self.page.clear()
         self.assertEqual(self.store.count(), 1)
+
+    def clear_everywhere(self, keep=True):
+        self.link()
+        item = self.store.add_text("old", now=1.0)
+        self.store.mark_pushed(item.id, "text|1|old")
+        self.store.link(item.id, "cloud-1", False)
+        with patch.object(self.page, "ask_clear", return_value=(True, keep)):
+            self.page.clear()
+
+    def test_clearing_everywhere_reports_each_stage_of_the_account_clear(self):
+        self.clear_everywhere()
+        self.assertEqual(
+            self.window.status.get(), "Cleared 1 item here. Clearing your Clipboard+ account…"
+        )
+        self.assertIsNotNone(self.page._clear_after)  # Polled on the Tk loop, not a thread.
+        self.report("syncing")
+        self.page._poll_clear()
+        self.assertIn("Clearing your Clipboard+ account", self.window.status.get())
+        self.store.meta_set(clipstore.META_CLEAR, "")  # The service finished.
+        self.page._poll_clear()
+        self.assertTrue(self.window.status.get().startswith("Cleared everywhere ✓"))
+        self.assertIsNone(self.page._clear_after)  # Done: no more polling.
+
+    def test_an_offline_account_clear_says_it_will_finish_later(self):
+        self.clear_everywhere()
+        self.report("offline")
+        self.page._poll_clear()
+        self.assertEqual(
+            self.window.status.get(),
+            "Cleared here. Will finish clearing your account when you’re back online.",
+        )
+        self.assertIsNotNone(self.page._clear_after)  # Still watching for it to finish.
+
+    def test_a_refused_key_says_to_reconnect(self):
+        self.clear_everywhere()
+        self.report("auth")
+        self.page._poll_clear()
+        self.assertIn("Reconnect Clipboard+", self.window.status.get())
+
+    def test_polling_stops_when_the_page_is_left(self):
+        self.clear_everywhere()
+        self.window.clipboard_page = None
+        self.page._poll_clear()
+        self.assertIsNone(self.page._clear_after)
+
+    def test_polling_stops_by_itself_and_never_overwrites_other_messages(self):
+        self.clear_everywhere()
+        self.report("syncing")
+        self.window.status.set("Copied. Paste it anywhere.")
+        self.page._poll_clear()
+        self.assertEqual(self.window.status.get(), "Copied. Paste it anywhere.")
+        self.page._clear_polls = clipui.CLEAR_POLL_LIMIT - 1
+        self.page._poll_clear()
+        self.assertIsNone(self.page._clear_after)
+
+    def test_device_only_says_the_account_keeps_its_copy_and_does_not_poll(self):
+        self.link()
+        self.store.add_text("old", now=1.0)
+        with patch.object(self.page, "ask_clear", return_value=(False, True)):
+            self.page.clear()
+        self.assertEqual(
+            self.window.status.get(),
+            "Cleared 1 item on this device. Your Clipboard+ account keeps its copy.",
+        )
+        self.assertIsNone(self.page._clear_after)
+
+    def test_undo_of_a_delete_restores_the_item_without_touching_the_account(self):
+        self.link()
+        item = self.store.add_text("keep me", now=1.0)
+        self.store.mark_pushed(item.id, "text|1|keep me")
+        self.store.link(item.id, "cloud-1", False)
+        self.page.reload()
+        self.page.delete(item.id)
+        self.assertEqual(len(self.store.tombstones()), 1)
+        self.page.undo_delete()
+        self.assertEqual(self.store.tombstones(), [])
+        (restored,) = self.store.list()
+        self.assertEqual((restored.text, restored.cloud_id), ("keep me", "cloud-1"))
 
     def test_the_dialog_is_told_whether_an_account_is_linked(self):
         with patch.object(self.page, "ask_clear", return_value=None) as ask:

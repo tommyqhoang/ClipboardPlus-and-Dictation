@@ -29,6 +29,7 @@ import desktop
 import dictation as d
 import hotkeys
 import permissions
+import shortcut_panel
 import telemetry
 import updates
 import workflow
@@ -236,11 +237,17 @@ class App:
         # Opened by the history shortcut or menu: Esc (with no search typed) closes it.
         self.quick = page in ("clipboard", "clipboard-clear")
         self.clipboard_store: clipstore.Store | None = None
+        # Settings rows that say whether a shortcut was heard: (label, kind, shortcut).
+        self.shortcut_tests: list[tuple[ttk.Label, str, hotkeys.Shortcut]] = []
+        self.shortcut_poll: str | None = None
+        self.shortcut_panels: list[shortcut_panel.TestPanel] = []  # "Test it" widgets on the page.
 
     def show_first_page(self, page: str) -> None:
         """Open the page asked for, or the home page, or the first-run welcome."""
         if page == "shortcut":
             self.shortcut_page()
+        elif page == "history-shortcut":
+            self.shortcut_page(kind="history")
         elif (
             self.service.completed()
             and page in ("clipboard", "clipboard-clear")
@@ -515,6 +522,13 @@ class App:
     def reset(self, page: str, title: str, subtitle: str, step: str = "") -> None:
         if self.page == "shortcut" and page != "shortcut":
             self.end_capture()
+        if self.shortcut_poll is not None:
+            self.root.after_cancel(self.shortcut_poll)
+            self.shortcut_poll = None
+        self.shortcut_tests = []
+        for panel in self.shortcut_panels:
+            panel.cancel()
+        self.shortcut_panels = []
         self.page = page
         self.settings_snapshot = None
         for variable, trace in self.traces:  # Page listeners on long-lived variables.
@@ -1212,63 +1226,104 @@ class App:
             self.status.set("Clipboard data deleted.")
 
     def shortcuts_card(self) -> None:
-        """The global shortcuts: dictation's (recorded) and the clipboard history's (chosen)."""
+        """The global shortcuts. Each is recorded on the same page and reports the same way."""
         features = self.features()
         prefs = hotkeys.Preferences(self.service.paths)
-        card = self.card("Keyboard shortcuts", "They work in any app.")
-        dictation = prefs.shortcut() if features.dictation else None
-        if dictation is not None:
-            row = ttk.Frame(card, style="Card.TFrame")
-            row.pack(fill="x")
-            ttk.Label(row, text=f"Dictation: {dictation.label()}", style="Card.TLabel").pack(
-                side="left"
-            )
-            self.button(
-                "Change…",
-                lambda: self.shortcut_page(back=self.settings),
-                parent=row,
-                side="right",
-            )
-        if not features.clipboard:
-            return
-        ttk.Label(card, text="Open clipboard history", style="Card.TLabel").pack(
-            anchor="w", pady=(10, 2)
+        card = self.card(
+            "Keyboard shortcuts",
+            "They work in any app."
+            + (
+                " ⇧⌘D and ⇧⌘F also belong to some browsers and editors; Test it shows whether "
+                "yours is heard, and Change… picks another in one click."
+                if desktop.platform_name() == "macos"
+                else " Test it shows whether a shortcut is heard, and offers another if not."
+            ),
         )
-        choices = {s.label(): s for s in hotkeys.HISTORY_PRESETS if s != dictation}
-        current = prefs.history_shortcut()
-        if current is not None:
-            choices.setdefault(current.label(), current)
-        chosen = tk.StringVar(master=self.root, value=current.label() if current else "Off")
-        box = ttk.Combobox(card, textvariable=chosen, values=(*choices, "Off"), state="readonly")
-        box.pack(fill="x")
+        if features.dictation:
+            self.shortcut_row(card, "dictation", prefs.shortcut())
+        if features.clipboard:
+            self.shortcut_row(card, "history", prefs.history_shortcut())
+        if self.shortcut_tests:
+            self.shortcut_poll = self.root.after(1000, self.poll_shortcut_tests)
 
-        def choose(_: object) -> None:
-            picked = choices.get(chosen.get())
-            prefs.save(history_shortcut=picked or False)
-            self.status.set(
-                f"Press {picked.label()} anywhere to open your clipboard history."
-                if picked
-                else "The clipboard history shortcut is off."
+    def shortcut_row(self, card: tk.Misc, kind: str, shortcut: hotkeys.Shortcut | None) -> None:
+        paths = self.service.paths
+        title = "Dictation" if kind == "dictation" else "Open clipboard history"
+        row = ttk.Frame(card, style="Card.TFrame")
+        row.pack(fill="x", pady=(0 if kind == "dictation" else 10, 0))
+        ttk.Label(
+            row, text=f"{title}: {shortcut.label() if shortcut else 'Off'}", style="Card.TLabel"
+        ).pack(side="left")
+        self.button(
+            "Change…",
+            lambda: self.shortcut_page(back=self.settings, kind=kind),
+            parent=row,
+            side="right",
+        )
+        if kind == "history" and shortcut is not None:
+            self.button("Turn off", self.turn_off_history_shortcut, parent=row, side="right")
+        if shortcut is None:
+            return
+        wrap = self.wraplength - 50
+        panel = shortcut_panel.TestPanel(self.root, paths, card, kind, wrap)
+        self.shortcut_panels.append(panel)
+        self.button("Test it", panel.start, parent=row, side="right")
+        test = ttk.Label(card, text="", style="CardHint.TLabel", wraplength=wrap)
+        test.pack(anchor="w", pady=(2, 0))
+        self.shortcut_tests.append((test, kind, shortcut))
+        test.configure(text=self.shortcut_test_line(kind, shortcut))
+        panel.frame.pack(anchor="w", pady=(2, 0))
+        status = hotkeys.STATUS_NAMES[kind]
+        conflict = hotkeys.shortcut_conflict(paths, status)
+        if conflict is not None:
+            self.conflict_note(card, shortcut, conflict, status, self.settings)
+        elif not hotkeys.shortcut_working(paths, status):
+            command = (
+                hotkeys.history_command(Path(__file__).resolve().parent)
+                if kind == "history"
+                else ["~/.local/bin/dictate-toggle"]
             )
-            self.show_toast("Settings saved.")
+            command = hotkeys.via_shortcut(command)
+            problem = app_settings.shortcut_problem(
+                shortcut.label(),
+                desktop.platform_name(),
+                hotkeys.shortcut_message(paths, status),
+                shlex.join(command),
+            )
+            ttk.Label(card, text=problem, style="CardHint.TLabel", wraplength=wrap).pack(
+                anchor="w", pady=(6, 0)
+            )
 
-        box.bind("<<ComboboxSelected>>", choose)
-        conflict = hotkeys.shortcut_conflict(self.service.paths, hotkeys.HISTORY_STATUS)
-        if current is not None and conflict is not None:
-            self.conflict_note(card, current, conflict, hotkeys.HISTORY_STATUS, self.settings)
-        elif current is not None and not hotkeys.shortcut_working(
-            self.service.paths, hotkeys.HISTORY_STATUS
-        ):
-            problem = (
-                "This desktop can’t set shortcuts automatically. In your keyboard settings, "
-                f"assign {current.label()} to: "
-                + shlex.join(hotkeys.history_command(Path(__file__).resolve().parent))
-                if desktop.platform_name() == "linux"
-                else f"Another app already uses {current.label()}. Choose another."
-            )
-            ttk.Label(
-                card, text=problem, style="CardHint.TLabel", wraplength=self.wraplength - 50
-            ).pack(anchor="w", pady=(6, 0))
+    def shortcut_test_line(self, kind: str, shortcut: hotkeys.Shortcut) -> str:
+        """ "Ready — press it to test", or that it was just heard, or why it can't work."""
+        paths = self.service.paths
+        status = hotkeys.STATUS_NAMES[kind]
+        working = hotkeys.shortcut_working(paths, status)
+        platform = desktop.platform_name()
+        return app_settings.shortcut_test_text(
+            shortcut.label(),
+            working and hotkeys.heard_recently(paths, kind, shortcut),
+            working,
+            hotkeys.shortcut_message(paths, status),
+            hotkeys.log_location("menubar" if platform == "macos" else "tray"),
+            platform,
+            hotkeys.shortcut_outcome(paths, kind, shortcut),
+        )
+
+    def poll_shortcut_tests(self) -> None:
+        """Refresh the "heard it" lines once a second while Settings is open."""
+        self.shortcut_poll = None
+        if self.page != "settings" or not self.shortcut_tests:
+            return  # Stops when the page changes.
+        for label, kind, shortcut in self.shortcut_tests:
+            label.configure(text=self.shortcut_test_line(kind, shortcut))
+        self.shortcut_poll = self.root.after(1000, self.poll_shortcut_tests)
+
+    def turn_off_history_shortcut(self) -> None:
+        hotkeys.Preferences(self.service.paths).save(history_shortcut=False)
+        self.settings()
+        self.status.set("The clipboard history shortcut is off.")
+        self.show_toast("Settings saved.")
 
     def conflict_note(
         self,
@@ -1325,7 +1380,7 @@ class App:
                 (
                     "Open your history",
                     f"Press {history.label()} in any app, or choose Clipboard History… "
-                    f"from the {place} icon."
+                    f"from the {place} icon. Change the shortcut in Settings."
                     if history
                     else f"From the {place} icon, choose Clipboard History…",
                 ),
@@ -1749,6 +1804,14 @@ class App:
                 else ("Paste anywhere", f"Your words are already copied. Press {paste}."),
             ],
         )
+        if self.features().dictation:
+            check = self.card("Try your shortcut", "Make sure it works before you need it.")
+            panel = shortcut_panel.TestPanel(
+                self.root, self.service.paths, check, "dictation", self.wraplength - 50
+            )
+            self.shortcut_panels.append(panel)
+            self.button("Test it", panel.start, parent=check)
+            panel.frame.pack(anchor="w", pady=(4, 0))
         tips = self.card("Try saying")
         ttk.Label(
             tips,
@@ -1761,7 +1824,7 @@ class App:
             text="Change the shortcut, microphone, or AI anytime in Settings, from this "
             f"window or the {place} icon."
             + (
-                " Not on GNOME? Assign the shortcut to ~/.local/bin/dictate-toggle in your"
+                " Not on GNOME? Assign the shortcut to ~/.local/bin/dictate-toggle --via-shortcut in your"
                 " keyboard settings."
                 if desktop.platform_name() == "linux"
                 else ""
@@ -1811,12 +1874,17 @@ class App:
         else:
             self.home()
 
-    def shortcut_page(self, back: Callable[[], None] | None = None) -> None:
-        """Record a new dictation shortcut. `back` returns to a page; otherwise the window closes."""
+    def shortcut_page(
+        self, back: Callable[[], None] | None = None, kind: str = "dictation"
+    ) -> None:
+        """Record a new shortcut, for dictation or the clipboard history. `back` returns to
+        a page; otherwise the window closes."""
         self.shortcut_back = back
+        self.shortcut_kind = kind
+        history = kind == "history"
         self.reset(
             "shortcut",
-            "Choose your shortcut",
+            "Choose your clipboard history shortcut" if history else "Choose your shortcut",
             (
                 "Hold ⌃, ⌥ or ⌘ and press a letter, number or Space — "
                 if desktop.platform_name() == "macos"
@@ -1824,32 +1892,84 @@ class App:
             )
             + "or press a function key (F1–F12). Enter saves, Esc cancels.",
         )
-        self.capture = self.service.paths.runtime / "shortcut-capture"
+        self.end_capture()  # A flag left from the other kind.
+        self.capture = self.service.paths.runtime / hotkeys.CAPTURE_FLAGS[kind]
         d.private_dir(self.capture.parent)
-        d.atomic(self.capture, "capturing")  # Pauses the tray's current shortcut.
+        d.atomic(self.capture, "capturing")  # Pauses the tray's current shortcuts.
         self.held: set[str] = set()
         self.captured: hotkeys.Shortcut | None = None
+        features = self.features()
+        prefs = hotkeys.Preferences(self.service.paths)
+        current = prefs.history_shortcut() if history else prefs.shortcut()
+        default = (
+            hotkeys.default_history_shortcut(desktop.platform_name())
+            if history
+            else (hotkeys.default_shortcut(desktop.platform_name()))
+        )
+        # The other feature's shortcut: the same keys can't do both jobs.
+        other_kind = "dictation" if history else "history"
+        other = (
+            (prefs.shortcut() if features.dictation else None)
+            if history
+            else (prefs.history_shortcut() if features.clipboard else None)
+        )
+        self.shortcut_other = (other, other_kind)
         body = self.card()
-        current = hotkeys.Preferences(self.service.paths).shortcut()
         self.shortcut_label = ttk.Label(
-            body, text=current.label(), style="Card.TLabel", font=self.fonts["title"]
+            body,
+            text=current.label() if current else "Off",
+            style="Card.TLabel",
+            font=self.fonts["title"],
         )
         self.shortcut_label.pack(anchor="w")
         self.shortcut_hint = ttk.Label(
-            body, text="Press the keys now.", style="CardHint.TLabel", wraplength=self.wraplength
+            body,
+            text="Press the keys now, or pick one below.",
+            style="CardHint.TLabel",
+            wraplength=self.wraplength,
         )
         self.shortcut_hint.pack(anchor="w", pady=(6, 0))
+        ttk.Label(
+            body,
+            text="Your current shortcut is paused while you choose. After saving you can test "
+            "it right here: press it and this page confirms it was heard."
+            + (
+                f" {default.label()} is also used by some browsers and editors, which it "
+                "overrides while it is on; pick another below if that gets in the way."
+                if desktop.platform_name() == "macos"
+                else ""
+            ),
+            style="CardHint.TLabel",
+            wraplength=self.wraplength,
+        ).pack(anchor="w", pady=(6, 0))
+        picks = ttk.Frame(body, style="Card.TFrame")
+        picks.pack(fill="x", pady=(10, 0))
+        platform = desktop.platform_name()
+        for preset in hotkeys.history_presets(platform) if history else hotkeys.presets(platform):
+            ttk.Button(
+                picks,
+                text=preset.label(),
+                command=functools.partial(self.consider_shortcut, preset),
+            ).pack(side="left", padx=(0, 6))
         self.save_shortcut_button = self.button(
             "Save", self.save_shortcut, True, self.actions(), "right"
         )
         self.save_shortcut_button.state(["disabled"])
         self.button("Cancel", self.shortcut_done, parent=self.actions(), side="right")
+        if history:
+            self.button("Turn off", self.turn_off_shortcut, parent=self.actions(), side="left")
         self.root.bind("<KeyPress>", self.shortcut_key)
         self.root.bind("<KeyRelease>", self.shortcut_release)
         self.root.focus_force()
 
+    @staticmethod
+    def event_number(event: tk.Event[Any], name: str) -> int:
+        value = getattr(event, name, 0)
+        return value if isinstance(value, int) else 0
+
     def shortcut_key(self, event: tk.Event[Any]) -> str | None:
-        if not self.held:
+        state = self.event_number(event, "state")
+        if not self.held and not hotkeys.modifiers_from_state(state):
             # Bare Tab, Esc and Enter can't be shortcuts; they move, cancel and save.
             if event.keysym in ("Tab", "ISO_Left_Tab"):
                 return None
@@ -1860,27 +1980,74 @@ class App:
                 if self.captured is not None:
                     self.save_shortcut()
                 return "break"
-        if event.keysym in hotkeys.TK_MODIFIERS:
-            self.held.add(hotkeys.TK_MODIFIERS[event.keysym])
+        modifier = hotkeys.tk_modifier(event.keysym)
+        if modifier:
+            self.held.add(modifier)
             return "break"
-        shortcut = hotkeys.from_tk(event.keysym, self.held)
+        shortcut = hotkeys.from_tk(
+            event.keysym, self.held, state, self.event_number(event, "keycode")
+        )
         if shortcut is not None:
-            problem = shortcut.problem()
-            self.shortcut_label.configure(text=shortcut.label())
-            self.shortcut_hint.configure(text=problem or "Press Save to use this shortcut.")
-            self.captured = None if problem else shortcut
-            self.save_shortcut_button.state(["disabled"] if problem else ["!disabled"])
+            self.consider_shortcut(shortcut)
         return "break"
 
+    def consider_shortcut(self, shortcut: hotkeys.Shortcut) -> None:
+        """Show a recorded or picked shortcut and allow saving it if it can work."""
+        other, other_kind = self.shortcut_other
+        problem = hotkeys.choice_problem(shortcut, other, other_kind)
+        self.shortcut_label.configure(text=shortcut.label())
+        self.shortcut_hint.configure(text=problem or "Press Save to use this shortcut.")
+        self.captured = None if problem else shortcut
+        self.save_shortcut_button.state(["disabled"] if problem else ["!disabled"])
+
     def shortcut_release(self, event: tk.Event[Any]) -> None:
-        self.held.discard(hotkeys.TK_MODIFIERS.get(event.keysym, ""))
+        self.held.discard(hotkeys.tk_modifier(event.keysym))
 
     def save_shortcut(self) -> None:
-        if self.captured is not None:
-            hotkeys.Preferences(self.service.paths).save(shortcut=self.captured)
+        saved = self.captured
+        if saved is None:
+            self.shortcut_done()
+            return
+        prefs = hotkeys.Preferences(self.service.paths)
+        if self.shortcut_kind == "history":
+            prefs.save(history_shortcut=saved)
+        else:
+            prefs.save(shortcut=saved)
+        self.shortcut_test_page(saved)
+
+    def shortcut_test_page(self, saved: hotkeys.Shortcut) -> None:
+        """After Save: stay here and ask for a press, so it is known to work before leaving."""
+        kind = self.shortcut_kind
+        self.end_capture()  # The tray or menu bar registers the new shortcut now.
+        back = self.shortcut_back
+        self.reset("shortcut", "Test your shortcut", "Saved. Now make sure it works.")
+        self.shortcut_back = back
+        self.shortcut_kind = kind
+        card = self.card()
+        ttk.Label(card, text=saved.label(), style="Card.TLabel", font=self.fonts["title"]).pack(
+            anchor="w"
+        )
+        panel = shortcut_panel.TestPanel(
+            self.root, self.service.paths, card, kind, self.wraplength - 50
+        )
+        self.shortcut_panels.append(panel)
+        panel.frame.pack(anchor="w", pady=(8, 0))
+        panel.start(fresh=True)
+        self.button("Done", lambda: self.shortcut_test_done(saved), True, self.actions(), "right")
+
+    def shortcut_test_done(self, saved: hotkeys.Shortcut) -> None:
+        kind = self.shortcut_kind
         self.shortcut_done()
-        if self.captured is not None and self.page != "closed":
-            self.status.set(f"Dictation shortcut: {self.captured.label()}.")
+        if self.page != "closed":
+            name = "Clipboard history" if kind == "history" else "Dictation"
+            self.status.set(f"{name} shortcut: {saved.label()}.")
+
+    def turn_off_shortcut(self) -> None:
+        """Switch the clipboard history shortcut off (dictation always has one)."""
+        hotkeys.Preferences(self.service.paths).save(history_shortcut=False)
+        self.shortcut_done()
+        if self.page != "closed":
+            self.status.set("The clipboard history shortcut is off.")
 
     def shortcut_done(self) -> None:
         back = getattr(self, "shortcut_back", None)
@@ -1891,17 +2058,23 @@ class App:
 
     def home(self) -> None:
         paths = self.service.paths
-        shortcut = hotkeys.Preferences(paths).shortcut().label()
+        chosen = hotkeys.Preferences(paths).shortcut()
+        shortcut = chosen.label()
         conflict = hotkeys.shortcut_conflict(paths)
+        working = hotkeys.shortcut_working(paths)
+        outcome = hotkeys.shortcut_outcome(paths, "dictation", chosen)
         title, subtitle = app_settings.home_text(
             shortcut,
             conflict,
-            hotkeys.shortcut_working(paths),
+            working,
             desktop.platform_name(),
             hotkeys.shortcut_message(paths),
+            outcome,
         )
         self.reset("home", title, subtitle)
         self.home_fixes(shortcut, conflict, title)
+        if working and outcome != "heard" and self.features().dictation:
+            self.home_test()
         self.home_record_controls()
         self.home_status_line()
         self.home_transcript_actions()
@@ -1935,6 +2108,17 @@ class App:
                 parent=fixes,
                 side="left",
             )
+
+    def home_test(self) -> None:
+        """ "Test your shortcut", for one that has not been heard yet."""
+        panel = shortcut_panel.TestPanel(
+            self.root, self.service.paths, self.frame, "dictation", self.wraplength
+        )
+        self.shortcut_panels.append(panel)
+        fixes = ttk.Frame(self.frame)
+        fixes.pack(fill="x", pady=(0, 6))
+        self.button("Test your shortcut", panel.start, parent=fixes, side="left")
+        panel.frame.pack(anchor="w", pady=(0, 12))
 
     def home_record_controls(self) -> None:
         """The optional Record and Cancel buttons."""
@@ -2224,6 +2408,8 @@ class App:
                 self.root.after_idle(self.clear_clipboard_history)
         elif request == "shortcut" and not d.busy(self.service.paths):
             self.shortcut_page()
+        elif request == "history-shortcut" and not d.busy(self.service.paths):
+            self.shortcut_page(kind="history")
         elif request == "settings" and self.service.completed() and not d.busy(self.service.paths):
             self.settings()
 
@@ -2350,8 +2536,9 @@ class App:
             self.closing = True  # Closes once the download has stopped.
 
     def end_capture(self) -> None:
-        """Stop recording keys for a new shortcut; the tray re-enables the shortcut."""
-        (self.service.paths.runtime / "shortcut-capture").unlink(missing_ok=True)
+        """Stop recording keys for a new shortcut; the tray re-enables the shortcuts."""
+        for name in hotkeys.CAPTURE_FLAGS.values():
+            (self.service.paths.runtime / name).unlink(missing_ok=True)
         self.root.unbind("<KeyPress>")
         self.root.unbind("<KeyRelease>")
 
@@ -2359,6 +2546,8 @@ class App:
         if self.root.winfo_viewable():
             self.save_size()
         self.page = "closed"
+        for panel in self.shortcut_panels:
+            panel.cancel()
         self.end_capture()
         self.root.after_cancel(self.timer)
         if self.toast_after is not None:
@@ -2383,12 +2572,20 @@ def main(argv: list[str] | None = None) -> int:
     page = next(
         (
             flag[2:]
-            for flag in ("--settings", "--shortcut", "--clipboard-clear", "--clipboard")
+            for flag in (
+                "--settings",
+                "--shortcut",
+                "--history-shortcut",
+                "--clipboard-clear",
+                "--clipboard",
+            )
             if flag in args
         ),
         "",
     )
     paths = d.Paths()
+    if hotkeys.VIA_SHORTCUT in args and page == "clipboard":
+        hotkeys.acknowledge(paths, "history")  # The desktop ran us because the keys were pressed.
     fd = desktop.lock(paths.runtime / "app.lock")
     if fd is None:
         # The running window shows itself, on the requested page if any.
