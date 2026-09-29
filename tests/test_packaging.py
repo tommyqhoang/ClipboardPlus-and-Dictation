@@ -35,8 +35,12 @@ class MacBundleSigningTests(unittest.TestCase):
         self.assertIn("codesign --force --sign -", script)
         self.assertIn('codesign --verify --deep --strict --verbose=2 "$APP"', script)
         # The per-file signing loop must re-sign dylibbundler-modified
-        # binaries, i.e. iterate Contents/MacOS, not just the top-level exe.
-        self.assertIn('find "$APP/Contents/MacOS"', script)
+        # binaries, i.e. iterate the whole bundle (executables in Contents/MacOS and the
+        # relocated _internal in Contents/Resources), not just the top-level exe.
+        self.assertIn('find "$APP/Contents" -type f', script)
+        # codesign rejects PyInstaller's _internal folder inside Contents/MacOS, so it
+        # lives in Resources with a symlink left behind.
+        self.assertIn('ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"', script)
         bundle_sign_pos = script.index('sign "$APP"')
         verify_pos = script.index("codesign --verify")
         self.assertLess(bundle_sign_pos, verify_pos, "verification must follow bundling signing")
