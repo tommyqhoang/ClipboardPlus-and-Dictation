@@ -899,6 +899,7 @@ class WindowTests(ServiceCase):
             SimpleNamespace(keysym=keysym, state=state, keycode=keycode)
         )
 
+    @patch.object(desktop, "platform_name", Mock(return_value="linux"))  # X11 key masks below.
     def test_the_history_recorder_writes_its_own_flag_and_saves_the_history_shortcut(self):
         self.both_features()
         self.window.shortcut_page(back=self.window.home, kind="history")
