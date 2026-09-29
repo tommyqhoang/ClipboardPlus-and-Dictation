@@ -74,7 +74,10 @@ prefix = desktop.install_prefix(library / "app.py")
 python = prefix / "share/whisper-dictation/venv/bin/python"
 hotkeys.set_login_item(False, [str(python), str(library / "tray.py")])
 hotkeys.gnome_remove(hotkeys.history_command(library, str(python)), path=hotkeys.GNOME_HISTORY_PATH)
-for entry_id in (desktop.DESKTOP_ENTRY_ID, *desktop.FORMER_DESKTOP_ENTRY_IDS):
+# The installed module may predate these names (an old install being removed).
+current_id = getattr(desktop, "DESKTOP_ENTRY_ID", "clipboardplus")
+former_ids = getattr(desktop, "FORMER_DESKTOP_ENTRY_IDS", ("whisper-dictation",))
+for entry_id in (current_id, *former_ids):
     (prefix / f"share/applications/{entry_id}.desktop").unlink(missing_ok=True)
 if desktop.platform_name() == "macos":
     # Mirrors setup-desktop.py's uninstall(): the .app bundle install() creates

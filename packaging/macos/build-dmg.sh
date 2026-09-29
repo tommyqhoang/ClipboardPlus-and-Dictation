@@ -13,6 +13,13 @@ sed "s/__APP_VERSION__/$VERSION/g" "$ROOT/packaging/macos/Info.plist" >"$APP/Con
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/LICENSE" "$ROOT/THIRD-PARTY-NOTICES.md" "$APP/Contents/Resources/"
 cp -R "$DIST"/* "$APP/Contents/MacOS/"
+# codesign treats every directory inside Contents/MacOS as nested code and rejects
+# PyInstaller's _internal (an embedded Python.framework, lib-dynload, ...) with
+# "bundle format unrecognized". Only executables belong in MacOS: keep the data in
+# Resources (sealed as resources, each Mach-O still signed below) and leave a
+# symlink so the executables find _internal next to themselves.
+mv "$APP/Contents/MacOS/_internal" "$APP/Contents/Resources/_internal"
+ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"
 
 # --- Ad-hoc code signing ----------------------------------------------------
 # Two reasons this step exists:
@@ -45,7 +52,7 @@ while IFS= read -r -d '' f; do
   if file -b "$f" | grep -q 'Mach-O'; then
     sign "$f"
   fi
-done < <(find "$APP/Contents/MacOS" -type f -print0)
+done < <(find "$APP/Contents" -type f -print0)
 sign "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
