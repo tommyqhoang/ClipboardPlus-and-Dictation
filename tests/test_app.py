@@ -537,11 +537,15 @@ class WindowTests(ServiceCase):
             opening_future = self.window.clipboard_open_future
             self.assertIsNotNone(opening_future)
             self.assertTrue(opening.wait(5))
+            release_timer = threading.Timer(0.05, release.set)
+            release_timer.start()
+            self.addCleanup(release_timer.cancel)
             self.window.destroy()
+            self.assertEqual(self.window.lookups, [])
 
-        release.set()
+        release_timer.join(timeout=5)
         opening_future.result(timeout=5)
-        self.assertTrue(closed.wait(5))
+        self.assertTrue(closed.is_set())
         self.assertEqual(len(stores), 1)
         with self.assertRaises(sqlite3.ProgrammingError):
             stores[0].count()
