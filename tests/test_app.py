@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import array
+import concurrent.futures
 import dataclasses
 import gc
 import io
 import os
-import sqlite3
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
@@ -434,6 +433,95 @@ class ClipboardPlusServiceTests(ServiceCase):
         self.assertEqual(store.meta_get("clear_pending"), "")
 
 
+class ClipboardOpenTests(ServiceCase):
+    def setUp(self):
+        super().setUp()
+        import app
+
+        self.gui = app
+
+    def bare_app(self):
+        return self.gui.App.__new__(self.gui.App)
+
+    def test_open_failure_is_reported_with_a_retry_action(self):
+        window = self.bare_app()
+        window.page = "clipboard"
+        window.clipboard_store = None
+        window.clipboard_opening = False
+        window.clipboard_open_future = None
+        window.clipboard_page = None
+        window.service = SimpleNamespace(paths=SimpleNamespace(clipboard=self.paths.clipboard))
+        window.reset = Mock()
+        window._show_clipboard_opening = Mock()
+        window.card = Mock()
+        window.button = Mock()
+        window.actions = Mock()
+        window.background = Mock(
+            side_effect=lambda work, done: (done(work()), "completed future")[1]
+        )
+
+        with (
+            patch.object(clipstore, "Store", side_effect=OSError("disk full")),
+            patch.object(self.gui.telemetry, "capture") as capture,
+        ):
+            window.clipboard()
+
+        capture.assert_called_once()
+        self.assertFalse(window.clipboard_opening)
+        self.assertIsNone(window.clipboard_page)
+        window.button.assert_called_once()
+        self.assertEqual(window.button.call_args.args[0], "Try again")
+
+    def test_opened_store_is_closed_if_the_user_left_the_page(self):
+        window = self.bare_app()
+        window.page = "settings"
+        window.clipboard_opening = True
+        window.clipboard_open_future = Mock()
+        store = Mock()
+
+        window._clipboard_store_opened((store, None))
+
+        store.close.assert_called_once_with()
+        self.assertFalse(window.clipboard_opening)
+        self.assertIsNone(window.clipboard_open_future)
+
+    def test_opened_store_renders_the_page_and_honors_a_queued_clear(self):
+        window = self.bare_app()
+        window.page = "clipboard"
+        window.clipboard_opening = True
+        window.clipboard_open_future = Mock()
+        window.clipboard_clear_after_open = True
+        window.root = SimpleNamespace(after_idle=Mock())
+        store, page = Mock(), Mock()
+        with patch.object(self.gui.clipui, "ClipboardPage", return_value=page):
+            window._clipboard_store_opened((store, None))
+
+        self.assertIs(window.clipboard_store, store)
+        self.assertIs(window.clipboard_page, page)
+        self.assertFalse(window.clipboard_opening)
+        self.assertFalse(window.clipboard_clear_after_open)
+        page.render.assert_called_once_with()
+        window.root.after_idle.assert_called_once_with(window.clear_clipboard_history)
+
+    def test_pending_store_is_closed_and_a_slow_open_gets_a_cleanup_callback(self):
+        window = self.bare_app()
+        store = Mock()
+        ready = concurrent.futures.Future()
+        ready.set_result((store, None))
+        window.clipboard_open_future = ready
+
+        window._close_pending_clipboard_open()
+
+        store.close.assert_called_once_with()
+        self.assertIsNone(window.clipboard_open_future)
+
+        slow = Mock()
+        slow.result.side_effect = concurrent.futures.TimeoutError
+        window.clipboard_open_future = slow
+        window._close_pending_clipboard_open()
+        slow.add_done_callback.assert_called_once()
+
+
 class WindowTests(ServiceCase):
     @classmethod
     def setUpClass(cls):
@@ -506,86 +594,6 @@ class WindowTests(ServiceCase):
                 )
             self.assertEqual(places[0], places[1])
             self.assertEqual(places[1], places[2])
-
-    def test_closes_store_if_background_open_finishes_after_window_destroy(self):
-        opening = threading.Event()
-        release = threading.Event()
-        closed = threading.Event()
-        stores = []
-        create_store = clipstore.Store
-
-        def delayed_store(directory):
-            opening.set()
-            if not release.wait(5):
-                raise TimeoutError("store open was not released")
-            store = create_store(directory)
-            close = store.close
-
-            def record_close():
-                try:
-                    close()
-                finally:
-                    closed.set()
-
-            store.close = record_close
-            stores.append(store)
-            return store
-
-        self.addCleanup(release.set)
-        with patch.object(clipstore, "Store", side_effect=delayed_store):
-            self.window.clipboard()
-            opening_future = self.window.clipboard_open_future
-            self.assertIsNotNone(opening_future)
-            self.assertTrue(opening.wait(5))
-            release_timer = threading.Timer(0.05, release.set)
-            release_timer.start()
-            self.addCleanup(release_timer.cancel)
-            self.window.destroy()
-            self.assertEqual(self.window.lookups, [])
-
-        release_timer.join(timeout=5)
-        opening_future.result(timeout=5)
-        self.assertTrue(closed.is_set())
-        self.assertEqual(len(stores), 1)
-        with self.assertRaises(sqlite3.ProgrammingError):
-            stores[0].count()
-
-    def test_clipboard_open_error_offers_retry(self):
-        with patch.object(clipstore, "Store", side_effect=OSError("disk full")):
-            self.window.clipboard()
-            opening_future = self.window.clipboard_open_future
-            self.assertIsNotNone(opening_future)
-            opening_future.result(timeout=5)
-            self.window.poll()
-
-        self.assertFalse(self.window.clipboard_opening)
-        self.assertIsNone(self.window.clipboard_page)
-        self.assertTrue(any(button.cget("text") == "Try again" for button in self.window.buttons))
-
-    def test_opened_store_after_navigation_is_closed(self):
-        store = Mock()
-        self.window.page = "settings"
-
-        self.window._clipboard_store_opened((store, None))
-
-        store.close.assert_called_once_with()
-        self.assertIsNone(self.window.clipboard_store)
-
-    def test_opened_store_renders_and_runs_a_queued_clear(self):
-        store, page = Mock(), Mock()
-        self.window.page = "clipboard"
-        self.window.clipboard_clear_after_open = True
-        with (
-            patch.object(self.gui.clipui, "ClipboardPage", return_value=page),
-            patch.object(self.root, "after_idle") as after_idle,
-        ):
-            self.window._clipboard_store_opened((store, None))
-
-        self.assertIs(self.window.clipboard_store, store)
-        self.assertIs(self.window.clipboard_page, page)
-        page.render.assert_called_once_with()
-        after_idle.assert_called_once_with(self.window.clear_clipboard_history)
-        self.assertFalse(self.window.clipboard_clear_after_open)
 
     def test_help_goes_back_to_the_tab_instead_of_closing(self):
         with patch.object(self.service, "completed", return_value=True):

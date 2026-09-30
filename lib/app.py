@@ -2665,6 +2665,30 @@ class App:
         self.root.unbind("<KeyPress>")
         self.root.unbind("<KeyRelease>")
 
+    def _close_pending_clipboard_open(self) -> None:
+        opening = self.clipboard_open_future
+        self.clipboard_open_future = None
+        if opening is None:
+            return
+
+        def close_opened_store(future: concurrent.futures.Future[Any]) -> None:
+            try:
+                store, _ = future.result()
+            except Exception:
+                return
+            if store is not None:
+                store.close()
+
+        try:
+            store, _ = opening.result(timeout=2)
+        except concurrent.futures.TimeoutError:
+            opening.add_done_callback(close_opened_store)
+        except Exception:
+            pass
+        else:
+            if store is not None:
+                store.close()
+
     def destroy(self) -> None:
         if self.root.winfo_viewable():
             self.save_size()
@@ -2682,27 +2706,7 @@ class App:
         self.executor.shutdown(wait=True)
         self.helper.shutdown(wait=False, cancel_futures=True)  # Lookups only; nothing to save.
         self.lookups.clear()  # Don't retain bound UI callbacks past the window's lifetime.
-        if self.clipboard_open_future is not None:
-            opening = self.clipboard_open_future
-            self.clipboard_open_future = None
-
-            def close_opened_store(future: concurrent.futures.Future[Any]) -> None:
-                try:
-                    store, _ = future.result()
-                except Exception:
-                    return
-                if store is not None:
-                    store.close()
-
-            try:
-                store, _ = opening.result(timeout=2)
-            except concurrent.futures.TimeoutError:
-                opening.add_done_callback(close_opened_store)
-            except Exception:
-                pass
-            else:
-                if store is not None:
-                    store.close()
+        self._close_pending_clipboard_open()
         if self.clipboard_store is not None:
             active_queries = [future for future in self.clipboard_queries if not future.done()]
             if active_queries:
