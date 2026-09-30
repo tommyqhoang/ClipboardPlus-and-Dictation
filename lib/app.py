@@ -639,10 +639,11 @@ class App:
             if self.clipboard_opening:
                 return
             self.clipboard_opening = True
+            clipboard_path = self.service.paths.clipboard
 
             def open_store() -> tuple[clipstore.Store | None, Exception | None]:
                 try:
-                    return clipstore.Store(self.service.paths.clipboard), None
+                    return clipstore.Store(clipboard_path), None
                 except Exception as exc:  # SQLite, filesystem, and schema errors are shown below.
                     return None, exc
 
