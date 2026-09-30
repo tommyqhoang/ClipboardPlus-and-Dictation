@@ -5,9 +5,11 @@ import dataclasses
 import gc
 import io
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -504,6 +506,45 @@ class WindowTests(ServiceCase):
                 )
             self.assertEqual(places[0], places[1])
             self.assertEqual(places[1], places[2])
+
+    def test_closes_store_if_background_open_finishes_after_window_destroy(self):
+        opening = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+        stores = []
+        create_store = clipstore.Store
+
+        def delayed_store(directory):
+            opening.set()
+            if not release.wait(5):
+                raise TimeoutError("store open was not released")
+            store = create_store(directory)
+            close = store.close
+
+            def record_close():
+                try:
+                    close()
+                finally:
+                    closed.set()
+
+            store.close = record_close
+            stores.append(store)
+            return store
+
+        self.addCleanup(release.set)
+        with patch.object(clipstore, "Store", side_effect=delayed_store):
+            self.window.clipboard()
+            opening_future = self.window.clipboard_open_future
+            self.assertIsNotNone(opening_future)
+            self.assertTrue(opening.wait(5))
+            self.window.destroy()
+
+        release.set()
+        opening_future.result(timeout=5)
+        self.assertTrue(closed.wait(5))
+        self.assertEqual(len(stores), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            stores[0].count()
 
     def test_help_goes_back_to_the_tab_instead_of_closing(self):
         with patch.object(self.service, "completed", return_value=True):

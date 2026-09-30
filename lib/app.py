@@ -95,6 +95,7 @@ class App:
         # Quiet lookups (microphones) that must not lock the page like `submit` does.
         self.helper = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.lookups: list[tuple[concurrent.futures.Future[Any], Callable[[Any], None]]] = []
+        self.clipboard_open_future: concurrent.futures.Future[Any] | None = None
         self.clipboard_queries: set[concurrent.futures.Future[Any]] = set()
         self.pending: concurrent.futures.Future[Any] | None = None
         self.done: Callable[[Any], None] = lambda value: None
@@ -645,7 +646,7 @@ class App:
                 except Exception as exc:  # SQLite, filesystem, and schema errors are shown below.
                     return None, exc
 
-            self.background(open_store, self._clipboard_store_opened)
+            self.clipboard_open_future = self.background(open_store, self._clipboard_store_opened)
             return
         self.clipboard_page = clipui.ClipboardPage(self, self.clipboard_store)
         self.clipboard_page.render()
@@ -659,6 +660,7 @@ class App:
     def _clipboard_store_opened(
         self, result: tuple[clipstore.Store | None, Exception | None]
     ) -> None:
+        self.clipboard_open_future = None
         store, problem = result
         self.clipboard_opening = False
         if self.page != "clipboard":
@@ -2679,6 +2681,19 @@ class App:
         self.done = lambda _: None
         self.executor.shutdown(wait=True)
         self.helper.shutdown(wait=False, cancel_futures=True)  # Lookups only; nothing to save.
+        if self.clipboard_open_future is not None:
+            opening = self.clipboard_open_future
+            self.clipboard_open_future = None
+
+            def close_opened_store(future: concurrent.futures.Future[Any]) -> None:
+                try:
+                    store, _ = future.result()
+                except Exception:
+                    return
+                if store is not None:
+                    store.close()
+
+            opening.add_done_callback(close_opened_store)
         if self.clipboard_store is not None:
             active_queries = [future for future in self.clipboard_queries if not future.done()]
             if active_queries:
