@@ -584,13 +584,21 @@ class Controller(NSObject):  # type: ignore[misc]
     @objc.python_method
     def run_engine(self, *flags: str) -> None:
         # The engine owns locking, recording, notifications and the clipboard.
-        subprocess.Popen(
-            desktop.relaunch("dictation", *flags),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        try:
+            subprocess.Popen(
+                desktop.relaunch("dictation", *flags),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            log.exception("could not start the dictation engine")
+            telemetry.capture(exc, stage="engine_launch")
+            self.warn(
+                "Couldn’t start Clipboard+",
+                "Open Clipboard+ from Applications and try again.",
+            )
 
     def toggle_(self, _sender: Any) -> None:
         self.popover.close()

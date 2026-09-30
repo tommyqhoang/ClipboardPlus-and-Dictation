@@ -10,6 +10,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import dictation as d
 from desktop import lock
@@ -53,6 +54,56 @@ def check(config: d.Config) -> None:
         raise d.DictationError(
             "rewrite_api_key_env must be an environment variable NAME, not an API key."
         )
+
+
+def key_path(paths: d.Paths) -> Path:
+    """A private file for the optional rewrite-service key, separate from preferences."""
+    return paths.config.parent / "rewrite-api-key"
+
+
+def has_saved_key(paths: d.Paths) -> bool:
+    return key_path(paths).is_file()
+
+
+def save_settings(
+    config: d.Config,
+    paths: d.Paths,
+    endpoint: str,
+    model: str,
+    allow_remote: bool,
+    api_key: str,
+    clear_key: bool = False,
+) -> None:
+    """Validate and save concise-draft settings without replacing other preferences."""
+    endpoint = endpoint.strip()
+    model = model.strip()
+    values: dict[str, str | bool] = {
+        "rewrite_endpoint": endpoint,
+        "rewrite_model": model,
+        "rewrite_allow_remote": allow_remote,
+        "rewrite_api_key_env": config.s("rewrite_api_key_env"),
+    }
+    candidate = d.Config(paths)
+    candidate.values.update(values)
+    try:
+        hostname = urllib.parse.urlsplit(endpoint).hostname
+    except ValueError:
+        hostname = None
+    if hostname and hostname not in ("localhost", "127.0.0.1", "::1") and not allow_remote:
+        raise d.DictationError(
+            "To use a remote service, allow sending transcripts to it. Your transcript will leave this computer."
+        )
+    check(candidate)
+
+    saved = d.read_json(paths.config)
+    saved.update(values)
+    d.private_dir(paths.config.parent)
+    secret = api_key.strip()
+    if secret:
+        d.atomic(key_path(paths), secret)
+    d.atomic(paths.config, json.dumps(saved, indent=2))
+    if not secret and clear_key:
+        key_path(paths).unlink(missing_ok=True)
 
 
 def configure(config: d.Config, paths: d.Paths) -> None:
@@ -121,6 +172,8 @@ def request(config: d.Config, original: str) -> str:
     ).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     key = os.environ.get(config.s("rewrite_api_key_env"), "")
+    if not key and key_path(config.paths).is_file():
+        key = key_path(config.paths).read_text(encoding="utf-8").strip()
     if key:
         headers["Authorization"] = "Bearer " + key
     req = urllib.request.Request(config.s("rewrite_endpoint"), data=body, headers=headers)

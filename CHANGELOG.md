@@ -5,6 +5,22 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-29
+
+### Added
+- Optional concise drafts for a transcript using a separate text model. The original stays
+  available for review, and the draft is copied only when you choose. The service can run
+  locally or use an endpoint you configure; sending text to a remote service requires
+  explicit permission in Settings. Platforms: all.
+
+### Changed
+- Clipboard history opens and searches in the background, keeping the window responsive
+  while saved items load. Repeated searches reuse results until the database changes.
+  Platforms: all.
+- Clipboard opening, search, and storage errors now offer a clear recovery path. Tray and
+  menu bar launches report failures instead of silently leaving the app unavailable.
+  Platforms: all.
+
 ## [1.4.3] - 2026-09-29
 
 ### Changed

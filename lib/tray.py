@@ -321,13 +321,18 @@ class Tray:
             self.run_engine()
 
     def run_engine(self, *flags: str) -> None:
-        subprocess.Popen(
-            desktop.relaunch("dictation", *flags),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **desktop.process_options(detached=True),
-        )
+        try:
+            subprocess.Popen(
+                desktop.relaunch("dictation", *flags),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **desktop.process_options(detached=True),
+            )
+        except OSError as exc:
+            log.exception("could not start the dictation engine")
+            telemetry.capture(exc, stage="engine_launch")
+            self.notify("Clipboard+ couldn’t start. Open Settings and try again.")
 
     def open_window(self, page: str) -> None:
         open_app_window(page)

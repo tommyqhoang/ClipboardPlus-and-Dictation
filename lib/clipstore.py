@@ -224,6 +224,8 @@ class Store:
         self._images = _private_dir(self.directory / "images")
         self._thumbs = _private_dir(self.directory / "thumbs")
         self._lock = threading.RLock()
+        self._stamp_cache: tuple[int, float] | None = None
+        self._stamp_version = -1
         database = self.directory / "clips.db"
         _create_private_file(database)
         with _owner_only_umask():
@@ -285,6 +287,9 @@ class Store:
                 self._db.execute("ROLLBACK")
                 raise
             self._db.execute("COMMIT")
+            # PRAGMA data_version changes for commits by other connections, not this one.
+            # Invalidate explicitly so local UI edits refresh the cached history stamp too.
+            self._stamp_cache = None
 
     # -- reading -----------------------------------------------------------
     @staticmethod
@@ -322,12 +327,17 @@ class Store:
             return int(self._db.execute("SELECT COUNT(*) FROM items").fetchone()[0])
 
     def stamp(self) -> tuple[int, float]:
-        """A cheap change signal for the visible history: row count plus newest update."""
+        """Return the history size and newest update, querying only after a database change."""
         with self._lock:
+            version = int(self._db.execute("PRAGMA data_version").fetchone()[0])
+            if self._stamp_cache is not None and version == self._stamp_version:
+                return self._stamp_cache
             row = self._db.execute(
                 "SELECT COUNT(*), COALESCE(MAX(updated_at), 0) FROM items"
             ).fetchone()
-        return int(row[0]), float(row[1])
+            self._stamp_cache = int(row[0]), float(row[1])
+            self._stamp_version = version
+            return self._stamp_cache
 
     def list(
         self,

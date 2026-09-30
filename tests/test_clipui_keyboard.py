@@ -67,9 +67,11 @@ class KeyboardTests(PageCase):
         self.entry.insert(0, "item 3")
         self.root.update()
         self.page.run_pending_search()
+        self.wait_for_search()
         self.root.update()
         self.assertEqual(len(self.page.rows), 1)
         self.press("<Escape>")
+        self.wait_for_search()
         self.assertEqual(self.page.query.get(), "")
         self.assertEqual(len(self.page.rows), 5)
 
@@ -98,6 +100,7 @@ class KeyboardTests(PageCase):
 
     def test_the_keys_do_nothing_on_an_empty_list(self):
         self.page.set_query("no such thing")
+        self.wait_for_search()
         self.root.update()
         for sequence in ("<Down>", "<Return>", "<Control-s>", "<F2>", "<Control-Delete>"):
             self.press(sequence)  # Must not raise.

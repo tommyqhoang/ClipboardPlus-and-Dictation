@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,8 +117,34 @@ class PageCase(ServiceCase):
         with patch.object(self.service, "completed", return_value=True):
             self.window = app.App(self.root, self.service, "clipboard")
         self.addCleanup(self.close_window)
+        self.wait_for_page()
         self.page = self.window.clipboard_page
         self.window.quick = False  # Browsing, not picking: copying keeps the window open.
+
+    def wait_for_page(self):
+        deadline = time.monotonic() + 5
+        while self.window.clipboard_page is None and time.monotonic() < deadline:
+            self.root.update()
+            self.window.poll()
+            time.sleep(0.01)
+        self.assertIsNotNone(self.window.clipboard_page, "clipboard page did not finish opening")
+        while (
+            self.window.clipboard_page._initial_load is not None
+            or self.window.clipboard_page._searching
+        ) and time.monotonic() < deadline:
+            self.root.update()
+            self.window.poll()
+            time.sleep(0.01)
+        self.assertIsNone(self.window.clipboard_page._initial_load)
+        self.assertFalse(self.window.clipboard_page._searching)
+
+    def wait_for_search(self):
+        deadline = time.monotonic() + 5
+        while self.page._searching and time.monotonic() < deadline:
+            self.root.update()
+            self.window.poll()
+            time.sleep(0.01)
+        self.assertFalse(self.page._searching, "clipboard search did not finish")
 
     def close_window(self):
         if self.window.page != "closed":
@@ -181,15 +208,21 @@ class PageTests(PageCase):
         self.store.add_image(make_png(), now=3.0)
         self.store.set_favorite(keep.id, True)
         self.page.set_query("INVOICE")
+        self.wait_for_search()
         self.assertEqual([r.item.text for r in self.page.rows], ["invoice 4711"])
         self.page.set_query("")
+        self.wait_for_search()
         self.page.set_filter("favorites")
+        self.wait_for_search()
         self.assertEqual(len(self.page.rows), 1)
         self.page.set_filter("images")
+        self.wait_for_search()
         self.assertEqual([r.item.kind for r in self.page.rows], ["image"])
         self.page.set_filter("text")
+        self.wait_for_search()
         self.assertEqual(len(self.page.rows), 2)
         self.page.set_query("nothing matches this")
+        self.wait_for_search()
         self.assertTrue(any("Nothing matches" in t for t in self.texts()))
 
     def test_typing_in_the_search_box_waits_before_searching(self):
@@ -200,6 +233,7 @@ class PageTests(PageCase):
         self.assertEqual(len(self.page.rows), 2)  # Not yet: the pause has not elapsed.
         self.assertIsNotNone(self.page.pending_search)
         self.page.run_pending_search()
+        self.wait_for_search()
         self.assertEqual([r.item.text for r in self.page.rows], ["alpha"])
 
     def test_favorite_toggles_in_the_store_and_the_row(self):
@@ -306,6 +340,7 @@ class PageTests(PageCase):
         self.assertEqual([row.frame for row in self.page.rows], before)
         self.store.add_text("new", now=2.0)
         self.page.refresh()
+        self.wait_for_search()
         self.assertEqual(len(self.page.rows), 2)
 
     def test_starring_and_deleting_change_only_their_own_row(self):
@@ -328,6 +363,7 @@ class PageTests(PageCase):
         before = {row.item.id: row.frame for row in self.page.rows}
         self.store.add_text("older", now=3.0)  # Clicking a row copies it back: it moves up.
         self.page.refresh()
+        self.wait_for_search()
         self.assertEqual([row.item.text for row in self.page.rows], ["older", "newer"])
         self.assertEqual({row.item.id: row.frame for row in self.page.rows}, before)
         packed = [w for w in self.page.card.pack_slaves() if w in before.values()]
@@ -352,6 +388,7 @@ class PageTests(PageCase):
             self.page.edit_label(item.id)  # Cancelled: nothing changes.
         self.assertEqual(self.store.get(item.id).label, "Wifi password")
         self.page.set_query("wifi")
+        self.wait_for_search()
         self.assertEqual([r.item.id for r in self.page.rows], [item.id])
         with patch.object(self.page, "ask_label", return_value=""):
             self.page.edit_label(item.id)
@@ -435,6 +472,7 @@ class PageTests(PageCase):
         broken = {"state": "error", "message": "wl-paste is missing."}
         with patch.object(clipui.clipservice, "read_status", return_value=broken):
             self.page.refresh()
+            self.wait_for_search()
         self.assertTrue(any("isn’t working: wl-paste is missing." in t for t in self.texts()))
 
     def test_deleting_a_favorite_asks_first(self):
@@ -452,8 +490,10 @@ class PageTests(PageCase):
     def test_an_empty_search_offers_a_way_back(self):
         self.store.add_text("alpha", now=1.0)
         self.page.set_query("zzz")
+        self.wait_for_search()
         self.assertIn("Nothing matches “zzz”.", self.texts())
         self.buttons("Show everything")[0].invoke()
+        self.wait_for_search()
         self.assertEqual(len(self.page.rows), 1)
         self.assertEqual(self.page.query.get(), "")
 
@@ -466,6 +506,7 @@ class PageTests(PageCase):
         item = self.store.add_text("fav", now=1.0)
         self.store.set_favorite(item.id, True)
         self.page.set_filter("favorites")
+        self.wait_for_search()
         self.page.toggle_favorite(item.id)
         self.assertEqual(self.page.rows, [])
         self.assertTrue(any("Nothing matches" in t for t in self.texts()))
@@ -493,8 +534,10 @@ class PageTests(PageCase):
         with patch.object(self.page, "copy") as copy:
             self.page.query.set("old")
             self.page.copy_selected()  # Runs the waiting search first.
+            self.wait_for_search()
             self.assertEqual(copy.call_args.args[0], self.page.rows[0].item.id)
             self.page.set_query("")
+            self.wait_for_search()
             label = self.row_text(self.page.rows[0])
             # New rows are mapped when Tk is idle; Windows delivers the click only then.
             self.root.update()
@@ -558,6 +601,7 @@ class WindowTests(PageCase):
             self.window.settings()
             with patch.object(self.gui.clipui.ClipboardPage, "clear") as clear:
                 self.window.open_page("clipboard-clear")
+                self.wait_for_page()
                 self.root.update()
         self.assertEqual(self.window.page, "clipboard")
         clear.assert_called_once()

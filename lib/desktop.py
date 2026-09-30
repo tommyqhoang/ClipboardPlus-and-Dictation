@@ -20,7 +20,7 @@ else:
 
 
 # Shown in crash reports and statistics; raise it with every release.
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.5.0"
 
 
 def platform_name() -> str:

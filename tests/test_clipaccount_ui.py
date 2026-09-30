@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -517,6 +518,12 @@ class ClipboardPageClearTests(AccountCase):
         self.addCleanup(self.store.close)
         with patch.object(self.service, "completed", return_value=True):
             self.window.clipboard()
+        deadline = time.monotonic() + 5
+        while self.window.clipboard_page is None and time.monotonic() < deadline:
+            self.root.update()
+            self.window.poll()
+            time.sleep(0.01)
+        self.assertIsNotNone(self.window.clipboard_page, "clipboard page did not finish opening")
         self.page = self.window.clipboard_page
 
     def test_the_choice_decides_what_is_cleared_and_where(self):

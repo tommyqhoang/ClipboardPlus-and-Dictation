@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import shlex
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -29,6 +28,7 @@ import desktop
 import dictation as d
 import hotkeys
 import permissions
+import rewriteui
 import shortcut_panel
 import telemetry
 import updates
@@ -95,6 +95,7 @@ class App:
         # Quiet lookups (microphones) that must not lock the page like `submit` does.
         self.helper = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.lookups: list[tuple[concurrent.futures.Future[Any], Callable[[Any], None]]] = []
+        self.clipboard_queries: set[concurrent.futures.Future[Any]] = set()
         self.pending: concurrent.futures.Future[Any] | None = None
         self.done: Callable[[Any], None] = lambda value: None
         self.page = ""
@@ -234,6 +235,7 @@ class App:
         self.setup_mode = ""
         self.setup_steps: list[str] = []  # The first-run screens this setup shows.
         self.clipboard_page: clipui.ClipboardPage | None = None
+        self.clipboard_opening = False
         # Opened by the history shortcut or menu: Esc (with no search typed) closes it.
         self.quick = page in ("clipboard", "clipboard-clear")
         self.clipboard_store: clipstore.Store | None = None
@@ -520,6 +522,8 @@ class App:
                     widget.configure(wraplength=max(120, current + change))  # type: ignore[call-arg]
 
     def reset(self, page: str, title: str, subtitle: str, step: str = "") -> None:
+        if self.page == "clipboard" and self.clipboard_page is not None:
+            self.clipboard_page.cancel_search()
         if self.page == "shortcut" and page != "shortcut":
             self.end_capture()
         if self.shortcut_poll is not None:
@@ -630,22 +634,57 @@ class App:
     def clipboard(self) -> None:
         self.reset("clipboard", "", "")
         if self.clipboard_store is None:
-            try:
-                self.clipboard_store = clipstore.Store(self.service.paths.clipboard)
-            except (clipstore.StoreError, sqlite3.DatabaseError) as exc:
-                telemetry.capture(exc, level="warning", page="clipboard")
-                self.clipboard_page = None
-                self.card(
-                    "Your clipboard history can’t be opened right now",
-                    str(exc)
-                    if isinstance(exc, clipstore.StoreError)
-                    else "The history file is busy or damaged. The clipboard service repairs "
-                    "a damaged file by itself; try again in a moment.",
-                )
-                self.button("Try again", self.clipboard, True, self.actions(), "right")
+            self._show_clipboard_opening()
+            if self.clipboard_opening:
                 return
+            self.clipboard_opening = True
+
+            def open_store() -> tuple[clipstore.Store | None, Exception | None]:
+                try:
+                    return clipstore.Store(self.service.paths.clipboard), None
+                except Exception as exc:  # SQLite, filesystem, and schema errors are shown below.
+                    return None, exc
+
+            self.background(open_store, self._clipboard_store_opened)
+            return
         self.clipboard_page = clipui.ClipboardPage(self, self.clipboard_store)
         self.clipboard_page.render()
+
+    def _show_clipboard_opening(self) -> None:
+        body = self.card("Opening clipboard history", "Your saved items stay on this computer.")
+        progress = ttk.Progressbar(body, mode="indeterminate", length=100)
+        progress.pack(anchor="w", pady=(10, 0))
+        progress.start(20)
+
+    def _clipboard_store_opened(
+        self, result: tuple[clipstore.Store | None, Exception | None]
+    ) -> None:
+        store, problem = result
+        self.clipboard_opening = False
+        if self.page != "clipboard":
+            if store is not None:
+                store.close()
+            return
+        if problem is not None or store is None:
+            if problem is not None:
+                telemetry.capture(problem, level="warning", page="clipboard")
+            self.clipboard_page = None
+            self.reset("clipboard", "", "")
+            self.card(
+                "Your clipboard history can’t be opened right now",
+                str(problem)
+                if isinstance(problem, clipstore.StoreError)
+                else "The history file is busy or damaged. The clipboard service repairs "
+                "a damaged file by itself; try again in a moment.",
+            )
+            self.button("Try again", self.clipboard, True, self.actions(), "right")
+            return
+        self.clipboard_store = store
+        self.clipboard_page = clipui.ClipboardPage(self, store)
+        self.clipboard_page.render()
+        if getattr(self, "clipboard_clear_after_open", False):
+            self.clipboard_clear_after_open = False
+            self.root.after_idle(self.clear_clipboard_history)
 
     def clipboard_optin(self, after: Callable[[bool], None]) -> None:
         """Ask before anything is captured: the choice is explicit and reversible."""
@@ -1159,11 +1198,21 @@ class App:
         images = tk.BooleanVar(value=saved.images)
 
         def save(*_: object) -> None:
-            if not self.save_clipboard_options(int(items.get()), int(days.get()), images.get()):
-                current = hotkeys.Preferences(self.service.paths).clipboard()
-                items.set(str(current.keep_items))
-                days.set(str(current.keep_days))
-                images.set(current.images)
+            try:
+                if not self.save_clipboard_options(int(items.get()), int(days.get()), images.get()):
+                    current = hotkeys.Preferences(self.service.paths).clipboard()
+                    items.set(str(current.keep_items))
+                    days.set(str(current.keep_days))
+                    images.set(current.images)
+                    return
+            except (d.DictationError, OSError, ValueError) as exc:
+                telemetry.capture(exc, level="warning", page="settings")
+                message = (
+                    "Clipboard settings couldn’t be saved. Check storage space and permissions, "
+                    "then try again."
+                )
+                self.status.set(message)
+                self.show_toast("Settings weren’t saved.")
                 return
             self.saved()
 
@@ -1211,7 +1260,16 @@ class App:
         """`None` resumes capture; -1 pauses until resumed; a positive number pauses that long."""
         prefs = hotkeys.Preferences(self.service.paths)
         until = 0.0 if seconds is None else seconds if seconds == -1.0 else time.time() + seconds
-        prefs.save(clipboard=dataclasses.replace(prefs.clipboard(), paused_until=until))
+        try:
+            prefs.save(clipboard=dataclasses.replace(prefs.clipboard(), paused_until=until))
+        except (d.DictationError, OSError) as exc:
+            telemetry.capture(exc, level="warning", page="settings")
+            self.status.set(
+                "Clipboard capture couldn’t be changed. Check storage space and permissions, "
+                "then try again."
+            )
+            self.show_toast("Settings weren’t saved.")
+            return
         self.saved("Capture resumed." if seconds is None else "Clipboard capture paused.")
         self.settings()
 
@@ -1426,6 +1484,7 @@ class App:
         self.voice_card(config, setup)
         self.ai_card(config, setup, remote)
         if not setup:  # During setup the choice was just made; changing it here strands it.
+            self.rewrite_options_card(config)
             self.features_card()
             self.shortcuts_card()
             self.general_card()
@@ -1456,6 +1515,39 @@ class App:
         self.api_model.set(config.s("api_model"))
         self.api_key.set("")
         self.provider.set(app_settings.provider_name(config.s("endpoint"), remote, PROVIDERS))
+
+    def rewrite_options_card(self, config: d.Config) -> None:
+        """Expose optional concise-draft setup alongside the other dictation settings."""
+        configured = bool(config.s("rewrite_endpoint") and config.s("rewrite_model"))
+        card = self.card(
+            "Concise drafts",
+            "Make a shorter draft from a transcript, review it, then choose whether to copy it.",
+        )
+        detail = (
+            "Configured. Transcripts are sent only when you choose Make concise."
+            if configured
+            else "Optional. Set up a local text service or your own HTTPS service."
+        )
+        ttk.Label(card, text=detail, style="CardHint.TLabel", wraplength=self.wraplength - 60).pack(
+            anchor="w", pady=(2, 8)
+        )
+        self.button(
+            "Change settings" if configured else "Set up concise drafts",
+            self.open_rewrite_settings,
+            parent=card,
+        )
+
+    def open_rewrite_settings(self) -> None:
+        rewriteui.SettingsDialog(
+            self.root,
+            d.Config(self.service.paths),
+            self.service.paths,
+            self.concise_settings_saved,
+        )
+
+    def concise_settings_saved(self) -> None:
+        self.settings()
+        self.saved("Concise draft settings saved.")
 
     def voice_card(self, config: d.Config, setup: bool) -> None:
         """Language, microphone (with Test) and the dictation switches."""
@@ -1682,9 +1774,13 @@ class App:
         self.status.set(test.verdict())
         telemetry.event("mic_test", result=test.outcome())
 
-    def background(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
+    def background(
+        self, work: Callable[[], Any], done: Callable[[Any], None]
+    ) -> concurrent.futures.Future[Any]:
         """Run `work` off the UI thread; `poll` passes its result to `done`. Nothing locks."""
-        self.lookups.append((self.helper.submit(work), done))
+        future = self.helper.submit(work)
+        self.lookups.append((future, done))
+        return future
 
     def show_microphones(self, devices: list[str]) -> None:
         if self.page != "settings" or not self.device_picker.winfo_exists():
@@ -1812,6 +1908,17 @@ class App:
             self.shortcut_panels.append(panel)
             self.button("Test it", panel.start, parent=check)
             panel.frame.pack(anchor="w", pady=(4, 0))
+            if not self.service.completed():
+                sample = self.card(
+                    "Try a real dictation",
+                    "Record a short phrase and check that it turns into text.",
+                )
+                self.button(
+                    "Try a recording",
+                    lambda: self.finish_setup(try_recording=True),
+                    primary=True,
+                    parent=sample,
+                )
         tips = self.card("Try saying")
         ttk.Label(
             tips,
@@ -1857,7 +1964,7 @@ class App:
             return bool(consented())
         return hotkeys.Preferences(self.service.paths).share_usage()
 
-    def finish_setup(self) -> None:
+    def finish_setup(self, *, try_recording: bool = False) -> None:
         features = self.features()
         telemetry.event(
             "setup_complete",
@@ -1866,7 +1973,20 @@ class App:
             clipboard=features.clipboard,
             share_usage=self.sharing_usage(),
         )
-        self.submit(self.service.complete, lambda _: self.leave(), "Saving your setup…")
+        self.submit(
+            self.service.complete,
+            lambda _: self.start_first_recording() if try_recording else self.leave(),
+            "Saving your setup…",
+        )
+
+    def start_first_recording(self) -> None:
+        """Open the recorder so the user can verify a real transcription after setup."""
+        self.home()
+        self.status.set(
+            "Choose Record, say “Hello world. New paragraph. This is my first dictation,” then choose Stop."
+        )
+        self.record.focus_set()
+        self.bring_forward()
 
     def leave(self) -> None:
         if self.tray:
@@ -2253,16 +2373,12 @@ class App:
     def make_concise(self) -> None:
         config = d.Config(self.service.paths)
         if not config.s("rewrite_endpoint") or not config.s("rewrite_model"):
-            clipui.TextPreview(
+            rewriteui.SettingsDialog(
                 self.root,
-                "Set up Make concise",
-                "Make concise needs a text AI service. Run this command in a terminal:\n\n"
-                "dictate-toggle --setup-rewrite\n\n"
-                "Choose a local text model (such as one served by Ollama), or your own "
-                "HTTPS service. The setup asks before allowing transcripts to leave this computer. "
-                "Then return here and choose Make concise. Your original transcript is kept.",
-                lambda: self.copy_text("dictate-toggle --setup-rewrite"),
-                "Copy command",
+                config,
+                self.service.paths,
+                self.make_concise,
+                make_after_save=True,
             )
             return
 
@@ -2403,8 +2519,11 @@ class App:
         if self.pending is not None or self.page == request:
             return
         if request == "clipboard" and self.service.completed() and self.features().clipboard:
+            if clear_history:
+                self.clipboard_clear_after_open = True
             self.clipboard()
             if clear_history and self.clipboard_page is not None:
+                self.clipboard_clear_after_open = False
                 self.root.after_idle(self.clear_clipboard_history)
         elif request == "shortcut" and not d.busy(self.service.paths):
             self.shortcut_page()
@@ -2463,6 +2582,8 @@ class App:
             for lookup in [entry for entry in self.lookups if entry[0].done()]:
                 self.lookups.remove(lookup)
                 future, finished = lookup
+                if future.cancelled():
+                    continue
                 finished(future.result())  # A failure is reported below, like any other.
             if self.pending is not None and not self.pending.done():
                 self.show_download()
@@ -2559,10 +2680,30 @@ class App:
         self.executor.shutdown(wait=True)
         self.helper.shutdown(wait=False, cancel_futures=True)  # Lookups only; nothing to save.
         if self.clipboard_store is not None:
-            self.clipboard_store.close()
+            active_queries = [future for future in self.clipboard_queries if not future.done()]
+            if active_queries:
+                store = self.clipboard_store
+                lock = threading.Lock()
+                remaining = len(active_queries)
+
+                def close_store(_: concurrent.futures.Future[Any]) -> None:
+                    nonlocal remaining
+                    with lock:
+                        remaining -= 1
+                        if remaining == 0:
+                            store.close()
+
+                for future in active_queries:
+                    future.add_done_callback(close_store)
+            else:
+                self.clipboard_store.close()
         # Idle callbacks still queued would run against destroyed widgets.
         for pending in self.root.tk.splitlist(self.root.tk.call("after", "info")):
-            self.root.after_cancel(pending)
+            # Tk 9/Python 3.14 can return each `after info` entry as a tuple
+            # containing the script and its id. Call Tcl directly: tkinter's
+            # after_cancel assumes the script is a string and fails on Tk 9 tuples.
+            timer = pending[0] if isinstance(pending, (tuple, list)) else pending
+            self.root.tk.call("after", "cancel", timer)
         self.root.destroy()
 
 

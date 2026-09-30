@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import sqlite3
 import time
 import tkinter as tk
 from collections.abc import Callable
@@ -14,6 +15,7 @@ import browserauth
 import clipboardplus
 import clipservice
 import clipstore
+import desktop
 import dictation as d
 import hotkeys
 import telemetry
@@ -102,6 +104,13 @@ class ClipboardPage:
         self._thumbs: dict[str, tk.PhotoImage | None] = {}
         self._signature: tuple[Any, ...] | None = None
         self._chips: dict[str, ttk.Button] = {}
+        self._initial_load: str | None = None
+        self._loading_bar: ttk.Progressbar | None = None
+        self._search_generation = 0
+        self._search_future: Any | None = None
+        self._searching = False
+        self._search_indicator: ttk.Label | None = None
+        self._copy_after_search = False
         self.query.trace_add("write", lambda *_: self._query_changed())
 
     # -- layout ------------------------------------------------------------
@@ -120,14 +129,21 @@ class ClipboardPage:
         entry.bind("<Escape>", lambda _: self.escape())
         entry.bind("<Down>", lambda _: self.move(1))
         entry.bind("<Up>", lambda _: self.move(-1))
-        # The chosen row's star, label and delete have keys too, for anyone not using a mouse.
+        # These are local to the focused search field; they are never global shortcuts.
+        macos = desktop.platform_name() == "macos"
         entry.bind("<Control-s>", lambda _: self.star_selected())
+        if macos:
+            entry.bind("<Command-s>", lambda _: self.star_selected())
         entry.bind("<F2>", lambda _: self.label_selected())
         entry.bind("<Control-Delete>", lambda _: self.delete_selected())
         # A placeholder (ttk has none): shown while the box is empty.
         self.placeholder = ttk.Label(
             search,
-            text="Search your clipboard   ·   ↑ ↓ to choose, Enter to copy, Ctrl+S to star",
+            text=(
+                "Search your clipboard   ·   ↑ ↓ to choose, Enter to copy, "
+                + ("⌘+S" if macos else "Ctrl+S")
+                + " to star"
+            ),
             style="Placeholder.TLabel",
         )
         self.placeholder.bind("<Button-1>", lambda _: entry.focus_set())
@@ -168,7 +184,27 @@ class ClipboardPage:
         self._drawing: str | None = None
         self.footer = ttk.Frame(frame)
         self.footer.pack(fill="x", pady=(8, 0))
-        self.reload()
+        loading = ttk.Frame(self.list_frame)
+        loading.pack(anchor="w", pady=(20, 8))
+        ttk.Label(loading, text="Loading your clipboard…", style="Hint.TLabel").pack(side="left")
+        self._loading_bar = ttk.Progressbar(loading, mode="indeterminate", length=72)
+        self._loading_bar.pack(side="left", padx=(10, 0))
+        self._loading_bar.start(24)
+        # Let Tk paint the page before reading history and creating its first rows.
+        self._initial_load = self.app.root.after(60, self._load_initial)
+
+    def _load_initial(self) -> None:
+        self._initial_load = None
+        if self.app.page == "clipboard" and self.app.clipboard_page is self:
+            self._request_search()
+
+    def cancel_search(self) -> None:
+        """Invalidate a result when the user leaves or rebuilds this page."""
+        self._search_generation += 1
+        if self._search_future is not None and not self._search_future.done():
+            self._search_future.cancel()
+        self._search_future = None
+        self._searching = False
 
     def fit(self, width: int) -> None:
         """Below this width the item count would push the filters off the row."""
@@ -209,7 +245,79 @@ class ClipboardPage:
             self.pending_search = None
         self.limit = PAGE_SIZE
         self.selected = 0
-        self.reload()
+        self._request_search()
+
+    def _request_search(self) -> None:
+        """Run the potentially full-history query away from Tk's event loop."""
+        self._search_generation += 1
+        generation = self._search_generation
+        previous = self._search_future
+        if previous is not None and not previous.done():
+            previous.cancel()
+        if self._initial_load is not None:
+            self.app.root.after_cancel(self._initial_load)
+            self._initial_load = None
+        query = self.query.get()
+        kind = {"images": "image", "text": "text"}.get(self.filter, "")
+        favorites = self.filter == "favorites"
+        limit = self.limit
+        try:
+            signature = self._current_signature()
+            self._signature = signature
+        except (clipstore.StoreError, sqlite3.Error, OSError, d.DictationError) as exc:
+            telemetry.capture(exc, level="warning", page="clipboard")
+            self._searching = False
+            self._show_load_error()
+            return
+
+        self._searching = True
+        if self._search_indicator is not None and self._search_indicator.winfo_exists():
+            self._search_indicator.destroy()
+        self._search_indicator = ttk.Label(
+            self.banner,
+            text="Searching clipboard…",
+            style="Hint.TLabel",
+        )
+        self._search_indicator.pack(anchor="w", pady=(0, 8))
+
+        def work() -> tuple[clipstore.Items | None, Exception | None]:
+            try:
+                return (
+                    self.store.list(
+                        query=query,
+                        kind=kind,
+                        favorites=favorites,
+                        limit=limit,
+                    ),
+                    None,
+                )
+            except Exception as exc:  # noqa: BLE001 - background failures must end the busy state.
+                return None, exc
+
+        def done(result: tuple[clipstore.Items | None, Exception | None]) -> None:
+            if generation != self._search_generation:
+                return
+            self._search_future = None
+            self._searching = False
+            if self.app.page != "clipboard" or self.app.clipboard_page is not self:
+                return
+            items, problem = result
+            if problem is not None or items is None:
+                self._copy_after_search = False
+                if problem is not None:
+                    telemetry.capture(problem, level="warning", page="clipboard")
+                self._show_load_error()
+                return
+            self.reload(items, signature)
+            if self._copy_after_search:
+                self._copy_after_search = False
+                self.copy_selected()
+
+        future = self.app.background(work, done)
+        self._search_future = future
+        queries = self.app.clipboard_queries
+        queries.add(future)
+        future.add_done_callback(queries.discard)
 
     def set_query(self, text: str) -> None:
         self.query.set(text)
@@ -219,7 +327,7 @@ class ClipboardPage:
         self.filter = name
         self.limit = PAGE_SIZE
         self.selected = 0
-        self.reload()
+        self._request_search()
 
     def show_all(self) -> None:
         """Leave a search or filter that found nothing."""
@@ -231,6 +339,8 @@ class ClipboardPage:
         """Arrow keys: move the selection through the list, keeping it in view."""
         if self.pending_search is not None:
             self.run_pending_search()
+        if self._searching:
+            return "break"
         if self.rows:
             self.selected = max(0, min(len(self.rows) - 1, self.selected + step))
             self._paint_selection()
@@ -290,25 +400,61 @@ class ClipboardPage:
         return str(status.get("message") or "Copies aren’t being saved right now.")
 
     def _current_signature(self) -> tuple[Any, ...]:
-        newest = self.store.list(limit=1)
-        marker = (newest[0].id, newest[0].updated_at) if newest else (0, 0.0)
+        count, newest_update = self.store.stamp()
         # The minute makes "5 min ago" keep up; unchanged rows are only relabeled.
         minute = int(self._clock() // 60)
-        return (self.store.count(), marker, self._paused(), self._capture_problem(), minute)
+        return (count, newest_update, self._paused(), self._capture_problem(), minute)
 
     def refresh(self) -> None:
         """Redraw only when the history or the pause state changed."""
-        if self._current_signature() != self._signature:
-            self.reload()
+        if self._initial_load is not None:
+            return
+        try:
+            signature = self._current_signature()
+        except (clipstore.StoreError, sqlite3.Error, OSError, d.DictationError) as exc:
+            telemetry.capture(exc, level="warning", page="clipboard")
+            self._show_load_error()
+            return
+        if signature != self._signature:
+            self._signature = signature
+            self._request_search()
 
-    def reload(self) -> None:
+    def reload(
+        self,
+        items: clipstore.Items | None = None,
+        signature: tuple[Any, ...] | None = None,
+    ) -> None:
         """Show the current history.
 
         Rows that still show the same item are kept and only moved into place, so a
         redraw never blanks the list: copying an item puts it back on top without the
         whole list flashing.
         """
-        self._signature = self._current_signature()
+        if self._loading_bar is not None:
+            self._loading_bar.stop()
+            self._loading_bar = None
+        if self._initial_load is not None:
+            self.app.root.after_cancel(self._initial_load)
+            self._initial_load = None
+        if items is None:
+            self._search_generation += 1
+            previous = self._search_future
+            if previous is not None and not previous.done():
+                previous.cancel()
+            self._search_future = None
+            self._searching = False
+        try:
+            if signature is None:
+                signature = self._current_signature()
+            if items is None:
+                items = self._items()
+        except (clipstore.StoreError, sqlite3.Error, OSError, d.DictationError) as exc:
+            telemetry.capture(exc, level="warning", page="clipboard")
+            self._show_load_error()
+            return
+        assert items is not None
+        self._signature = signature
+        self._search_indicator = None
         for child in self.banner.winfo_children() + self.list_frame.winfo_children():
             if child is not self.card:
                 child.destroy()  # The paused banner and the empty-list hint.
@@ -331,7 +477,6 @@ class ClipboardPage:
             ttk.Button(self.banner, text="Resume", style="Small.TButton", command=self.resume).pack(
                 side="left", padx=8
             )
-        items = self._items()
         shown = {item.image_file for item in items if item.kind == "image"}
         self._thumbs = {name: photo for name, photo in self._thumbs.items() if name in shown}
         self._stop_drawing()
@@ -362,6 +507,48 @@ class ClipboardPage:
         self.selected = max(0, min(self.selected, len(self.rows) - 1))
         self._paint_selection()
         self._finish(len(items))
+
+    def _show_load_error(self) -> None:
+        """Keep existing rows visible and offer a retry when the history cannot refresh."""
+        if self._loading_bar is not None:
+            self._loading_bar.stop()
+            self._loading_bar = None
+        if self._initial_load is not None:
+            self.app.root.after_cancel(self._initial_load)
+            self._initial_load = None
+        self._search_generation += 1
+        previous = self._search_future
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._search_future = None
+        self._searching = False
+        self._stop_drawing()
+        for child in self.list_frame.winfo_children():
+            if child is not self.card:
+                child.destroy()
+        for child in self.banner.winfo_children():
+            child.destroy()
+        self._search_indicator = None
+        ttk.Label(
+            self.banner,
+            text="Clipboard history couldn’t be refreshed. Your existing items are still here.",
+            style="Error.TLabel",
+            wraplength=self.app.wraplength,
+        ).pack(anchor="w", pady=(0, 4))
+        ttk.Button(
+            self.banner,
+            text="Try again",
+            style="Small.TButton",
+            command=self.reload,
+        ).pack(anchor="w", pady=(0, 8))
+
+    def _storage_problem(
+        self,
+        error: Exception,
+        message: str = "Clipboard history couldn’t be updated. Check storage space and try again.",
+    ) -> None:
+        telemetry.capture(error, level="warning", page="clipboard")
+        self.app.status.set(message)
 
     def _place_row(self, row: Row | None, item: clipstore.Item) -> int:
         """Keep a row that still looks right, or draw it anew (1 when drawn)."""
@@ -474,6 +661,8 @@ class ClipboardPage:
 
     def load_more(self) -> None:
         """Add the next page below the rows already drawn instead of redrawing them all."""
+        if self._searching:
+            return
         self.limit += PAGE_SIZE
         self._flush()
         have = {row.item.id for row in self.rows}
@@ -648,54 +837,75 @@ class ClipboardPage:
     # -- actions -----------------------------------------------------------
     def toggle_favorite(self, item_id: int) -> None:
         """Flip the star in place; only the favorites filter loses the row."""
-        item = self.store.get(item_id)
-        row = self._row(item_id)
-        if item is None:
-            if row is not None:
+        if self._searching:
+            return
+        try:
+            item = self.store.get(item_id)
+            row = self._row(item_id)
+            if item is None:
+                if row is not None:
+                    self._remove_row(row)
+                return
+            self.store.set_favorite(item_id, not item.favorite)
+            telemetry.event("clipboard_favorite", on=not item.favorite)
+            self._signature = self._current_signature()  # Our own change needs no redraw.
+            if row is None:
+                return
+            # Unstarring also drops the label (only favorites have one).
+            row.item = self.store.get(item_id) or row.item
+            if self.filter == "favorites" and not row.item.favorite:
                 self._remove_row(row)
-            return
-        self.store.set_favorite(item_id, not item.favorite)
-        telemetry.event("clipboard_favorite", on=not item.favorite)
-        self._signature = self._current_signature()  # Our own change needs no redraw.
-        if row is None:
-            return
-        # Unstarring also drops the label (only favorites have one).
-        row.item = self.store.get(item_id) or row.item
-        if self.filter == "favorites" and not row.item.favorite:
-            self._remove_row(row)
-        else:
-            row.star.configure(text="★" if row.item.favorite else "☆")
-            self._show_label(row)
+            else:
+                row.star.configure(text="★" if row.item.favorite else "☆")
+                self._show_label(row)
+        except (clipstore.StoreError, sqlite3.Error, OSError, d.DictationError) as exc:
+            self._storage_problem(exc)
 
     def ask_label(self, current: str) -> str | None:
         """The new label ("" removes it), or None when the user cancels."""
         return LabelDialog(self.app.root, current).show()
 
     def edit_label(self, item_id: int) -> None:
-        item = self.store.get(item_id)
+        if self._searching:
+            return
+        try:
+            item = self.store.get(item_id)
+        except (clipstore.StoreError, sqlite3.Error, OSError) as exc:
+            self._storage_problem(exc)
+            return
         if item is None or not item.favorite:
             return
         label = self.ask_label(item.label)
         if label is None:
             return
-        self.store.set_label(item_id, label)
-        action = "remove" if not label else "edit" if item.label else "add"
-        telemetry.event("clipboard_label", action=action)
-        self._signature = self._current_signature()
-        row = self._row(item_id)
-        if row is not None:
-            row.item = self.store.get(item_id) or row.item
-            self._show_label(row)
+        try:
+            self.store.set_label(item_id, label)
+        except (clipstore.StoreError, sqlite3.Error, OSError) as exc:
+            self._storage_problem(exc)
+            return
+        try:
+            action = "remove" if not label else "edit" if item.label else "add"
+            telemetry.event("clipboard_label", action=action)
+            self._signature = self._current_signature()
+            row = self._row(item_id)
+            if row is not None:
+                row.item = self.store.get(item_id) or row.item
+                self._show_label(row)
+        except (clipstore.StoreError, sqlite3.Error, OSError, d.DictationError) as exc:
+            self._storage_problem(exc)
 
     def _selected_id(self) -> int | None:
         if self.pending_search is not None:
             self.run_pending_search()
+        if self._searching:
+            self.app.status.set("Searching clipboard…")
+            return None
         if not self.rows:
             return None
         return self.rows[min(self.selected, len(self.rows) - 1)].item.id
 
     def star_selected(self) -> str:
-        """Ctrl+S: star or unstar the chosen row."""
+        """Star or unstar the chosen row from the focused search field."""
         item_id = self._selected_id()
         if item_id is not None:
             self.toggle_favorite(item_id)
@@ -719,12 +929,23 @@ class ClipboardPage:
         """Enter: copy the chosen row (the top one until the arrow keys move)."""
         if self.pending_search is not None:
             self.run_pending_search()
+        if self._searching:
+            self.app.status.set("Searching clipboard…")
+            self._copy_after_search = True
+            return "break"
         if self.rows:
             self.copy(self.rows[min(self.selected, len(self.rows) - 1)].item.id)
         return "break"
 
     def copy(self, item_id: int) -> None:
-        item = self.store.get(item_id)
+        if self._searching:
+            self.app.status.set("Searching clipboard…")
+            return
+        try:
+            item = self.store.get(item_id)
+        except (clipstore.StoreError, sqlite3.Error, OSError) as exc:
+            self._storage_problem(exc)
+            return
         if item is None:
             return
         try:
@@ -736,7 +957,13 @@ class ClipboardPage:
         self.app.status.set("Copied. Paste it anywhere.")
 
     def delete(self, item_id: int) -> None:
-        item = self.store.get(item_id)
+        if self._searching:
+            return
+        try:
+            item = self.store.get(item_id)
+        except (clipstore.StoreError, sqlite3.Error, OSError) as exc:
+            self._storage_problem(exc)
+            return
         if item is None:
             return
         if item is not None and item.favorite:
@@ -756,7 +983,11 @@ class ClipboardPage:
                 except OSError as exc:
                     self.app.status.set(f"Couldn’t delete this image safely: {exc}")
                     return
-        self.store.delete(item_id)
+        try:
+            self.store.delete(item_id)
+        except (clipstore.StoreError, sqlite3.Error, OSError) as exc:
+            self._storage_problem(exc)
+            return
         self.deleted = (item, data)
         self.undo_button.pack(side="left", padx=(4, 0))
         self.app.status.set(
@@ -774,7 +1005,11 @@ class ClipboardPage:
         item, data = self.deleted
         # Back exactly as it was: while the account has not been told of the deletion it is
         # withdrawn, so nothing is deleted there and nothing uploads twice.
-        restored = self.store.restore(item, data)
+        try:
+            restored = self.store.restore(item, data)
+        except (clipstore.StoreError, sqlite3.Error, OSError) as exc:
+            self._storage_problem(exc)
+            return
         if restored is None:
             self.app.status.set("Couldn’t restore this item.")
             return
@@ -784,7 +1019,13 @@ class ClipboardPage:
         self.app.status.set("Item restored.")
 
     def view(self, item_id: int) -> None:
-        item = self.store.get(item_id)
+        if self._searching:
+            return
+        try:
+            item = self.store.get(item_id)
+        except (clipstore.StoreError, sqlite3.Error, OSError) as exc:
+            self._storage_problem(exc)
+            return
         if item is not None and item.kind != "image":
             TextPreview(
                 self.app.root, item.label or "Clipboard text", item.text, lambda: self.copy(item_id)
@@ -801,11 +1042,15 @@ class ClipboardPage:
             return
         everywhere, keep_favorites = choice
         self.stop_watching()
+        try:
+            count = self.app.service.clear_clipboard(
+                self.store, everywhere=everywhere, keep_favorites=keep_favorites
+            )
+        except (clipstore.StoreError, sqlite3.Error, OSError, d.DictationError) as exc:
+            self._storage_problem(exc)
+            return
         self.deleted = None
         self.undo_button.pack_forget()
-        count = self.app.service.clear_clipboard(
-            self.store, everywhere=everywhere, keep_favorites=keep_favorites
-        )
         telemetry.event(
             "clipboard_clear", everywhere=everywhere, keep_favorites=keep_favorites, count=count
         )
@@ -850,8 +1095,15 @@ class ClipboardPage:
             self._clear_after = self.app.root.after(CLEAR_POLL_MS, self._poll_clear)
 
     def resume(self) -> None:
-        prefs = hotkeys.Preferences(self.app.service.paths)
-        prefs.save(clipboard=dataclasses.replace(prefs.clipboard(), paused_until=0.0))
+        try:
+            prefs = hotkeys.Preferences(self.app.service.paths)
+            prefs.save(clipboard=dataclasses.replace(prefs.clipboard(), paused_until=0.0))
+        except (d.DictationError, OSError) as exc:
+            self._storage_problem(
+                exc,
+                "Clipboard capture couldn’t be changed. Check storage space and try again.",
+            )
+            return
         self.reload()
 
 

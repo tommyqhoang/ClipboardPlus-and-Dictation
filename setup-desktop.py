@@ -112,6 +112,7 @@ MODULES = (
     "desktop.py",
     "onboarding.py",
     "rewriting.py",
+    "rewriteui.py",
     "workflow.py",
     "app_service.py",
     "app.py",
