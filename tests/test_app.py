@@ -546,6 +546,43 @@ class WindowTests(ServiceCase):
         with self.assertRaises(sqlite3.ProgrammingError):
             stores[0].count()
 
+    def test_clipboard_open_error_offers_retry(self):
+        with patch.object(clipstore, "Store", side_effect=OSError("disk full")):
+            self.window.clipboard()
+            opening_future = self.window.clipboard_open_future
+            self.assertIsNotNone(opening_future)
+            opening_future.result(timeout=5)
+            self.window.poll()
+
+        self.assertFalse(self.window.clipboard_opening)
+        self.assertIsNone(self.window.clipboard_page)
+        self.assertTrue(any(button.cget("text") == "Try again" for button in self.window.buttons))
+
+    def test_opened_store_after_navigation_is_closed(self):
+        store = Mock()
+        self.window.page = "settings"
+
+        self.window._clipboard_store_opened((store, None))
+
+        store.close.assert_called_once_with()
+        self.assertIsNone(self.window.clipboard_store)
+
+    def test_opened_store_renders_and_runs_a_queued_clear(self):
+        store, page = Mock(), Mock()
+        self.window.page = "clipboard"
+        self.window.clipboard_clear_after_open = True
+        with (
+            patch.object(self.gui.clipui, "ClipboardPage", return_value=page),
+            patch.object(self.root, "after_idle") as after_idle,
+        ):
+            self.window._clipboard_store_opened((store, None))
+
+        self.assertIs(self.window.clipboard_store, store)
+        self.assertIs(self.window.clipboard_page, page)
+        page.render.assert_called_once_with()
+        after_idle.assert_called_once_with(self.window.clear_clipboard_history)
+        self.assertFalse(self.window.clipboard_clear_after_open)
+
     def test_help_goes_back_to_the_tab_instead_of_closing(self):
         with patch.object(self.service, "completed", return_value=True):
             self.window.home()
