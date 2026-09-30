@@ -547,6 +547,14 @@ class WindowTests(ServiceCase):
     def cleanup_window(self):
         if self.window.pending:
             self.window.pending.result(timeout=5)
+        opening = self.window.clipboard_open_future
+        if opening is not None:
+            try:
+                opening.result(timeout=5)
+            except concurrent.futures.CancelledError:
+                pass
+            else:
+                self.window.poll()
         if self.window.page != "closed":
             self.window.destroy()
         self.window = None

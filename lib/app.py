@@ -2680,15 +2680,7 @@ class App:
             if store is not None:
                 store.close()
 
-        try:
-            store, _ = opening.result(timeout=2)
-        except concurrent.futures.TimeoutError:
-            opening.add_done_callback(close_opened_store)
-        except Exception:
-            pass
-        else:
-            if store is not None:
-                store.close()
+        opening.add_done_callback(close_opened_store)
 
     def destroy(self) -> None:
         if self.root.winfo_viewable():
@@ -2706,7 +2698,6 @@ class App:
         self.done = lambda _: None
         self.executor.shutdown(wait=True)
         self.helper.shutdown(wait=False, cancel_futures=True)  # Lookups only; nothing to save.
-        self.lookups.clear()  # Don't retain bound UI callbacks past the window's lifetime.
         self._close_pending_clipboard_open()
         if self.clipboard_store is not None:
             active_queries = [future for future in self.clipboard_queries if not future.done()]
