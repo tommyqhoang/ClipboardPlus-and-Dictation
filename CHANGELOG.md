@@ -5,6 +5,9 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+### Changed
+- The release version bump command now updates both platform bootstrap fallback tags.
+
 ### Fixed
 - The macOS/Linux and Windows bootstrap commands now fall back to the current
   release when GitHub's release API is unavailable.

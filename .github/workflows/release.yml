@@ -1,6 +1,7 @@
 name: Release
-# Releasing is automatic: change APP_VERSION in lib/desktop.py (tools/bump_version.py
-# does it consistently) and merge to main. If v<APP_VERSION> has not been released
+# Releasing is automatic: run tools/bump_version.py to update the app version,
+# package metadata, changelog, and bootstrap fallbacks together, then merge to main.
+# If v<APP_VERSION> has not been released
 # yet, the tests run, all three installers are built, and the release (with its
 # tag) is published only once everything succeeded. Re-running on the same version
 # is a no-op, and a failed release is retried by the next push to main (or by

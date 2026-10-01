@@ -29,6 +29,10 @@ the exact commands to reproduce that locally.
 
 ## Release pipeline and supply chain
 
+- For an app release, run `python tools/bump_version.py X.Y.Z`. It updates the
+  app version, Python package metadata, changelog section, and macOS/Linux and
+  Windows bootstrap fallback tags together. Commit and merge that change to
+  `main`; CI builds and publishes the matching `vX.Y.Z` release.
 - A push to `main` or a manual `workflow_dispatch` runs `release.yml`. It reads
   `lib/desktop.py` `APP_VERSION`, skips versions that are already released,
   requires the full `quality.yml` suite to pass, then builds and inspects every

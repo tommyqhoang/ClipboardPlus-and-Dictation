@@ -215,8 +215,43 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_bump_script_updates_every_version_place(self):
         script = read("tools", "bump_version.py")
-        for place in ("lib/desktop.py", "pyproject.toml", "CHANGELOG.md"):
+        for place in (
+            "lib/desktop.py",
+            "pyproject.toml",
+            "bootstrap.sh",
+            "bootstrap.ps1",
+            "CHANGELOG.md",
+        ):
             self.assertIn(place, script)
+
+    def test_bump_command_updates_app_metadata_changelog_and_bootstrap_fallbacks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "tools").mkdir()
+            script = root / "tools/bump_version.py"
+            script.write_text(read("tools", "bump_version.py"), encoding="utf-8")
+            sources = {
+                "lib/desktop.py": 'APP_VERSION = "1.0.0"\n',
+                "pyproject.toml": 'version = "1.0.0"\n',
+                "bootstrap.sh": 'PINNED_TAG="v1.0.0"\n',
+                "bootstrap.ps1": "$PinnedTag = 'v1.0.0'\n",
+                "CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n",
+            }
+            for relative, source in sources.items():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(source, encoding="utf-8")
+
+            result = subprocess.run(
+                [sys.executable, str(script), "2.3.4"], capture_output=True, text=True
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('APP_VERSION = "2.3.4"', (root / "lib/desktop.py").read_text())
+            self.assertIn('version = "2.3.4"', (root / "pyproject.toml").read_text())
+            self.assertIn('PINNED_TAG="v2.3.4"', (root / "bootstrap.sh").read_text())
+            self.assertIn("$PinnedTag = 'v2.3.4'", (root / "bootstrap.ps1").read_text())
+            self.assertIn("## [2.3.4] - ", (root / "CHANGELOG.md").read_text())
 
     def test_downloads_are_pinned_and_hash_verified(self):
         self.assertNotIn("/continuous/", self.release)
