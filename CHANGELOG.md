@@ -5,6 +5,10 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+### Fixed
+- The macOS/Linux and Windows bootstrap commands now fall back to the current
+  release when GitHub's release API is unavailable.
+
 ## [1.6.2] - 2026-10-01
 
 ### Fixed

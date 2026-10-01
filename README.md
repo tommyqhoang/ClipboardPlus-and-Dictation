@@ -313,7 +313,7 @@ you prefer. Administrator permission may be requested by dependency installers;
 do not run the entire installation as root. macOS uses Homebrew (installing it
 if missing); Linux uses apt, dnf, pacman or zypper and installs only what is missing; Windows requires Microsoft's App Installer/WinGet
 and installs Python, FFmpeg, the C++ runtime and a checksum-pinned Whisper build.
-The app snapshot is downloaded automatically. Windows installs the checksum-pinned
+The latest released source snapshot is downloaded automatically. Windows installs the checksum-pinned
 Whisper 1.8.7 binary; Linux pins its source-build fallback to the matching release
 and commit. Git is only needed for that Linux fallback. Dependencies and model
 downloads need internet access.
@@ -329,6 +329,12 @@ For reproducible deployment, download bootstrap from a reviewed commit and set
 `main`; app snapshots are HTTPS downloads, not signed application releases.
 
 ### Linux, from a Git checkout
+
+`./install.sh` installs the source in this checkout, including local changes; it
+does not select or download a release. The one-line commands install the latest
+published release source, while the macOS, Windows, and Linux downloads are
+prebuilt from that same tagged app version. Their dependency setup differs by
+platform and package type, but they use the same app workflows after launch.
 
 Requires Python 3.10+, ALSA/PipeWire, and a Wayland desktop.
 

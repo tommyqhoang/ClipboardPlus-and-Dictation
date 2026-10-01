@@ -83,6 +83,17 @@ main
         assert pinned is not None
         self.assertIn(f"Installing release {pinned.group(1)}", result.stdout)
 
+    def test_unix_and_windows_fallback_tags_match_the_app_version(self):
+        version = re.search(
+            r'^APP_VERSION = "([^"]+)"', (ROOT / "lib/desktop.py").read_text(), re.M
+        )
+        unix = re.search(r'^PINNED_TAG="([^"]+)"', (ROOT / "bootstrap.sh").read_text(), re.M)
+        windows = re.search(r"^\$PinnedTag = '([^']+)'", (ROOT / "bootstrap.ps1").read_text(), re.M)
+        assert version is not None and unix is not None and windows is not None
+        expected = f"v{version.group(1)}"
+        self.assertEqual(unix.group(1), expected)
+        self.assertEqual(windows.group(1), expected)
+
     def test_checksum_mismatch_or_missing_checksum_fails_closed(self):
         for mode in ("tampered", "nosums"):
             with self.subTest(mode=mode):
