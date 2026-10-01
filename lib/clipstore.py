@@ -345,14 +345,20 @@ class Store:
         query: str = "",
         kind: str = "",
         favorites: bool = False,
+        source: str = "",
         limit: int = 50,
         before: float | None = None,
     ) -> Items:
         """Newest first. `kind` "text" includes links; `before` pages by creation time."""
         if kind not in _KINDS:
             raise ValueError(f"Unknown kind: {kind!r}")
+        if source not in ("", "desktop", "dictation", "cloud"):
+            raise ValueError(f"Unknown source: {source!r}")
         where: list[str] = []
         args: list[object] = []
+        if source:
+            where.append("source = ?")
+            args.append(source)
         if kind == "text":
             where.append("kind IN ('text', 'url')")
         elif kind:
@@ -414,6 +420,12 @@ class Store:
         with self._transaction() as db:
             existing = db.execute("SELECT id FROM items WHERE sha = ?", (sha,)).fetchone()
             if existing:
+                if source == "dictation":
+                    # A transcript may match text copied earlier. Keep its
+                    # dictation origin even when the clipboard sees it again.
+                    db.execute(
+                        "UPDATE items SET source = 'dictation' WHERE id = ?", (existing["id"],)
+                    )
                 return self._touch(db, int(existing["id"]), stamp)
             cursor = db.execute(
                 "INSERT INTO items (kind, text, bytes, sha, created_at, updated_at, source) "

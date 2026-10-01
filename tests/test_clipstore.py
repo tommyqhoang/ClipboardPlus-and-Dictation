@@ -163,6 +163,31 @@ class CaptureTests(StoreCase):
         self.assertEqual(self.store.add_text("spoken", source="dictation").source, "dictation")
         self.assertEqual(self.store.add_text("copied").source, "desktop")
 
+    def test_dictation_source_survives_deduplication_and_later_clipboard_copies(self):
+        copied = self.store.add_text("same words", now=1.0)
+        spoken = self.store.add_text("same words", source="dictation", now=2.0)
+        self.assertEqual(spoken.id, copied.id)
+        self.assertEqual(spoken.source, "dictation")
+        self.assertEqual(self.store.add_text("same words", now=3.0).source, "dictation")
+        self.assertEqual(self.store.count(), 1)
+
+    def test_source_filter_combines_with_search_favorites_and_pagination(self):
+        first = self.store.add_text("spoken invoice", source="dictation", now=1.0)
+        self.store.set_favorite(first.id, True)
+        self.store.add_text("spoken notes", source="dictation", now=2.0)
+        self.store.add_text("copied invoice", now=3.0)
+        self.store.add_text("cloud invoice", source="cloud", now=4.0)
+        self.assertEqual(
+            [item.text for item in self.store.list(source="dictation", limit=1)],
+            ["spoken notes"],
+        )
+        self.assertEqual(
+            self.store.list(source="dictation", query="INVOICE", favorites=True, before=2.0),
+            [self.store.get(first.id)],
+        )
+        with self.assertRaises(ValueError):
+            self.store.list(source="dictation' OR 1=1 --")
+
     def test_images_are_stored_privately_and_deduplicated(self):
         png = make_png(4, 3)
         item = self.store.add_image(png, now=100.0)

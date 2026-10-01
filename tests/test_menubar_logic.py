@@ -165,7 +165,7 @@ class MenubarBoundaryTests(unittest.TestCase):
         paths = SimpleNamespace(
             config=Path(temp.name) / "config.json", cache=Path(temp.name), runtime=Path(temp.name)
         )
-        return SimpleNamespace(paths=paths, **fields)
+        return SimpleNamespace(paths=paths, **({"dictation_only": False} | fields))
 
     def test_it_loads_without_a_mac(self):
         self.assertTrue(hasattr(self.menubar, "Controller"))
@@ -330,11 +330,35 @@ class MenubarBoundaryTests(unittest.TestCase):
             select_row=MagicMock(),
         )
         self.menubar.Controller.run_query(me, "  zzz  ")
-        store.list.assert_called_once_with(query="zzz", limit=self.menubar.POPOVER_ROWS)
+        store.list.assert_called_once_with(query="zzz", source="", limit=self.menubar.POPOVER_ROWS)
         me.empty_label.setStringValue_.assert_called_with("No matches.")
         me.open_store = lambda: None
         self.menubar.Controller.run_query(me, "")
         me.empty_label.setStringValue_.assert_called_with("Clipboard history isn’t available.")
+
+    def test_dictation_filter_preserves_search_and_filters_the_database_query(self):
+        store = MagicMock()
+        store.list.return_value = []
+        me = self.controller(
+            open_store=lambda: store,
+            table=MagicMock(),
+            detail_label=MagicMock(),
+            empty_label=MagicMock(),
+            search_field=MagicMock(),
+        )
+        me.run_query = lambda query: self.menubar.Controller.run_query(me, query)
+        sender = MagicMock()
+        sender.state.return_value = 1
+        me.search_field.stringValue.return_value = "invoice"
+        self.menubar.Controller.filterDictation_(me, sender)
+        store.list.assert_called_with(
+            query="invoice", source="dictation", limit=self.menubar.POPOVER_ROWS
+        )
+        me.run_query("")
+        me.empty_label.setStringValue_.assert_called_with("No dictation in clipboard history yet.")
+        sender.state.return_value = 0
+        self.menubar.Controller.filterDictation_(me, sender)
+        store.list.assert_called_with(query="invoice", source="", limit=self.menubar.POPOVER_ROWS)
 
     def test_the_header_follows_the_session(self):
         me = self.controller(

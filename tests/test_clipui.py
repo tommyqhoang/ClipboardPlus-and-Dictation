@@ -225,6 +225,41 @@ class PageTests(PageCase):
         self.wait_for_search()
         self.assertTrue(any("Nothing matches" in t for t in self.texts()))
 
+    def test_dictation_filter_works_with_search_and_returning_to_all(self):
+        self.store.add_text("meeting transcript", source="dictation", now=1.0)
+        self.store.add_text("another transcript", source="dictation", now=2.0)
+        self.store.add_text("meeting copied text", now=3.0)
+        self.page._chips["dictation"].invoke()
+        self.wait_for_search()
+        self.assertEqual(len(self.page.rows), 2)
+        self.assertTrue(all(row.item.source == "dictation" for row in self.page.rows))
+        self.page.set_query("meeting")
+        self.wait_for_search()
+        self.assertEqual([row.item.text for row in self.page.rows], ["meeting transcript"])
+        self.assertEqual([item.text for item in self.page._items()], ["meeting transcript"])
+        self.page.set_filter("all")
+        self.wait_for_search()
+        self.assertEqual(len(self.page.rows), 2)
+
+    def test_filter_buttons_remain_visible_in_a_narrow_window(self):
+        self.root.deiconify()
+        self.root.geometry("480x600")
+        self.store.add_text("one")
+        self.page.reload()
+        self.root.update()
+        self.page.fit(440)
+        self.root.update_idletasks()
+        for chip in self.page._chips.values():
+            self.assertTrue(chip.winfo_ismapped())
+            self.assertLessEqual(
+                chip.winfo_rootx() + chip.winfo_width(),
+                self.root.winfo_rootx() + self.root.winfo_width(),
+            )
+        self.assertGreaterEqual(
+            self.page.clear_button.winfo_rooty(),
+            self.page._filter_bar.winfo_rooty() + self.page._filter_bar.winfo_height(),
+        )
+
     def test_typing_in_the_search_box_waits_before_searching(self):
         self.store.add_text("alpha", now=1.0)
         self.store.add_text("beta", now=2.0)
@@ -551,7 +586,7 @@ class PageTests(PageCase):
         item = self.store.add_text("one", now=1.0)
         self.page.reload()
         self.assertEqual(button.winfo_manager(), "pack")
-        self.assertIs(button.master, self.page._chips["all"].master)
+        self.assertIs(button.master.master, self.page._chips["all"].master.master)
         self.assertEqual(self.buttons("Clear history"), [button])
         self.page.delete(item.id)
         self.assertEqual(button.winfo_manager(), "")

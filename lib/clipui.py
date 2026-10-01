@@ -29,7 +29,13 @@ SEARCH_DELAY_MS = 150
 THUMB_PIXELS = 96
 PAD = 20  # The window's side padding (app.PAD).
 SOURCES = {"desktop": "Desktop", "dictation": "Dictation", "cloud": "Cloud"}
-FILTERS = (("all", "All"), ("favorites", "Favorites"), ("images", "Images"), ("text", "Text"))
+FILTERS = (
+    ("all", "All"),
+    ("favorites", "Favorites"),
+    ("images", "Images"),
+    ("text", "Text"),
+    ("dictation", "Dictation"),
+)
 
 
 def relative_time(created: float, now: float) -> str:
@@ -151,11 +157,16 @@ class ClipboardPage:
         entry.focus_set()
         chips = ttk.Frame(bar, style="Toolbar.TFrame")
         chips.pack(fill="x", pady=(8, 0))
+        self._filter_bar = ttk.Frame(chips, style="Toolbar.TFrame")
+        self._filter_bar.pack(side="left")
+        self._actions = ttk.Frame(chips, style="Toolbar.TFrame")
+        self._actions.pack(side="right")
         self._chips = {}
         for name, label in FILTERS:
             chip = ttk.Button(
-                chips,
+                self._filter_bar,
                 text=label,
+                width=0,
                 style="Small.TButton",
                 takefocus=False,
                 command=functools.partial(self.set_filter, name),
@@ -164,12 +175,12 @@ class ClipboardPage:
             self._chips[name] = chip
         # Beside the filters, so it is never below a long list.
         self.clear_button = ttk.Button(
-            chips, text="Clear history", style="Small.TButton", command=self.clear
+            self._actions, text="Clear history", style="Small.TButton", command=self.clear
         )
         self.undo_button = ttk.Button(
-            chips, text="Undo delete", style="Small.TButton", command=self.undo_delete
+            self._actions, text="Undo delete", style="Small.TButton", command=self.undo_delete
         )
-        self.count_label = ttk.Label(chips, style="Hint.TLabel")
+        self.count_label = ttk.Label(self._actions, style="Hint.TLabel")
         self.count_label.pack(side="right", padx=(0, 8))
         telemetry.event("clipboard_open", picker=bool(getattr(self.app, "quick", False)))
         frame = self.app.frame
@@ -208,6 +219,9 @@ class ClipboardPage:
 
     def fit(self, width: int) -> None:
         """Below this width the item count would push the filters off the row."""
+        narrow = width < 720
+        self._filter_bar.pack_configure(side="top" if narrow else "left", anchor="w")
+        self._actions.pack_configure(side="top" if narrow else "right", anchor="e")
         if width < 600:
             self.count_label.pack_forget()
         elif not self.count_label.winfo_manager():
@@ -260,6 +274,7 @@ class ClipboardPage:
         query = self.query.get()
         kind = {"images": "image", "text": "text"}.get(self.filter, "")
         favorites = self.filter == "favorites"
+        source = "dictation" if self.filter == "dictation" else ""
         limit = self.limit
         try:
             signature = self._current_signature()
@@ -287,6 +302,7 @@ class ClipboardPage:
                         query=query,
                         kind=kind,
                         favorites=favorites,
+                        source=source,
                         limit=limit,
                     ),
                     None,
@@ -385,6 +401,7 @@ class ClipboardPage:
             query=self.query.get(),
             kind=kind,
             favorites=self.filter == "favorites",
+            source="dictation" if self.filter == "dictation" else "",
             limit=self.limit,
         )
 

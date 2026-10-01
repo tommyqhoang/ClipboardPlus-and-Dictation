@@ -337,6 +337,7 @@ class Controller(NSObject):  # type: ignore[misc]
         self.store: clipstore.Store | None = None
         self.rows: clipstore.Items = []
         self.selected = 0
+        self.dictation_only = False
         self.hovered_row = -1  # The row under the mouse, independent of self.selected.
         self.update: dict[str, str] | None = None  # A newer release to offer.
         self.update_checked = False
@@ -422,11 +423,16 @@ class Controller(NSObject):  # type: ignore[misc]
         root.addSubview_(self.cancel_button)
 
         self.search_field = NSSearchField.alloc().initWithFrame_(
-            NSMakeRect(8, 344, POPOVER_WIDTH - 16, 28)
+            NSMakeRect(8, 344, POPOVER_WIDTH - 140, 28)
         )
         self.search_field.setPlaceholderString_("Search clipboard history")
         self.search_field.setDelegate_(self)
         root.addSubview_(self.search_field)
+        self.dictation_filter = self.framed(
+            NSButton.checkboxWithTitle_target_action_("Dictation only", self, "filterDictation:"),
+            NSMakeRect(POPOVER_WIDTH - 128, 344, 120, 28),
+        )
+        root.addSubview_(self.dictation_filter)
 
         self.scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(8, 68, POPOVER_WIDTH - 16, 268)
@@ -954,6 +960,7 @@ class Controller(NSObject):  # type: ignore[misc]
         for view in (self.header_button, self.cancel_button):
             view.setHidden_(not features.dictation)
         self.search_field.setHidden_(not features.clipboard)
+        self.dictation_filter.setHidden_(not features.clipboard)
         self.clear_button.setHidden_(not features.clipboard)
         self.full_button.setHidden_(not features.clipboard)
         self.copy_last_button.setHidden_(features.clipboard or not features.dictation)
@@ -1009,7 +1016,15 @@ class Controller(NSObject):  # type: ignore[misc]
         store = self.open_store()
         query = menubar_logic.normalize_query(query)
         try:
-            self.rows = store.list(query=query, limit=POPOVER_ROWS) if store is not None else []
+            self.rows = (
+                store.list(
+                    query=query,
+                    source="dictation" if self.dictation_only else "",
+                    limit=POPOVER_ROWS,
+                )
+                if store is not None
+                else []
+            )
         except (sqlite3.Error, OSError):
             self.rows = []
             store = None
@@ -1021,8 +1036,15 @@ class Controller(NSObject):  # type: ignore[misc]
             self.empty_label.setHidden_(True)
             self.select_row(0)
         else:
-            self.empty_label.setStringValue_(menubar_logic.empty_message(store is not None, query))
+            message = menubar_logic.empty_message(store is not None, query)
+            if store is not None and self.dictation_only and not query:
+                message = "No dictation in clipboard history yet."
+            self.empty_label.setStringValue_(message)
             self.empty_label.setHidden_(False)
+
+    def filterDictation_(self, sender: Any) -> None:
+        self.dictation_only = bool(sender.state())
+        self.run_query(self.search_field.stringValue())
 
     @objc.python_method
     def row_text(self, item: clipstore.Item) -> str:

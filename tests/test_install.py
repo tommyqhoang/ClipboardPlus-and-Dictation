@@ -88,10 +88,27 @@ class InstallDependencyTests(unittest.TestCase):
 
     def test_find_python_prefers_interpreter_with_tk(self):
         result = self.run_script(
+            "python_supported() { return 0; }; "
             'need() { return 0; }; python_has() { [[ "$1" == /usr/bin/python3 ]]; }; '
             'command() { echo /opt/brew/bin/python3; }; find_python; echo "$PYTHON"'
         )
         self.assertEqual(result.stdout.strip(), "/usr/bin/python3")
+
+    def test_find_python_skips_old_system_python_even_without_gui_packages(self):
+        result = self.run_script(
+            "need() { return 0; }; python_has() { return 1; }; "
+            'python_supported() { [[ "$1" != /usr/bin/python3 ]]; }; '
+            'command() { echo /opt/brew/bin/python3; }; find_python; echo "$PYTHON"'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "/opt/brew/bin/python3")
+
+    def test_find_python_fails_when_no_supported_interpreter_exists(self):
+        result = self.run_script(
+            "need() { return 0; }; python_supported() { return 1; }; "
+            "command() { echo /opt/brew/bin/python3; }; find_python"
+        )
+        self.assertNotEqual(result.returncode, 0)
 
     def test_only_lightweight_whisper_packages_are_used(self):
         # Fedora's whisper-cpp pulls PyTorch and ROCm (8 GiB); never install it.

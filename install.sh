@@ -36,6 +36,10 @@ python_has() {
   "$1" -c "import $2" >/dev/null 2>&1
 }
 
+python_supported() {
+  "$1" -c 'import sys; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1
+}
+
 # The distribution's Tk and GTK packages serve its own interpreter, which is not
 # always the python3 first on PATH (Homebrew, pyenv, conda). Prefer one that has
 # everything the tray needs, then any python3 so the checks can report what is
@@ -43,7 +47,7 @@ python_has() {
 find_python() {
   local candidate first=""
   for candidate in /usr/bin/python3 "$(command -v python3 || true)"; do
-    if [[ -n "$candidate" ]] && need "$candidate"; then
+    if [[ -n "$candidate" ]] && need "$candidate" && python_supported "$candidate"; then
       first="${first:-$candidate}"
       if python_has "$candidate" "tkinter, venv, gi"; then
         PYTHON="$candidate"
