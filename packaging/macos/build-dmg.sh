@@ -57,10 +57,17 @@ else
   sign() { codesign --force --sign - "$@"; }
 fi
 while IFS= read -r -d '' f; do
+  # Info.plist names menubar as CFBundleExecutable. Signing that binary can
+  # cause codesign to sign/validate the enclosing app bundle immediately, so
+  # its sibling executables must already have signatures. `find` traversal
+  # order differs between macOS filesystems and architectures; sign the main
+  # executable explicitly after every other Mach-O instead of trusting it.
+  [[ "$f" == "$APP/Contents/MacOS/menubar" ]] && continue
   if file -b "$f" | grep -q 'Mach-O'; then
     sign "$f"
   fi
 done < <(find "$APP/Contents" -type f -print0)
+sign "$APP/Contents/MacOS/menubar"
 sign "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 

@@ -47,7 +47,13 @@ class MacBundleSigningTests(unittest.TestCase):
         # Only executables may remain in Contents/MacOS; data files there fail codesign.
         self.assertIn("grep -q 'Mach-O'", script)
         bundle_sign_pos = script.index('sign "$APP"')
+        main_sign_pos = script.index('sign "$APP/Contents/MacOS/menubar"')
+        loop_end_pos = script.index("done < <(find", script.index("while IFS= read"))
         verify_pos = script.index("codesign --verify")
+        self.assertLess(loop_end_pos, main_sign_pos, "sign the main executable after its siblings")
+        self.assertLess(
+            main_sign_pos, bundle_sign_pos, "sign the main executable before the app bundle"
+        )
         self.assertLess(bundle_sign_pos, verify_pos, "verification must follow bundling signing")
 
     def test_dmg_ships_a_double_click_installer_that_strips_quarantine(self):
