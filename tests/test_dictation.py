@@ -115,11 +115,11 @@ class DictationTests(unittest.TestCase):
     def test_lifecycle_and_copy_last(self):
         d.atomic(self.paths.cache / "concise.json", '{"text":"old draft"}')
         self.start()
-        begin = time.monotonic()
         self.cli()
-        self.wait_phase("idle")
-        # Native macOS Intel CI is slower to start each subprocess than Apple silicon.
-        self.assertLess(time.monotonic() - begin, 8)
+        state = self.wait_phase("idle")
+        # Assert the stop request ended the recording before its configured 8-second cap.
+        # Measuring the parent process wall time made this flaky under loaded CI runners.
+        self.assertLess(state["elapsed_seconds"], 8)
         self.assertEqual(self.paths.text.read_text(), "Hello\n\nworld")
         self.assertFalse(self.paths.audio.exists())
         self.assertFalse((self.paths.cache / "concise.json").exists())
