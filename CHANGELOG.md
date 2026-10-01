@@ -5,6 +5,8 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-01
+
 ### Fixed
 - macOS login items now unload the correct service target and recover an outdated
   launcher after an app rename, restoring the missing menu bar icon after reinstall.
