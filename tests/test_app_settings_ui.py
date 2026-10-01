@@ -47,6 +47,35 @@ class HomeAndSettingsTests(PageCase):
     def labels(self):
         return " | ".join(self.texts())
 
+    def test_open_at_login_is_available_in_settings_on_every_platform(self):
+        for platform in ("linux", "windows", "macos"):
+            with (
+                self.subTest(platform=platform),
+                patch("desktop.platform_name", return_value=platform),
+                patch("desktop.macos_bundle", return_value="/Applications/Clipboard+.app"),
+                patch("hotkeys.bundle_login_command", return_value=["/bundle/menubar"]),
+                patch("desktop.persistent_relaunch", return_value=["/app/tray"]),
+                patch("hotkeys.set_login_item") as login,
+            ):
+                self.window.reset("settings", "Settings", "")
+                self.window.general_card()
+                stack = [self.window.root]
+                while stack:
+                    widget = stack.pop()
+                    stack.extend(widget.winfo_children())
+                    if (
+                        widget.winfo_class() == "TCheckbutton"
+                        and str(widget.cget("text")) == "Open at login"
+                    ):
+                        widget.invoke()
+                        break
+                else:
+                    self.fail("Missing Open at login")
+                login.assert_called_once_with(
+                    self.window.open_at_login_var.get(),
+                    ["/bundle/menubar"] if platform == "macos" else ["/app/tray"],
+                )
+
     def test_home_shows_why_the_shortcut_could_not_be_set(self):
         hotkeys.record_status(self.paths, False)
         hotkeys.record_message(self.paths, "Sway said no. Add to ~/.config/sway/config: bindsym x")

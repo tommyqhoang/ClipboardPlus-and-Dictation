@@ -65,7 +65,12 @@ class MacWatcher:
                 current = self._pasteboard.changeCount()
                 if current != self._last:
                     self._last = current
-                    return limit_clip(self._read(), self._max_text, self._max_image)
+                    clip = self._read()
+                    # Another app can replace the pasteboard between checking
+                    # privacy markers and reading content. Never retain a read
+                    # assembled from two different copies; recheck its markers.
+                    if self._pasteboard.changeCount() == current:
+                        return limit_clip(clip, self._max_text, self._max_image)
             remaining = deadline - self._clock()
             if remaining <= 0:
                 return None

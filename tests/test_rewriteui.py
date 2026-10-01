@@ -58,8 +58,15 @@ class SettingsDialogTests(unittest.TestCase):
         )
         self.root = tk.Tk()
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
+        self.addCleanup(self.close)
         self.on_saved = Mock()
+
+    def close(self):
+        self.root.destroy()
+        self.root = None
+        import gc
+
+        gc.collect()  # Tk finalizers must run on the UI thread.
 
     def dialog(self, *, make_after_save=False):
         return rewriteui.SettingsDialog(

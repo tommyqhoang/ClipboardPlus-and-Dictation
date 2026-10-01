@@ -631,13 +631,13 @@ def set_login_item(
         # launchd keeps a loaded agent's old definition (bootstrap of it is a no-op),
         # so a changed one is unloaded first: always when it ran `open`, which never
         # owned the app, otherwise only while the app is not running (it would quit).
-        if (
+        # The file can already be current while launchd still holds an older
+        # definition (an earlier upgrade may have failed to unload it). While
+        # idle, always replace the loaded job so renamed launchers recover too.
+        if _menubar_is_idle() or (
             isinstance(loaded, dict)
             and loaded != agent
-            and (
-                loaded.get("ProgramArguments", [None])[:1] == ["/usr/bin/open"]
-                or _menubar_is_idle()
-            )
+            and loaded.get("ProgramArguments", [None])[:1] == ["/usr/bin/open"]
         ):
             _launchctl("bootout", AGENT_LABEL, run)
         _launchctl("bootstrap", str(path), run)
@@ -684,8 +684,13 @@ def _launchctl(action: str, argument: str, run: Any) -> None:
     out that is not loaded; neither is worth reporting.
     """
     try:
+        domain = f"gui/{desktop.user_id()}"
+        # bootout accepts a service target OR a domain plus a plist path. A
+        # bare label after the domain is treated as a file name and does not
+        # unload the job, leaving the previous executable registered forever.
+        target = [f"{domain}/{argument}"] if action == "bootout" else [domain, argument]
         run(
-            ["launchctl", action, f"gui/{desktop.user_id()}", argument],
+            ["launchctl", action, *target],
             capture_output=True,
             text=True,
             timeout=10,

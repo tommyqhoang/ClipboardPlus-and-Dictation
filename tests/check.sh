@@ -49,7 +49,7 @@ tool() {
   fi
 }
 
-SCRIPTS="bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh"
+SCRIPTS="bin/dictate-toggle bootstrap.sh install.sh uninstall.sh tests/check.sh tests/with-xvfb.sh tests/verify-install.sh packaging/linux/build-appimage.sh packaging/linux/uninstall-appimage.sh packaging/linux/AppDir/AppRun packaging/macos/build-dmg.sh packaging/macos/uninstall.command"
 DISTROS="ubuntu:latest debian:stable fedora:latest archlinux:latest opensuse/tumbleweed:latest"
 
 if [ "$full" = 1 ]; then
@@ -64,7 +64,7 @@ if [ "$full" = 1 ]; then
     (docker run --rm -v "$PWD:/src:ro" "$image" bash /src/tests/verify-install.sh >"$log" 2>&1 && echo ok >>"$log") &
   done
   (docker run --rm -v "$PWD:/src:ro" python:3.10 sh -c \
-    'cp -r /src /app && cd /app && python -m unittest discover -s tests && python -m compileall -q lib setup-desktop.py' \
+    'mkdir -p /app && tar -C /src --exclude=.git --exclude=.venv --exclude=build --exclude=dist --exclude=__pycache__ -cf - . | tar -C /app -xf - && cd /app && python -m unittest discover -s tests && python -m compileall -q lib setup-desktop.py' \
     >"$logs/python-3.10.log" 2>&1 && echo ok >>"$logs/python-3.10.log") &
 fi
 

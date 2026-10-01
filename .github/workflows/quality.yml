@@ -51,7 +51,6 @@ jobs:
           }
       # GUI pins live in requirements-gui.txt only (release.yml uses it too).
       - run: python -m pip install -r requirements-gui.txt
-        if: runner.os == 'macOS'
       - run: sh tests/with-xvfb.sh sh -c 'coverage run -m unittest discover -s tests -v && coverage combine && coverage report'
         if: runner.os == 'Linux'
       # The coverage floor is held on Linux, where every test runs; here Linux-only

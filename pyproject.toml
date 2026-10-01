@@ -35,6 +35,12 @@ module = "menubar"
 disable_error_code = ["untyped-decorator"]
 
 [[tool.mypy.overrides]]
+# Native UI toolkits are untyped when installed and absent on other OSes.
+module = ["objc", "objc.*", "AppKit", "AppKit.*", "Foundation", "Foundation.*", "pystray"]
+ignore_missing_imports = true
+follow_untyped_imports = false
+
+[[tool.mypy.overrides]]
 # PyGObject is a system package (python3-gi): present on some machines and CI images and
 # not others, and untyped where present, so it must never change the result.
 module = ["gi", "gi.*"]

@@ -5,6 +5,35 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+### Fixed
+- macOS login items now unload the correct service target and recover an outdated
+  launcher after an app rename, restoring the missing menu bar icon after reinstall.
+- Recent-copy actions now accept pystray's callback arguments on Windows/Linux.
+- Closing the recording pill cancels its pending frame callback; GUI fixtures
+  release Tk objects on the UI thread before later background tests run.
+- Clipboard capture recovers from a database that cannot open, backs off after failed
+  process launches, and stops when quitting even after the tray adopted an existing service.
+- macOS shortcut presets applied in Settings take effect immediately; a refused choice
+  restores the previous saved shortcut. Unreadable shortcut events never start recording.
+- macOS skips clipboard reads replaced during the privacy check. An expired capture
+  pause now refreshes the menu even when preferences have not changed.
+- The macOS installer validates a staged bundle before replacement, refuses unrelated
+  or running apps, and restores the previous app if copying, validation, or launch fails.
+
+### Added
+- macOS right-click and Control-click menu with history, capture pause/resume, dictation,
+  shortcut recording, Settings, Open at Login, website, and Quit.
+- Native AppKit menu and real pystray callback regression checks; GUI dependencies are
+  tested on each CI platform. Local shell gates now include the packaging scripts.
+
+### Changed
+- Windows left-click opens history or the app window; recording starts only from its
+  explicit action or shortcut. Busy transcription actions are disabled.
+- macOS Clear History uses the shared scope/favorites confirmation dialog. Escape clears
+  search first, then closes the popover. Settings exposes Open at login on all platforms.
+- Missing macOS icon images fall back to a visible `C+` title; timer and Windows shortcut
+  callback errors are contained so the next action can still work.
+
 ## [1.5.0] - 2026-09-29
 
 ### Added

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -70,6 +73,77 @@ class MacBundleSigningTests(unittest.TestCase):
         self.assertIn("device.audio-input", entitlements.read_text(encoding="utf-8"))
         plist = (REPO_ROOT / "packaging" / "macos" / "Info.plist").read_text(encoding="utf-8")
         self.assertIn("LSMinimumSystemVersion", plist)
+
+
+@unittest.skipIf(sys.platform == "win32", "installer helper runs with a POSIX shell")
+class MacInstallerTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.destination = self.root / "Applications"
+        self.destination.mkdir()
+        self.target = self.destination / "Clipboard+.app"
+        (self.target / "Contents").mkdir(parents=True)
+        (self.target / "Contents/Info.plist").write_text("com.apercallc.clipboardplus")
+        (self.target / "version").write_text("old")
+        source = self.root / "Clipboard+.app"
+        (source / "Contents").mkdir(parents=True)
+        (source / "Contents/Info.plist").write_text("com.apercallc.clipboardplus")
+        (source / "version").write_text("new")
+        build = (REPO_ROOT / "packaging/macos/build-dmg.sh").read_text()
+        helper = build.split("cat >\"$STAGING/Install Clipboard+.command\" <<'EOF'\n", 1)[1].split(
+            "\nEOF", 1
+        )[0]
+        self.helper = self.root / "Install Clipboard+.command"
+        self.helper.write_text(helper)
+        commands = self.root / "bin"
+        commands.mkdir()
+        for name, script in {
+            "plutil": 'for last; do :; done\ncat "$last"',
+            "osascript": 'echo "${TEST_RUNNING:-false}"',
+            "ditto": '[ "${TEST_FAIL:-}" != copy ] || exit 1\ncp -R "$1" "$2"',
+            "codesign": '[ "${TEST_FAIL:-}" != signature ]',
+            "xattr": "exit 0",
+            "open": '[ "${TEST_FAIL:-}" != launch ]',
+        }.items():
+            command = commands / name
+            command.write_text("#!/bin/sh\n" + script + "\n")
+            command.chmod(0o755)
+        self.env = os.environ | {"PATH": str(commands) + os.pathsep + os.environ.get("PATH", "")}
+
+    def install(self, **environment):
+        return subprocess.run(
+            [shutil.which("bash"), str(self.helper), str(self.destination)],
+            env=self.env | environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    def test_success_replaces_the_bundle_only_after_copy_and_validation(self):
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.target / "version").read_text(), "new")
+        self.assertEqual(list(self.destination.glob(".clipboardplus-install.*")), [])
+
+    def test_failed_copy_signature_or_launch_preserves_the_previous_install(self):
+        for failure in ("copy", "signature", "launch"):
+            with self.subTest(failure=failure):
+                result = self.install(TEST_FAIL=failure)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((self.target / "version").read_text(), "old")
+                self.assertEqual(list(self.destination.glob(".clipboardplus-install.*")), [])
+
+    def test_running_app_or_unrelated_bundle_is_not_replaced(self):
+        result = self.install(TEST_RUNNING="true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Quit Clipboard+", result.stderr)
+        (self.target / "Contents/Info.plist").write_text("another.application")
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Another app", result.stderr)
+        self.assertEqual((self.target / "version").read_text(), "old")
 
 
 def read(*parts: str) -> str:

@@ -29,8 +29,13 @@ CAPABILITIES: dict[str, tuple[str, str]] = {
         r'open_window\("--clipboard"\)',
         r'open_window\("--clipboard"\)',
     ),
-    "search the history": (r"NSSearchField", r'"Search Clipboard History'),
-    "clear the history": (r"service\.clear_clipboard\(", r'open_window\("--clipboard-clear"\)'),
+    "search the history": (r"NSSearchField", r"self\.open_history"),
+    "clear history through the shared confirmation": (
+        r'open_window\("--clipboard-clear"\)',
+        r'open_window\("--clipboard-clear"\)',
+    ),
+    "pause and resume clipboard capture": (r"self\.clip\.resume\(", r"self\.clip\.resume"),
+    "record a shortcut from the menu": (r'"Record New Shortcut', r'"Record New Shortcut'),
     "toggle dictation": (r"def pressed\(", r"def pressed\("),
     "cancel a recording": (r'run_engine\("--cancel"\)', r'run_engine\("--cancel"\)'),
     "copy the last transcript": (r'run_engine\("--copy-last"\)', r'run_engine\("--copy-last"\)'),
@@ -74,18 +79,11 @@ ALLOWED: dict[str, tuple[str, str, str]] = {
         "app.py installs it; the tray also has an 'Update now' item. Both use "
         "updates.check to learn of it.",
     ),
-    "pause and resume clipboard capture": (
-        "tray",
-        r"self\.clip\.pause\(.*self\.clip\.resume|self\.clip\.resume",
-        "KNOWN GAP, not a platform limit: the macOS popover has no pause control yet "
-        "(popover is a slim search + clear layout); the tray offers 'Pause Clipboard "
-        "Capture'. Remove this entry when the popover gets one.",
-    ),
     "pick or record the dictation shortcut from the menu": (
         "tray",
-        r'"Record New Shortcut',
-        "The macOS popover leaves shortcut choice to the Settings window; the tray "
-        "keeps a More submenu. Both record through the same --shortcut window.",
+        r"hotkeys\.PRESETS",
+        "macOS opens the shared shortcut recorder from the context menu; the tray "
+        "also lists presets directly in More. Both have presets in Settings.",
     ),
 }
 

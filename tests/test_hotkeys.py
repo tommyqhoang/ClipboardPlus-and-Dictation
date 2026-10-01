@@ -177,6 +177,33 @@ class HotkeyTests(unittest.TestCase):
             broken = Mock(side_effect=OSError)
             self.assertFalse(hotkeys.start_login_item(run=broken, sleep=Mock()))
 
+    def test_bootout_targets_the_service_and_bootstrap_targets_the_plist(self):
+        run = Mock()
+        with patch.object(hotkeys.desktop, "user_id", return_value=501):
+            hotkeys._launchctl("bootout", hotkeys.AGENT_LABEL, run)
+            hotkeys._launchctl("bootstrap", "/tmp/agent.plist", run)
+        self.assertEqual(
+            [entry.args[0] for entry in run.call_args_list],
+            [
+                ["launchctl", "bootout", f"gui/501/{hotkeys.AGENT_LABEL}"],
+                ["launchctl", "bootstrap", "gui/501", "/tmp/agent.plist"],
+            ],
+        )
+
+    def test_idle_agent_is_reloaded_even_when_the_plist_is_already_current(self):
+        run = Mock(return_value=Mock(returncode=0))
+        with (
+            patch.object(hotkeys, "_menubar_is_idle", return_value=True),
+            patch.object(hotkeys, "_migrate_former_agents"),
+        ):
+            command = ["/Applications/Clipboard+.app/Contents/MacOS/Clipboard+"]
+            hotkeys.set_login_item(True, command, self.folder, "macos", run=run)
+            run.reset_mock()
+            hotkeys.set_login_item(True, command, self.folder, "macos", run=run)
+        self.assertEqual(
+            [entry.args[0][1] for entry in run.call_args_list], ["bootout", "bootstrap"]
+        )
+
     def test_menubar_is_idle_only_when_its_lock_is_free(self):
         with patch.object(hotkeys.desktop, "lock", return_value=None):
             self.assertFalse(hotkeys._menubar_is_idle())  # Held: running.

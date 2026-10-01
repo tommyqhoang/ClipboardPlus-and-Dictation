@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -227,6 +229,76 @@ class TrayTests(unittest.TestCase):
         self.assertEqual(self.popen.call_args.args[0][-1], "--shortcut")
         self.item("Settings").action()
         self.assertEqual(self.popen.call_args.args[0][-1], "--settings")
+
+    def test_primary_click_opens_history_or_the_window_without_recording(self):
+        # pystray chooses the first default from ALL items, including hidden
+        # ones. Visibility alone cannot change the primary-click action.
+        def primary_click():
+            for entry in self.items():
+                default = entry.options.get("default", False)
+                if default(None) if callable(default) else default:
+                    entry.action()
+                    return
+            self.fail("No primary-click action")
+
+        for dictation, clipboard in ((True, True), (False, True), (True, False), (False, False)):
+            with self.subTest(dictation=dictation, clipboard=clipboard):
+                self.tray.preferences.save(features=hotkeys.Features(dictation, clipboard))
+                with (
+                    patch.object(self.tray, "open_window") as opened,
+                    patch.object(self.tray, "run_engine") as engine,
+                ):
+                    primary_click()
+                opened.assert_called_once_with("--clipboard" if clipboard else "")
+                engine.assert_not_called()
+
+    def test_start_action_is_disabled_during_transcription(self):
+        action = self.item("Start Dictation")
+        for phase, enabled in (("idle", True), ("recording", True), ("transcribing", False)):
+            self.tray.phase = phase
+            self.assertEqual(action.options["enabled"](None), enabled)
+
+    def test_negative_history_index_does_not_copy_the_last_item(self):
+        self.tray.preferences.save(features=hotkeys.Features(True, True))
+        self.tray.rows = [ITEM]
+        self.tray.store = Mock()
+        with patch.object(self.tray.service, "copy_item") as copy:
+            self.tray.copy_row(-1)
+        copy.assert_not_called()
+
+    @unittest.skipUnless(importlib.util.find_spec("pystray"), "pystray is not installed")
+    def test_recent_rows_accept_real_pystray_callback_arguments(self):
+        # Use the actual callback adapter, with no display or system tray.
+        with patch.dict(sys.modules), patch.dict(os.environ, {"PYSTRAY_BACKEND": "dummy"}):
+            import pystray
+
+            self.tray.preferences.save(features=hotkeys.Features(True, True))
+            self.tray.rows = [ITEM, dataclasses.replace(ITEM, id=2)]
+            self.tray.store = Mock()
+            with patch.object(self.tray.service, "copy_item") as copy:
+                for index in range(2):
+                    descriptor = self.tray.icon.menu[index + 2]
+                    entry = pystray.MenuItem("Recent", descriptor.action)
+                    entry(self.tray.icon)
+                    self.assertEqual(copy.call_args.args[0].id, index + 1)
+
+    def test_windows_callback_failure_does_not_stop_the_hotkey_loop(self):
+        key = tray.WindowsHotKey.__new__(tray.WindowsHotKey)
+        key.user32, key.kernel32 = Mock(), Mock()
+        key.ready = threading.Event()
+        key.callback = Mock(side_effect=[OSError("window could not open"), None])
+        events = iter((tray.WM_HOTKEY, tray.WM_HOTKEY, 0))
+
+        def message(target, *_args):
+            event = next(events)
+            target._obj.message = event
+            return int(bool(event))
+
+        key.user32.GetMessageW.side_effect = message
+        with patch.object(tray, "log") as log, patch.object(tray.telemetry, "capture"):
+            key.loop()
+        self.assertEqual(key.callback.call_count, 2)
+        log.exception.assert_called_once()
 
     def test_run_engine_uses_a_sibling_binary_when_frozen(self):
         with patch.object(tray.desktop, "relaunch", return_value=["/opt/Clipboard+/dictation"]):
@@ -542,7 +614,6 @@ class TrayTests(unittest.TestCase):
         dictation_items = ("Start Dictation", "Copy Last Transcript", "Shortcut:")
         clipboard_items = (
             "Clipboard History…",
-            "Search Clipboard History…",
             "Clear Clipboard History…",
             "Pause Clipboard Capture",
         )
@@ -575,8 +646,6 @@ class TrayTests(unittest.TestCase):
         self.item("Clipboard History…").action()
         self.assertEqual(self.popen.call_args.args[0][-1], "--clipboard")
         self.assertTrue(self.popen.call_args.args[0][-2].endswith("app.py"))
-        self.item("Search Clipboard History…").action()
-        self.assertEqual(self.popen.call_args.args[0][-1], "--clipboard")
         self.item("Clear Clipboard History…").action()
         self.assertEqual(self.popen.call_args.args[0][-1], "--clipboard-clear")
 

@@ -141,6 +141,37 @@ class MacTests(unittest.TestCase):
         self.board.copy(**{"public__png": png})
         self.assertEqual(watcher.next_change(1), clipwatch.Clip(image_png=png))
 
+    def test_a_copy_replaced_during_read_is_checked_again_for_privacy(self):
+        watcher = self.watcher()
+        self.board.copy(**{"public__utf8-plain-text": "ordinary copy"})
+        original = self.board.stringForType_
+
+        def replace_before_read(kind):
+            self.board.copy(
+                **{
+                    "public__utf8-plain-text": "private replacement",
+                    "org__nspasteboard__ConcealedType": b"1",
+                }
+            )
+            return original(kind)
+
+        with patch.object(self.board, "stringForType_", side_effect=replace_before_read):
+            result = watcher.next_change(1)
+        self.assertEqual(result, clipwatch.Clip(concealed=True))
+        self.assertEqual(len(self.board.requested), 1)
+
+    def test_a_pasteboard_that_keeps_changing_respects_the_timeout(self):
+        watcher = self.watcher()
+        self.board.copy(**{"public__utf8-plain-text": "copy"})
+
+        def changing(_kind):
+            self.board.count += 1
+            return "unstable"
+
+        with patch.object(self.board, "stringForType_", side_effect=changing):
+            self.assertIsNone(watcher.next_change(1))
+        self.assertEqual(self.clock.now, 1)
+
     def test_tiff_images_are_converted_to_png(self):
         seen: list[bytes] = []
 

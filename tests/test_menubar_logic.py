@@ -173,8 +173,13 @@ class MenubarBoundaryTests(unittest.TestCase):
 
     def test_the_search_box_keys_drive_the_popover(self):
         me = self.controller(
-            move_selection=MagicMock(), activate_selected=MagicMock(), popover=MagicMock()
+            move_selection=MagicMock(),
+            activate_selected=MagicMock(),
+            popover=MagicMock(),
+            search_field=MagicMock(),
+            run_query=MagicMock(),
         )
+        me.search_field.stringValue.return_value = ""
         text_view = MagicMock()
         handle = self.menubar.Controller.control_textView_doCommandBySelector_
         self.assertTrue(handle(me, None, text_view, "moveDown:"))
@@ -188,6 +193,123 @@ class MenubarBoundaryTests(unittest.TestCase):
         self.assertTrue(handle(me, None, text_view, "moveToBeginningOfParagraph:"))
         text_view.selectAll_.assert_called_once_with(None)
         self.assertFalse(handle(me, None, text_view, "deleteBackward:"))
+
+    def test_escape_clears_search_before_closing(self):
+        me = self.controller(search_field=MagicMock(), run_query=MagicMock(), popover=MagicMock())
+        me.search_field.stringValue.return_value = "query"
+        self.menubar.Controller.control_textView_doCommandBySelector_(
+            me, None, None, "cancelOperation:"
+        )
+        me.search_field.setStringValue_.assert_called_once_with("")
+        me.run_query.assert_called_once_with("")
+        me.popover.close.assert_not_called()
+
+    def test_primary_click_opens_popover_and_secondary_or_control_click_opens_menu(self):
+        me = self.controller(
+            popover=MagicMock(),
+            item=MagicMock(),
+            context_menu=MagicMock(),
+            togglePopover_=MagicMock(),
+        )
+        application = self.menubar.NSApplication.sharedApplication.return_value
+        event = application.currentEvent.return_value
+        with patch.multiple(
+            self.menubar, NSEventTypeRightMouseUp=4, NSEventModifierFlagControl=1 << 18
+        ):
+            for kind, flags, context in ((2, 0, False), (4, 0, True), (2, 1 << 18, True)):
+                me.togglePopover_.reset_mock()
+                me.context_menu.reset_mock()
+                event.type.return_value, event.modifierFlags.return_value = kind, flags
+                self.menubar.Controller.statusClicked_(me, None)
+                self.assertEqual(me.context_menu.called, context)
+                self.assertEqual(me.togglePopover_.called, not context)
+        self.assertTrue(
+            me.context_menu.return_value.popUpMenuPositioningItem_atLocation_inView_.called
+        )
+
+    def test_context_menu_matches_features_pause_and_recording_state(self):
+        me = self.controller(clip=MagicMock(), preferences=MagicMock())
+        me.paths.text = me.paths.cache / "last.txt"
+        me.paths.text.write_text("a previous transcript")
+        me.preferences.open_at_login.return_value = True
+        me.menu_item = lambda *args, **kwargs: self.menubar.Controller.menu_item(
+            me, *args, **kwargs
+        )
+        created = []
+
+        def item(title, action, key):
+            result = MagicMock(title=title, action=action)
+            result.label, result.selector = title, action
+            created.append(result)
+            return result
+
+        factory = self.menubar.NSMenuItem.alloc.return_value
+        factory.initWithTitle_action_keyEquivalent_.side_effect = item
+        with patch.object(self.menubar.workflow, "snapshot") as snapshot:
+            for clipboard, dictation, paused, phase in (
+                (True, True, False, "idle"),
+                (True, False, True, "idle"),
+                (False, True, False, "recording"),
+                (False, True, False, "transcribing"),
+                (False, False, False, "idle"),
+            ):
+                created.clear()
+                me.clip.features.return_value = hotkeys.Features(dictation, clipboard)
+                me.clip.paused.return_value = paused
+                snapshot.return_value = {"phase": phase, "active": phase != "idle"}
+                self.menubar.Controller.context_menu(me)
+                items = {entry.label: entry for entry in created}
+                self.assertIn("Settings…", items)
+                self.assertIn("Quit Clipboard+", items)
+                self.assertEqual("Clipboard History…" in items, clipboard)
+                self.assertEqual("Resume Clipboard Capture" in items, clipboard and paused)
+                self.assertEqual("For 1 Hour" in items, clipboard and not paused)
+                self.assertEqual("Copy Last Transcript" in items, dictation)
+                self.assertEqual("Cancel Recording" in items, dictation and phase == "recording")
+                if phase == "transcribing":
+                    items["Transcribing…"].setEnabled_.assert_called_with(False)
+                    items["Copy Last Transcript"].setEnabled_.assert_called_with(False)
+                items["Open at Login"].setState_.assert_called_with(1)
+
+    def test_clear_history_uses_the_shared_confirmation_without_deleting(self):
+        me = self.controller(popover=MagicMock(), open_window=MagicMock(), service=MagicMock())
+        self.menubar.Controller.clearHistory_(me, None)
+        me.open_window.assert_called_once_with("--clipboard-clear")
+        me.service.clear_clipboard.assert_not_called()
+
+    def test_capture_actions_share_the_controller_and_report_save_failures(self):
+        me = self.controller(clip=MagicMock(), warn=MagicMock())
+        me.change_capture = lambda *args, **kwargs: self.menubar.Controller.change_capture(
+            me, *args, **kwargs
+        )
+        self.menubar.Controller.pauseForHour_(me, None)
+        me.clip.pause.assert_called_with(3600)
+        self.menubar.Controller.pauseUntilResumed_(me, None)
+        me.clip.pause.assert_called_with(None)
+        self.menubar.Controller.resumeCapture_(me, None)
+        me.clip.resume.assert_called_once()
+        me.clip.pause.side_effect = OSError("read only")
+        self.menubar.Controller.pauseForHour_(me, None)
+        me.warn.assert_called_once()
+
+    def test_a_failed_refresh_is_logged_and_the_next_tick_can_run(self):
+        me = self.controller(refresh_state=MagicMock(side_effect=[OSError("busy"), None]))
+        with (
+            patch.object(self.menubar, "log") as log,
+            patch.object(self.menubar.telemetry, "capture"),
+        ):
+            self.menubar.Controller.refresh_(me, None)
+            self.menubar.Controller.refresh_(me, None)
+        log.exception.assert_called_once()
+        self.assertEqual(me.refresh_state.call_count, 2)
+
+    def test_quitting_releases_history_and_stops_capture(self):
+        me = self.controller(clip=MagicMock(), store=MagicMock())
+        store = me.store
+        self.menubar.Controller.quit_(me, None)
+        me.clip.stop.assert_called_once()
+        store.close.assert_called_once()
+        self.assertIsNone(me.store)
 
     def test_selection_moves_and_clamps(self):
         me = self.controller(rows=[1, 2, 3], selected=2, table=MagicMock())
@@ -341,7 +463,7 @@ class MenubarBoundaryTests(unittest.TestCase):
         with patch.object(self.menubar, "log") as log:
             self.assertEqual(self.press(key, carbon, 0, status=-50), 0)
         log.warning.assert_called()
-        self.assertEqual(calls, ["dictation"])  # As before: an unreadable id is dictation.
+        self.assertEqual(calls, [])  # An unknown event must never start the microphone.
         carbon.GetEventParameter.side_effect = RuntimeError("boom")
         with patch.object(self.menubar, "log") as log:
             self.assertEqual(key.handler(None, None, None), 0)
@@ -422,6 +544,22 @@ class MenubarBoundaryTests(unittest.TestCase):
         me.capturing = True
         self.menubar.Controller.follow_window_shortcut(me)
         me.apply_shortcut.assert_called_once_with(chosen)
+
+    def test_a_preset_chosen_in_settings_is_applied_without_opening_the_recorder(self):
+        chosen = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        me = self.follower(False, chosen=chosen)
+        self.menubar.Controller.follow_window_shortcut(me)
+        me.apply_shortcut.assert_called_once_with(chosen)
+
+    def test_refused_shortcut_restores_the_saved_choice(self):
+        me = self.follower(False)
+        me.hotkey.register.side_effect = [False, True]
+        me.warn, me.popover = MagicMock(), MagicMock()
+        me.popover.isShown.return_value = False
+        chosen = hotkeys.Shortcut(("ctrl", "alt"), "K")
+        self.menubar.Controller.apply_shortcut(me, chosen)
+        me.preferences.save.assert_called_once_with(shortcut=hotkeys.DEFAULT)
+        self.assertEqual(me.shortcut, hotkeys.DEFAULT)
 
     def test_the_history_shortcut_is_not_registered_while_recording(self):
         me = self.follower(True)

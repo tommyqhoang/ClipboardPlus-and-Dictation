@@ -177,7 +177,14 @@ class PillCueTests(unittest.TestCase):
         self.state("starting")
         self.root = tk.Tk()
         self.pill = overlay.Overlay(self.root, self.paths, TOKEN, clock=lambda: self.now)
-        self.addCleanup(lambda: self.pill.closed or self.pill.close())
+        self.addCleanup(self.close)
+
+    def close(self):
+        self.pill.close()
+        self.pill = self.root = None
+        import gc
+
+        gc.collect()  # Finalize Tcl objects before another test starts a worker.
 
     def state(self, phase, **extra):
         d.atomic(self.paths.state, json.dumps({"phase": phase, "token": TOKEN, **extra}))

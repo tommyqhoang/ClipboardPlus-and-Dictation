@@ -123,7 +123,7 @@ class App:
             # bar's height is wrong on a taller Dock and can push the bottom bar (Save,
             # Cancel…) under it. AppKit's visibleFrame already excludes both exactly.
             try:
-                from AppKit import NSScreen  # type: ignore[import-not-found]
+                from AppKit import NSScreen
 
                 visible = NSScreen.mainScreen().visibleFrame()
                 usable_width = int(visible.size.width) - 40
@@ -1000,8 +1000,6 @@ class App:
             self.status.set(f"Open this in your browser or Settings: {url}")
 
     def general_card(self) -> None:
-        if desktop.platform_name() != "macos":
-            return  # Windows and Linux toggle this from the tray icon's menu.
         card = self.card("General")
         prefs = hotkeys.Preferences(self.service.paths)
         self.open_at_login_var = tk.BooleanVar(master=self.root, value=prefs.open_at_login())
@@ -1009,9 +1007,12 @@ class App:
         def save() -> None:
             enabled = self.open_at_login_var.get()
             prefs.save(open_at_login=enabled)
-            bundle = desktop.macos_bundle()
-            if bundle.endswith(".app"):
-                hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
+            if desktop.platform_name() == "macos":
+                bundle = desktop.macos_bundle()
+                if bundle.endswith(".app"):
+                    hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
+            else:
+                hotkeys.set_login_item(enabled, desktop.persistent_relaunch("tray"))
             self.saved("Preference saved.")
 
         ttk.Checkbutton(

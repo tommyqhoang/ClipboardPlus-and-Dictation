@@ -83,15 +83,47 @@ cat >"$STAGING/Install Clipboard+.command" <<'EOF'
 # Copies Clipboard+ from this DMG into /Applications and strips the
 # quarantine flag macOS adds to downloads — the flag that makes Gatekeeper
 # report the unsigned app as "damaged and can't be opened".
-set -e
+set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APP="Clipboard+.app"
-TARGET="/Applications/$APP"
-rm -rf "$TARGET"
-cp -R "$HERE/$APP" "$TARGET"
-xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
+DESTINATION="${1:-/Applications}"
+TARGET="$DESTINATION/$APP"
+if [[ -e "$TARGET" ]]; then
+  identifier="$(plutil -extract CFBundleIdentifier raw -o - "$TARGET/Contents/Info.plist")"
+  case "$identifier" in
+    com.apercallc.clipboardplus | com.apercallc.clipboardplusdesktop) ;;
+    *) echo "Another app uses $TARGET. Choose another Applications folder." >&2; exit 1 ;;
+  esac
+fi
+# Replacing an app while it is running leaves its old process and shortcuts
+# active. Let it finish recording and quit normally before changing its files.
+for identifier in com.apercallc.clipboardplus com.apercallc.clipboardplusdesktop; do
+  if [[ "$(osascript -e "application id \"$identifier\" is running" 2>/dev/null || true)" = "true" ]]; then
+    echo "Quit Clipboard+ from its menu bar icon, then run this installer again." >&2
+    exit 1
+  fi
+done
+mkdir -p "$DESTINATION"
+STAGE="$(mktemp -d "$DESTINATION/.clipboardplus-install.XXXXXX")"
+complete=0
+cleanup() {
+  if [[ "$complete" = 0 && -d "$STAGE/previous.app" ]]; then
+    rm -rf "$TARGET"
+    mv "$STAGE/previous.app" "$TARGET"
+  fi
+  rm -rf "$STAGE"
+}
+trap cleanup EXIT
+# Copy and validate before moving the previous app. The staging folder is on
+# the same volume, so both renames are atomic and failures restore the old app.
+ditto "$HERE/$APP" "$STAGE/$APP"
+codesign --verify --deep --strict "$STAGE/$APP"
+xattr -dr com.apple.quarantine "$STAGE/$APP" 2>/dev/null || true
+if [[ -e "$TARGET" ]]; then mv "$TARGET" "$STAGE/previous.app"; fi
+mv "$STAGE/$APP" "$TARGET"
 echo "Installed. Launching Clipboard+…"
 open "$TARGET"
+complete=1
 EOF
 chmod +x "$STAGING/Install Clipboard+.command"
 cp "$ROOT/packaging/macos/uninstall.command" "$STAGING/Uninstall Clipboard+.command"

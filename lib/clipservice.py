@@ -489,6 +489,8 @@ def _store_problem(paths: d.Paths, exc: Exception) -> str:
         return str(exc)
     if isinstance(exc, sqlite3.OperationalError):
         return "The clipboard history is busy; retrying."
+    if isinstance(exc, OSError):
+        return "The clipboard history can’t be opened. Check storage space and folder permissions."
     database = paths.clipboard / "clips.db"
     kept = database.with_name(f"clips.db.damaged-{int(time.time())}")
     try:
@@ -550,10 +552,12 @@ def run(
                 if store is None:
                     try:
                         store = clipstore.Store(paths.clipboard)
-                    except (clipstore.StoreError, sqlite3.DatabaseError) as exc:
+                    except (clipstore.StoreError, sqlite3.DatabaseError, OSError) as exc:
                         log.error("clipboard history cannot be opened: %s", exc)
                         telemetry.capture(exc, level="warning", stage="store")
                         write_status(paths, "error", 0, _store_problem(paths, exc), clock)
+                        watcher.close()
+                        watcher = None  # Retry the entire initialization after storage recovers.
                         nap(retry_seconds)
                         continue
                 syncer = syncer or Syncer(store, paths, clock)

@@ -23,13 +23,13 @@ import desktop
 import dictation as d
 import hotkeys
 import menubar_logic
-import objc  # type: ignore[import-not-found]
+import objc
 import permissions
 import telemetry
 import updates
 import workflow
 from app_service import Service
-from AppKit import (  # type: ignore[import-not-found]
+from AppKit import (
     NSAlert,
     NSAlertFirstButtonReturn,
     NSApplication,
@@ -37,12 +37,18 @@ from AppKit import (  # type: ignore[import-not-found]
     NSBezelBorder,
     NSButton,
     NSColor,
+    NSEventMaskLeftMouseUp,
+    NSEventMaskRightMouseUp,
+    NSEventModifierFlagControl,
+    NSEventTypeRightMouseUp,
     NSImage,
     NSImageScaleProportionallyUpOrDown,
     NSImageView,
     NSMakeRect,
     NSMakeSize,
     NSMaxYEdge,
+    NSMenu,
+    NSMenuItem,
     NSPopover,
     NSPopoverBehaviorTransient,
     NSScrollView,
@@ -64,7 +70,7 @@ from AppKit import (  # type: ignore[import-not-found]
     NSViewHeightSizable,
     NSViewWidthSizable,
 )
-from Foundation import (  # type: ignore[import-not-found]
+from Foundation import (
     NSDate,
     NSDateFormatter,
     NSDateFormatterMediumStyle,
@@ -175,8 +181,9 @@ class GlobalHotKey:
                     ctypes.byref(which),
                 )
                 if status != 0:
-                    log.warning("GetEventParameter failed (%d); treating it as dictation", status)
-                hotkey_id = which.id if status == 0 else DICTATION_ID
+                    log.warning("GetEventParameter failed (%d); ignoring unknown shortcut", status)
+                    return 0
+                hotkey_id = which.id
                 log.info("shortcut %d pressed", hotkey_id)
                 action = self.callbacks.get(hotkey_id)
                 if action is None:
@@ -343,9 +350,13 @@ class Controller(NSObject):  # type: ignore[misc]
         self.idle_image = template("menubar-icon.png")
         self.recording_image = template("menubar-recording.png", template_image=False)
         self.item.button().setImage_(self.idle_image)
+        if self.idle_image is None:
+            self.item.button().setTitle_("C+")
         self.item.button().setToolTip_(hotkeys.APP_NAME)
+        self.item.button().setAccessibilityLabel_(hotkeys.APP_NAME)
         self.item.button().setTarget_(self)
-        self.item.button().setAction_("togglePopover:")
+        self.item.button().setAction_("statusClicked:")
+        self.item.button().sendActionOn_(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)
         self.build_popover()
         # Carbon calls these from inside its event handler: they only note the press and
         # schedule the real work for the next run-loop turn (see hotkey_pressed).
@@ -374,7 +385,6 @@ class Controller(NSObject):  # type: ignore[misc]
             self.open_window("--setup")
 
     @objc.python_method
-    @objc.python_method
     def framed(self, view: Any, rect: Any) -> Any:
         """Pin a factory-made control (button/label) to a fixed frame.
 
@@ -388,12 +398,8 @@ class Controller(NSObject):  # type: ignore[misc]
         return view
 
     @objc.python_method
-    @objc.python_method
     def build_popover(self) -> None:
-        """A Maccy-style quick view: clicking the icon shows recent clips, a search
-        field and Clear History, plus a slim dictation header/footer. Everything else
-        (shortcut presets, Open at Login) lives in Settings now; pausing capture is
-        tray-only for now (see tests/test_platform_parity.py)."""
+        """Left-click opens recent copies; right-click opens the app's actions."""
         self.popover = NSPopover.alloc().init()
         self.popover.setBehavior_(NSPopoverBehaviorTransient)
         self.popover.setContentSize_(NSMakeSize(POPOVER_WIDTH, POPOVER_HEIGHT))
@@ -506,7 +512,122 @@ class Controller(NSObject):  # type: ignore[misc]
         self.popover.setContentViewController_(content)
 
     # -- actions ----------------------------------------------------------
+    def statusClicked_(self, sender: Any) -> None:
+        event = NSApplication.sharedApplication().currentEvent()
+        secondary = event is not None and (
+            event.type() == NSEventTypeRightMouseUp
+            or bool(event.modifierFlags() & NSEventModifierFlagControl)
+        )
+        if secondary:
+            self.popover.close()
+            button = self.item.button()
+            self.context_menu().popUpMenuPositioningItem_atLocation_inView_(None, (0, 0), button)
+        else:
+            self.togglePopover_(sender)
+
     @objc.python_method
+    def menu_item(self, title: str, action: str | None, *, enabled: bool = True) -> Any:
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
+        item.setTarget_(self)
+        item.setEnabled_(enabled and action is not None)
+        return item
+
+    @objc.python_method
+    def context_menu(self) -> Any:
+        """Build from current state each time, including changes made in Settings."""
+        menu = NSMenu.alloc().initWithTitle_(hotkeys.APP_NAME)
+        menu.setAutoenablesItems_(False)
+        features = self.clip.features()
+        try:
+            state = workflow.snapshot(self.paths)
+        except (d.DictationError, OSError, ValueError):
+            state = {"phase": "idle", "active": False}
+        active = bool(state["active"])
+        recording = active and state["phase"] == "recording"
+        if features.clipboard:
+            menu.addItem_(self.menu_item(self.clip.status_line(), None))
+            menu.addItem_(self.menu_item("Clipboard History…", "openFullHistory:"))
+            if self.clip.paused():
+                menu.addItem_(self.menu_item("Resume Clipboard Capture", "resumeCapture:"))
+            else:
+                pause = NSMenu.alloc().initWithTitle_("Pause Clipboard Capture")
+                pause.setAutoenablesItems_(False)
+                pause.addItem_(self.menu_item("For 1 Hour", "pauseForHour:"))
+                pause.addItem_(self.menu_item("Until I Resume", "pauseUntilResumed:"))
+                item = self.menu_item("Pause Clipboard Capture", None)
+                item.setEnabled_(True)
+                item.setSubmenu_(pause)
+                menu.addItem_(item)
+            menu.addItem_(self.menu_item("Clear Clipboard History…", "clearHistory:"))
+            menu.addItem_(NSMenuItem.separatorItem())
+        if features.dictation:
+            menu.addItem_(
+                self.menu_item(
+                    "Stop and Transcribe"
+                    if recording
+                    else "Transcribing…"
+                    if active
+                    else "Start Dictation",
+                    "toggle:",
+                    enabled=recording or not active,
+                )
+            )
+            if recording:
+                menu.addItem_(self.menu_item("Cancel Recording", "cancel:"))
+            menu.addItem_(
+                self.menu_item(
+                    "Copy Last Transcript",
+                    "copyLast:",
+                    enabled=not active and self.paths.text.exists(),
+                )
+            )
+            menu.addItem_(self.menu_item("Record New Shortcut…", "recordShortcut:"))
+            menu.addItem_(NSMenuItem.separatorItem())
+        menu.addItem_(self.menu_item("Settings…", "openSettings:"))
+        login = self.menu_item("Open at Login", "toggleLogin:")
+        login.setState_(int(self.preferences.open_at_login()))
+        menu.addItem_(login)
+        menu.addItem_(self.menu_item("Clipboard+ Website…", "openWebsite:"))
+        menu.addItem_(NSMenuItem.separatorItem())
+        menu.addItem_(self.menu_item(f"Quit {hotkeys.APP_NAME}", "quit:"))
+        return menu
+
+    @objc.python_method
+    def change_capture(self, seconds: float | None = None, *, resume: bool = False) -> None:
+        try:
+            if resume:
+                self.clip.resume()
+            else:
+                self.clip.pause(seconds)
+        except OSError:
+            self.warn(
+                "Couldn’t change clipboard capture", "Check that your settings folder is writable."
+            )
+
+    def pauseForHour_(self, _sender: Any) -> None:
+        self.change_capture(3600)
+
+    def pauseUntilResumed_(self, _sender: Any) -> None:
+        self.change_capture()
+
+    def resumeCapture_(self, _sender: Any) -> None:
+        self.change_capture(resume=True)
+
+    def recordShortcut_(self, _sender: Any) -> None:
+        self.open_window("--shortcut")
+
+    def toggleLogin_(self, _sender: Any) -> None:
+        try:
+            self.preferences.save(open_at_login=not self.preferences.open_at_login())
+            self.sync_login_item()
+        except OSError:
+            self.warn(
+                "Couldn’t change Open at Login", "Check that your settings folder is writable."
+            )
+
+    def openWebsite_(self, _sender: Any) -> None:
+        self.service.open_clipboard_website()
+
     @objc.python_method
     def hotkey_pressed(self, kind: str) -> None:
         """A registered shortcut fired, inside Carbon's callback: never block here.
@@ -549,7 +670,6 @@ class Controller(NSObject):  # type: ignore[misc]
         self.run_engine()
 
     @objc.python_method
-    @objc.python_method
     def explain_accessibility(self) -> None:
         """Before the first paste, say why macOS will ask for Accessibility (once).
 
@@ -580,7 +700,6 @@ class Controller(NSObject):  # type: ignore[misc]
         if alert.runModal() == NSAlertFirstButtonReturn:
             permissions.open_settings(permissions.ACCESSIBILITY_URL)
 
-    @objc.python_method
     @objc.python_method
     def run_engine(self, *flags: str) -> None:
         # The engine owns locking, recording, notifications and the clipboard.
@@ -617,7 +736,6 @@ class Controller(NSObject):  # type: ignore[misc]
         self.open_window("--settings")
 
     @objc.python_method
-    @objc.python_method
     def open_window(self, page: str) -> None:
         open_app_window(page)
 
@@ -629,7 +747,6 @@ class Controller(NSObject):  # type: ignore[misc]
         return False
 
     @objc.python_method
-    @objc.python_method
     def apply_shortcut(self, shortcut: hotkeys.Shortcut) -> None:
         if self.hotkey.register(shortcut):
             self.shortcut, self.hotkey_ok = shortcut, True
@@ -637,13 +754,13 @@ class Controller(NSObject):  # type: ignore[misc]
         else:
             reason = self.hotkey.reason(DICTATION_ID, shortcut.label())
             self.hotkey_ok = self.hotkey.register(self.shortcut)
+            self.preferences.save(shortcut=self.shortcut)
             self.warn("Shortcut unavailable", f"{reason} Keeping {self.shortcut.label()}.")
         self.record_registration("dictation", self.shortcut, self.hotkey_ok)
         self.view = None
         if self.popover.isShown():
             self.refresh_popover_header()
 
-    @objc.python_method
     @objc.python_method
     def sync_login_item(self) -> None:
         enabled = self.preferences.open_at_login()
@@ -652,7 +769,6 @@ class Controller(NSObject):  # type: ignore[misc]
             hotkeys.set_login_item(enabled, hotkeys.bundle_login_command(bundle))
 
     # -- updates ------------------------------------------------------------
-    @objc.python_method
     @objc.python_method
     def start_update_check(self) -> None:
         """Look for a newer release off the main thread; updates.check() throttles
@@ -675,7 +791,6 @@ class Controller(NSObject):  # type: ignore[misc]
         threading.Thread(target=look, daemon=True).start()
 
     @objc.python_method
-    @objc.python_method
     def collect_update(self) -> None:
         """Adopt a finished update check (called from refresh_, never a worker thread)."""
         if not self.update_done:
@@ -691,9 +806,11 @@ class Controller(NSObject):  # type: ignore[misc]
 
     def quit_(self, _sender: Any) -> None:
         self.clip.stop()
+        if self.store is not None:
+            self.store.close()
+            self.store = None
         NSApplication.sharedApplication().terminate_(self)
 
-    @objc.python_method
     @objc.python_method
     def warn(self, title: str, message: str) -> None:
         alert = NSAlert.alloc().init()
@@ -704,11 +821,10 @@ class Controller(NSObject):  # type: ignore[misc]
 
     # -- state ------------------------------------------------------------
     @objc.python_method
-    @objc.python_method
     def apply_features(self) -> None:
         """Own the global shortcuts for the chosen features and refresh the popover to match."""
         features = self.clip.features()
-        if features.dictation and not self.dictation_registered:
+        if features.dictation and not self.dictation_registered and not self.capturing:
             self.hotkey_ok = self.hotkey.register(self.shortcut)
             self.dictation_registered = True
             self.record_registration("dictation", self.shortcut, self.hotkey_ok)
@@ -748,6 +864,10 @@ class Controller(NSObject):  # type: ignore[misc]
         """
         capturing = self.window_is_recording()
         if capturing == self.capturing:
+            if not capturing and self.clip.features().dictation:
+                chosen = self.preferences.shortcut()
+                if chosen != self.shortcut:
+                    self.apply_shortcut(chosen)
             return
         self.capturing = capturing
         if capturing:
@@ -765,7 +885,6 @@ class Controller(NSObject):  # type: ignore[misc]
         self.apply_features()  # Registers the history shortcut again, or its new choice.
 
     @objc.python_method
-    @objc.python_method
     def ready(self) -> bool:
         """Setup state, re-checked every few seconds rather than on every tick."""
         now = time.monotonic()
@@ -774,6 +893,14 @@ class Controller(NSObject):  # type: ignore[misc]
         return bool(self.ready_value)
 
     def refresh_(self, _timer: Any) -> None:
+        try:
+            self.refresh_state()
+        except Exception as exc:  # noqa: BLE001 - the next timer tick must still run.
+            log.exception("menu bar refresh failed")
+            telemetry.capture(exc, stage="menubar_tick")
+
+    @objc.python_method
+    def refresh_state(self) -> None:
         quit_request = self.paths.runtime / "menubar-quit"
         if quit_request.exists():
             quit_request.unlink(missing_ok=True)
@@ -799,8 +926,9 @@ class Controller(NSObject):  # type: ignore[misc]
             self.view = view
             button = self.item.button()
             image, title = menubar_logic.status_button(phase, active, elapsed)
-            button.setImage_(self.recording_image if image == "recording" else self.idle_image)
-            button.setTitle_(title)
+            picture = self.recording_image if image == "recording" else self.idle_image
+            button.setImage_(picture)
+            button.setTitle_(title if picture is not None else "C+" + title)
         if self.popover.isShown():
             self.refresh_popover_header()
 
@@ -820,11 +948,10 @@ class Controller(NSObject):  # type: ignore[misc]
             window.makeFirstResponder_(self.search_field)
 
     @objc.python_method
-    @objc.python_method
     def refresh_popover_layout(self) -> None:
         """Show only the sections the chosen features need."""
         features = self.clip.features()
-        for view in (self.header_status, self.header_button, self.cancel_button):
+        for view in (self.header_button, self.cancel_button):
             view.setHidden_(not features.dictation)
         self.search_field.setHidden_(not features.clipboard)
         self.clear_button.setHidden_(not features.clipboard)
@@ -842,9 +969,11 @@ class Controller(NSObject):  # type: ignore[misc]
         self.refresh_popover_header()
 
     @objc.python_method
-    @objc.python_method
     def refresh_popover_header(self) -> None:
         if not self.clip.features().dictation:
+            self.header_status.setStringValue_(
+                self.clip.status_line() or "Clipboard history is off"
+            )
             return
         try:
             current = workflow.snapshot(self.paths)
@@ -867,7 +996,6 @@ class Controller(NSObject):  # type: ignore[misc]
         self.header_button.setEnabled_(header.enabled)
 
     @objc.python_method
-    @objc.python_method
     def open_store(self) -> clipstore.Store | None:
         if self.store is None:
             try:
@@ -876,7 +1004,6 @@ class Controller(NSObject):  # type: ignore[misc]
                 telemetry.capture(exc, level="warning", stage="popover_store")
         return self.store
 
-    @objc.python_method
     @objc.python_method
     def run_query(self, query: str) -> None:
         store = self.open_store()
@@ -898,11 +1025,9 @@ class Controller(NSObject):  # type: ignore[misc]
             self.empty_label.setHidden_(False)
 
     @objc.python_method
-    @objc.python_method
     def row_text(self, item: clipstore.Item) -> str:
         return clipcontrol.preview_text(item, POPOVER_PREVIEW_CHARS)
 
-    @objc.python_method
     @objc.python_method
     def select_row(self, row: int) -> None:
         if not self.rows:
@@ -913,18 +1038,15 @@ class Controller(NSObject):  # type: ignore[misc]
         self.table.scrollRowToVisible_(row)
 
     @objc.python_method
-    @objc.python_method
     def move_selection(self, delta: int) -> None:
         self.select_row(menubar_logic.next_selection(self.selected, delta, len(self.rows)))
 
-    @objc.python_method
     @objc.python_method
     def activate_selected(self) -> None:
         if 0 <= self.selected < len(self.rows):
             if self.copy_item(self.rows[self.selected]):
                 self.flash_copied()
 
-    @objc.python_method
     @objc.python_method
     def flash_copied(self) -> None:
         """Show "Copied" over the list briefly, then close (Maccy-style confirmation)."""
@@ -938,7 +1060,6 @@ class Controller(NSObject):  # type: ignore[misc]
         self.toast_label.setHidden_(True)
         self.popover.close()
 
-    @objc.python_method
     @objc.python_method
     def on_hover_row(self, row: int) -> None:
         """Repaint only the rows whose hover state actually changed."""
@@ -955,7 +1076,6 @@ class Controller(NSObject):  # type: ignore[misc]
         self.table.reloadDataForRowIndexes_columnIndexes_(indexes, NSIndexSet.indexSetWithIndex_(0))
 
     @objc.python_method
-    @objc.python_method
     def row_detail(self, item: clipstore.Item) -> str:
         """What hovering shows: kind, where it came from, and when it was copied."""
         formatter = NSDateFormatter.alloc().init()
@@ -964,7 +1084,6 @@ class Controller(NSObject):  # type: ignore[misc]
         stamp = formatter.stringFromDate_(NSDate.dateWithTimeIntervalSince1970_(item.created_at))
         return menubar_logic.row_detail(item, stamp)
 
-    @objc.python_method
     @objc.python_method
     def copy_item(self, item: clipstore.Item) -> bool:
         if self.store is None:
@@ -1034,7 +1153,11 @@ class Controller(NSObject):  # type: ignore[misc]
         elif action == "activate":
             self.activate_selected()
         elif action == "close":
-            self.popover.close()
+            if self.search_field.stringValue():
+                self.search_field.setStringValue_("")
+                self.run_query("")
+            else:
+                self.popover.close()
         elif action == "select_all":
             _text_view.selectAll_(None)
         else:
@@ -1042,22 +1165,10 @@ class Controller(NSObject):  # type: ignore[misc]
         return True
 
     def clearHistory_(self, _sender: Any) -> None:
-        store = self.open_store()
-        if store is None:
-            return
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_("Clear clipboard history?")
-        alert.setInformativeText_("Removes everything except favorites. This can’t be undone.")
-        alert.addButtonWithTitle_("Clear History")
-        alert.addButtonWithTitle_("Cancel")
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        if alert.runModal() == NSAlertFirstButtonReturn:
-            try:
-                self.service.clear_clipboard(store, everywhere=False, keep_favorites=True)
-                self.run_query(self.search_field.stringValue())
-            except (sqlite3.Error, OSError) as exc:
-                telemetry.capture(exc, level="warning", stage="popover_clear")
-                self.warn("Couldn’t clear history", "The clipboard history is busy. Try again.")
+        # The shared dialog offers local/account scope and keeping favorites,
+        # with Cancel as the initial keyboard action, on every platform.
+        self.popover.close()
+        self.open_window("--clipboard-clear")
 
     def openFullHistory_(self, _sender: Any) -> None:
         self.popover.close()
@@ -1090,6 +1201,7 @@ def main() -> int:
         return 0
     try:
         (paths.runtime / "menubar-quit").unlink(missing_ok=True)
+        telemetry.install("menubar")
         app = NSApplication.sharedApplication()
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         controller = Controller.alloc().init()

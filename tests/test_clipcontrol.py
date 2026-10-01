@@ -90,6 +90,22 @@ class HistoryShortcutTests(ControlCase):
 
 
 class SupervisionTests(ControlCase):
+    def test_failed_launches_back_off_and_recover_without_breaking_the_tray(self):
+        self.enable()
+        control = self.control()
+        start = Mock(side_effect=OSError("not available"))
+        control._popen = start
+        with patch.object(clipcontrol.logsetup, "get_logger") as logger:
+            for _ in range(12):
+                control.supervise()
+                self.now += clipcontrol.RESTART_SECONDS
+        self.assertEqual(start.call_count, 3)
+        self.assertEqual(logger.return_value.exception.call_count, 3)
+        self.now += clipcontrol.BACKOFF_SECONDS
+        control._popen = self.popen
+        control.supervise()
+        self.assertEqual(len(self.started), 1)
+
     def test_the_service_is_started_once_while_it_runs(self):
         self.enable()
         control = self.control()
@@ -168,6 +184,16 @@ class SupervisionTests(ControlCase):
         self.control().stop()
         self.assertFalse((self.paths.runtime / "clip-quit").exists())
 
+    def test_quit_also_stops_capture_adopted_after_a_tray_restart(self):
+        self.enable()
+        held = desktop.lock(self.paths.runtime / "clipservice.lock")
+        self.addCleanup(os.close, held)
+        control = self.control()
+        control.supervise()
+        self.assertEqual(self.started, [])
+        control.stop()
+        self.assertTrue((self.paths.runtime / "clip-quit").exists())
+
 
 class LoggingTests(ControlCase):
     def test_service_output_goes_to_a_log_file_not_the_void(self):
@@ -214,6 +240,24 @@ class LoggingTests(ControlCase):
 
 
 class PauseTests(ControlCase):
+    def test_pause_expiry_refreshes_menus_without_a_preference_write(self):
+        self.enable()
+        control = self.control()
+        control.pause(60)
+        control.changed()
+        stamp = self.prefs.stamp()
+        self.assertFalse(control.changed())
+        self.wall += 61
+        self.assertTrue(control.changed())
+        self.assertEqual(self.prefs.stamp(), stamp)
+        self.assertFalse(control.changed())
+
+    def test_pause_is_shown_before_the_service_reports_its_next_state(self):
+        self.enable()
+        control = self.control()
+        control.pause(None)
+        self.assertEqual(control.status_line(), "Clipboard: paused")
+
     def test_pause_for_an_hour_then_resume(self):
         self.enable()
         control = self.control()

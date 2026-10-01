@@ -363,6 +363,38 @@ class MaintenanceTests(ServiceCase):
 
 
 class RunTests(ServiceCase):
+    def test_storage_failure_retries_initialization_then_resumes_capture(self):
+        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(False, True))
+        failed = FakeWatcher()
+        working = FakeWatcher()
+
+        def capture_then_quit(_timeout):
+            (self.paths.runtime / "clip-quit").write_text("quit")
+            return clipwatch.Clip(text="after storage recovered")
+
+        working.next_change = capture_then_quit
+        for error in (sqlite3.OperationalError("busy"), OSError("storage offline")):
+            with self.subTest(error=type(error).__name__):
+                store = clipstore.Store(self.paths.clipboard)
+                naps = []
+                with patch.object(clipstore, "Store", side_effect=[error, store]):
+                    watchers = iter((failed, working))
+                    result = clipservice.run(
+                        self.paths, watcher_factory=lambda: next(watchers), sleep=naps.append
+                    )
+                self.assertEqual(result, 0)
+                self.assertEqual(naps, [clipservice.RETRY_SECONDS])
+                self.assertTrue(failed.closed)
+                self.assertTrue(working.closed)
+                self.assertFalse(clipservice.running(self.paths))
+                reopened = clipstore.Store(self.paths.clipboard)
+                try:
+                    self.assertIn(
+                        "after storage recovered", [item.text for item in reopened.list()]
+                    )
+                finally:
+                    reopened.close()
+
     def test_a_second_service_does_not_start(self):
         held = desktop.lock(self.paths.runtime / "clipservice.lock")
         self.addCleanup(os.close, held)

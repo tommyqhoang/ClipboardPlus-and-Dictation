@@ -2,7 +2,9 @@
 # Run inside a bare distribution container (see the linux-distro-install CI job):
 #   docker run --rm -v "$PWD:/src:ro" fedora:latest bash /src/tests/verify-install.sh
 set -euo pipefail
-cp -r /src /app
+mkdir -p /app
+tar -C /src --exclude=.git --exclude=.venv --exclude=build --exclude=dist \
+  --exclude=__pycache__ --exclude=.mypy_cache --exclude=.ruff_cache -cf - . | tar -C /app -xf -
 cd /app
 ./install.sh --no-model
 python="${HOME}/.local/share/whisper-dictation/venv/bin/python"

@@ -90,7 +90,8 @@ class ClipboardControl:
 
     def changed(self) -> bool:
         """Whether features, clipboard settings or the history shortcut changed since last asked."""
-        current = (self.features(), self.settings(), self.history_shortcut())
+        # Time can expire a pause without changing the preference file.
+        current = (self.features(), self.settings(), self.history_shortcut(), self.paused())
         if current == self._reported:
             return False
         self._reported = current
@@ -130,6 +131,9 @@ class ClipboardControl:
             return
         # Its output goes to a rotating log file, not the void: crashes leave a trace.
         output = logsetup.open_stream("clipservice")
+        self._starts = [t for t in self._starts if now - t < CRASH_WINDOW] + [now]
+        crashing = len(self._starts) >= CRASH_LIMIT
+        self._not_before = now + (BACKOFF_SECONDS if crashing else RESTART_SECONDS)
         try:
             self._process = self._popen(
                 self._command,
@@ -138,16 +142,19 @@ class ClipboardControl:
                 stderr=output or subprocess.DEVNULL,
                 **desktop.process_options(detached=True),
             )
+        except OSError:
+            logsetup.get_logger("clipservice").exception(
+                "could not start clipboard capture; retrying"
+            )
         finally:
             if output is not None:
                 output.close()  # The child has its own copy of the descriptor.
-        self._starts = [t for t in self._starts if now - t < CRASH_WINDOW] + [now]
-        crashing = len(self._starts) >= CRASH_LIMIT
-        self._not_before = now + (BACKOFF_SECONDS if crashing else RESTART_SECONDS)
 
     def stop(self) -> None:
         """Ask a service this app started to quit (it restarts with the next launch)."""
-        if self._process is not None and self._process.poll() is None:
+        if (self._process is not None and self._process.poll() is None) or clipservice.running(
+            self._paths
+        ):
             # Only a running service reads it; a stale file would stop the next one.
             d.private_dir(self._paths.runtime)
             d.atomic(self._paths.runtime / "clip-quit", "quit")
@@ -156,6 +163,8 @@ class ClipboardControl:
     def status_line(self, clock: Callable[[], float] = time.time) -> str:
         if not self.features().clipboard:
             return ""
+        if self.paused():
+            return "Clipboard: paused"
         status = clipservice.read_status(self._paths, clock)
         state, count = status["state"], int(status.get("count", 0))
         if state == "paused":

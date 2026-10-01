@@ -549,7 +549,12 @@ class Overlay:
             )
 
     def close(self) -> None:
+        if self.closed:
+            return
         self.closed = True
+        if self._next is not None:
+            self.root.after_cancel(self._next)
+            self._next = None
         self.root.destroy()
 
 

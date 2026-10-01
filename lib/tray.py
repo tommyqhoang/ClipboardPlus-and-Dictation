@@ -68,7 +68,11 @@ class WindowsHotKey:
         self.ready.set()
         while self.user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
             if message.message == WM_HOTKEY:
-                self.callback()
+                try:
+                    self.callback()
+                except Exception as exc:  # noqa: BLE001 - keep the hotkey message loop alive.
+                    log.exception("Windows shortcut action failed")
+                    telemetry.capture(exc, stage="shortcut_action")
             elif message.message == WM_APP:
                 self.user32.UnregisterHotKey(None, 1)
                 shortcut = self.request
@@ -169,7 +173,7 @@ class Tray:
         recent = [
             item(
                 lambda _, index=index: self.row_text(index),
-                lambda index=index: self.copy_row(index),
+                self.row_action(index),
                 visible=lambda _, index=index: clipboard_on(None) and index < len(self.rows),
             )
             for index in range(MENU_ROWS)
@@ -209,7 +213,7 @@ class Tray:
                 item(
                     lambda _: self.toggle_text(),
                     self.toggle,
-                    default=True,
+                    enabled=lambda _: self.phase in ("idle", "recording"),
                     visible=dictation_on,
                 ),
                 item(
@@ -226,18 +230,14 @@ class Tray:
                 item(
                     lambda _: self.history_text(),
                     self.open_history,
-                    default=True,
-                    visible=lambda _: self.clip.features().clipboard and not dictation_on(None),
-                ),
-                item(
-                    lambda _: self.history_text(),
-                    self.open_history,
-                    visible=lambda _: self.clip.features().clipboard and dictation_on(None),
-                ),
-                item(
-                    "Search Clipboard History…",
-                    self.open_history,
+                    default=clipboard_on,
                     visible=clipboard_on,
+                ),
+                item(
+                    f"Open {hotkeys.APP_NAME}…",
+                    lambda: self.open_window(""),
+                    default=lambda _: not self.clip.features().clipboard,
+                    visible=lambda _: not self.clip.features().clipboard,
                 ),
                 item(
                     "Clear Clipboard History…",
@@ -552,6 +552,11 @@ class Tray:
     def row_text(self, index: int) -> str:
         return clipcontrol.preview_text(self.rows[index]) if index < len(self.rows) else ""
 
+    def row_action(self, index: int) -> Callable[[], None]:
+        # pystray passes the icon to any action with one positional parameter,
+        # even when that parameter has a default. Bind the index in a closure.
+        return lambda: self.copy_row(index)
+
     def row_thumb(self, descriptor: Any) -> Path | None:
         """The thumbnail file for the menu row `descriptor`, when it shows an image clip."""
         index = self.row_items.get(id(descriptor), -1)
@@ -561,7 +566,11 @@ class Tray:
         return self.store.thumb_path(clip) if clip.kind == "image" else None
 
     def copy_row(self, index: int) -> None:
-        if not self.clip.features().clipboard or index >= len(self.rows) or self.store is None:
+        if (
+            not self.clip.features().clipboard
+            or not 0 <= index < len(self.rows)
+            or self.store is None
+        ):
             return
         clip = self.rows[index]
         try:
@@ -855,7 +864,7 @@ def main() -> int:
             return 1
         telemetry.install("tray")
         try:
-            import pystray  # type: ignore[import-not-found]
+            import pystray
         except Exception as exc:  # noqa: BLE001 - pystray connects to the display on import.
             if type(exc).__name__ not in ("DisplayNameError", "DisplayConnectionError"):
                 raise

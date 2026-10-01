@@ -38,9 +38,9 @@ API. External services may charge; no subscription is required for local use.
 ## Privacy and anonymous diagnostics
 
 The setup flow and **Settings → Privacy** include a single switch, **Share anonymous
-crash reports and usage statistics**. It is on by default and shown on the first
-setup screen, where you can turn it off; nothing is sent before you have seen it, and
-you can turn it off at any time. `DO_NOT_TRACK=1` or `DICTATION_TELEMETRY=0` disables reporting for a launch.
+crash reports and usage statistics**. It is off by default. Nothing is sent unless
+you explicitly turn it on, and you can turn it off at any time.
+`DO_NOT_TRACK=1` or `DICTATION_TELEMETRY=0` disables reporting for a launch.
 
 When enabled, usage reports contain a random per-installation identifier, a fixed
 event name, approved feature choices, and bounded counts or durations. Crash reports
@@ -59,7 +59,7 @@ Download the installer for your OS from the
 [latest release](https://github.com/tommyqhoang/ClipboardPlus-and-Dictation/releases/latest):
 
 - **macOS**: `Clipboard+-macOS-arm64.dmg` (Apple Silicon). Open the DMG and
-  double-click **Install Clipboard+** — it copies the app into Applications,
+  quit a running copy and double-click **Install Clipboard+** — it copies the app into Applications,
   clears macOS's one-time block for unsigned apps, and launches it. (The app
   isn't notarized yet; without this step macOS 15+ may claim it "is damaged
   and can't be opened." If you instead drag the app yourself, run
@@ -131,12 +131,18 @@ seconds and keeps nothing).
   Settings and Ctrl+W (⌘W) closes it. In the search box, ↑/↓ choose a result,
   Enter copies it and Esc clears the search. Opened by the history shortcut, a
   second Esc closes the window.
+- On macOS, **left-click** the icon for recent copies and search; **right-click**
+  (or Control-click) for app actions. On Windows, left-click opens clipboard history
+  (or the app window when history is off), and right-click opens the menu.
+  Linux follows the desktop's tray behavior, usually opening the menu on click.
+  Clicking the icon never starts a recording by itself.
 - The icon's menu: a status line, Start/Stop, Cancel Recording (while recording),
   Copy Last Transcript (dictation items appear only while Dictation is on),
   **Clipboard History…**, **Pause Clipboard Capture** (for an hour, or until you
-  resume), **Settings…**, and under **More**: **Shortcut** (presets or *Record New
-  Shortcut…*), **Open at Login** and **Clipboard+ Website…**. (The macOS menu bar
-  keeps these at the top level.)
+  resume), **Settings…**, and **Quit Clipboard+**. Windows/Linux keep **Shortcut**
+  (presets or *Record New Shortcut…*), **Open at Login** and **Clipboard+ Website…**
+  under **More**; macOS keeps these in its right-click menu. **Open at login** is
+  also available in Settings on every platform.
 - If another shortcut already uses your keys (GNOME gives them to the first one),
   the Dictation tab says which one and offers to take the keys back.
 - Your own service's API key is stored in the settings folder as

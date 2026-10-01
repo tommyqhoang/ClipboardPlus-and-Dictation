@@ -117,6 +117,20 @@ class OverlayWindowTests(unittest.TestCase):
     def close(self):
         if not self.pill.closed:
             self.pill.close()
+        self.pill = self.root = None
+        import gc
+
+        gc.collect()  # Finalize Tcl objects on their owning thread.
+
+    def test_close_cancels_the_pending_frame_and_is_idempotent(self):
+        self.pill.tick()
+        pending = self.pill._next
+        self.assertIsNotNone(pending)
+        with patch.object(self.root, "after_cancel", wraps=self.root.after_cancel) as cancel:
+            self.pill.close()
+            self.pill.close()
+        cancel.assert_called_once_with(pending)
+        self.assertIsNone(self.pill._next)
 
     def state(self, phase, **extra):
         d.atomic(self.paths.state, json.dumps({"phase": phase, "token": TOKEN, **extra}))
