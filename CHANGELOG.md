@@ -5,6 +5,11 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-10-01
+
+### Fixed
+- In-app updates now select the macOS installer for the computer's architecture.
+
 ## [1.6.1] - 2026-10-01
 
 ### Added
