@@ -605,6 +605,7 @@ class FrozenUpdateTests(unittest.TestCase):
     ASSETS = {
         "Clipboard.-x86_64.AppImage": "https://github.com/o/r/releases/download/v9/a.AppImage",
         "Clipboard.-macOS-arm64.dmg": "https://github.com/o/r/releases/download/v9/a.dmg",
+        "Clipboard.-macOS-x86_64.dmg": "https://github.com/o/r/releases/download/v9/intel.dmg",
         "Clipboard.-Setup.exe": "https://github.com/o/r/releases/download/v9/a.exe",
         "SHA256SUMS": "https://github.com/o/r/releases/download/v9/SHA256SUMS",
     }
@@ -613,17 +614,22 @@ class FrozenUpdateTests(unittest.TestCase):
         pick = updates.platform_asset
         self.assertEqual(pick(self.ASSETS, "linux", "x86_64"), "Clipboard.-x86_64.AppImage")
         self.assertEqual(pick(self.ASSETS, "darwin", "arm64"), "Clipboard.-macOS-arm64.dmg")
+        self.assertEqual(pick(self.ASSETS, "darwin", "aarch64"), "Clipboard.-macOS-arm64.dmg")
+        self.assertEqual(pick(self.ASSETS, "darwin", "x86_64"), "Clipboard.-macOS-x86_64.dmg")
+        self.assertEqual(pick(self.ASSETS, "darwin", "AMD64"), "Clipboard.-macOS-x86_64.dmg")
         self.assertEqual(pick(self.ASSETS, "win32", "AMD64"), "Clipboard.-Setup.exe")
-        for system, machine in (("linux", "aarch64"), ("darwin", "x86_64"), ("freebsd", "x86_64")):
+        for system, machine in (("linux", "aarch64"), ("darwin", "i386"), ("freebsd", "x86_64")):
             with self.subTest(system=system), self.assertRaises(updates.UpdateError):
                 pick(self.ASSETS, system, machine)
         with self.assertRaisesRegex(updates.UpdateError, "no download"):
             pick({"notes.txt": "https://github.com/x"}, "linux", "x86_64")
 
-    def frozen_setup(self, system, blob=b"NEW-APP", good=True):
+    def frozen_setup(self, system, blob=b"NEW-APP", good=True, machine=None):
         digest = hashlib.sha256(blob).hexdigest() if good else "0" * 64
         name = updates.platform_asset(
-            self.ASSETS, system, "arm64" if system == "darwin" else "x86_64"
+            self.ASSETS,
+            system,
+            machine or ("arm64" if system == "darwin" else "x86_64"),
         )
         text = {self.ASSETS["SHA256SUMS"]: f"{digest}  {name}\n"}
 
@@ -680,29 +686,31 @@ class FrozenUpdateTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"OLD")
 
     def test_a_dmg_is_verified_before_it_is_opened(self):
-        downloads = self.root / "Downloads"
-        downloads.mkdir()
-        for good in (False, True):
-            name, texts, download = self.frozen_setup("darwin", good=good)
-            with (
-                patch.object(updates, "downloads_folder", return_value=downloads),
-                patch.object(updates, "_download", download),
-                patch.object(updates.subprocess, "run") as run,
-            ):
-                if good:
-                    message = updates._install_frozen(
-                        self.paths, "9.9.9", self.ASSETS, texts, "darwin", "arm64"
-                    )
-                    run.assert_called_once()
-                    self.assertEqual(run.call_args.args[0], ["open", str(downloads / name)])
-                    self.assertIn("Applications", message)
-                else:
-                    with self.assertRaises(updates.UpdateError):
-                        updates._install_frozen(
-                            self.paths, "9.9.9", self.ASSETS, texts, "darwin", "arm64"
-                        )
-                    run.assert_not_called()
-                    self.assertEqual(list(downloads.iterdir()), [])
+        for machine in ("arm64", "x86_64"):
+            downloads = self.root / f"Downloads-{machine}"
+            downloads.mkdir()
+            for good in (False, True):
+                with self.subTest(machine=machine, good=good):
+                    name, texts, download = self.frozen_setup("darwin", good=good, machine=machine)
+                    with (
+                        patch.object(updates, "downloads_folder", return_value=downloads),
+                        patch.object(updates, "_download", download),
+                        patch.object(updates.subprocess, "run") as run,
+                    ):
+                        if good:
+                            message = updates._install_frozen(
+                                self.paths, "9.9.9", self.ASSETS, texts, "darwin", machine
+                            )
+                            run.assert_called_once()
+                            self.assertEqual(run.call_args.args[0], ["open", str(downloads / name)])
+                            self.assertIn("Applications", message)
+                        else:
+                            with self.assertRaises(updates.UpdateError):
+                                updates._install_frozen(
+                                    self.paths, "9.9.9", self.ASSETS, texts, "darwin", machine
+                                )
+                            run.assert_not_called()
+                            self.assertEqual(list(downloads.iterdir()), [])
 
     def test_windows_setup_is_launched_only_after_verification(self):
         downloads = self.root / "Downloads"

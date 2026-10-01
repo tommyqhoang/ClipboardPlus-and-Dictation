@@ -498,9 +498,15 @@ def platform_asset(
             raise UpdateError("The Linux download is for x86_64 computers only.")
         found = [n for n in names if n.lower().endswith(".appimage") and "x86_64" in n.lower()]
     elif system == "darwin":
-        if machine not in ("arm64", "aarch64"):
-            raise UpdateError("The Mac download is for Apple silicon Macs only.")
-        found = [n for n in names if n.lower().endswith(".dmg")]
+        architecture = {
+            "arm64": "arm64",
+            "aarch64": "arm64",
+            "x86_64": "x86_64",
+            "amd64": "x86_64",
+        }.get(machine)
+        if architecture is None:
+            raise UpdateError("Mac downloads are available for Intel and Apple silicon only.")
+        found = [n for n in names if n.lower().endswith(f"-macos-{architecture}.dmg")]
     elif system in ("win32", "cygwin"):
         found = [n for n in names if n.lower().endswith("setup.exe")]
     else:
