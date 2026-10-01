@@ -118,7 +118,8 @@ class DictationTests(unittest.TestCase):
         begin = time.monotonic()
         self.cli()
         self.wait_phase("idle")
-        self.assertLess(time.monotonic() - begin, 3)
+        # Native macOS Intel CI is slower to start each subprocess than Apple silicon.
+        self.assertLess(time.monotonic() - begin, 8)
         self.assertEqual(self.paths.text.read_text(), "Hello\n\nworld")
         self.assertFalse(self.paths.audio.exists())
         self.assertFalse((self.paths.cache / "concise.json").exists())
