@@ -13,9 +13,9 @@ scope. Most desktops already have `alsa-utils` installed. The AppImage's
 notifies a message naming the package, and clipboard history keeps working.
 This is a documented requirement, not an oversight.
 
-Architectures: the release builds Linux x86_64, Windows x86_64 and macOS Apple
-Silicon (arm64) only. There is no Intel Mac, Linux ARM64 or Windows ARM64
-installer; those users use the source install.
+Architectures: the release builds Linux x86_64, Windows x86_64, macOS Intel
+(x86_64) and macOS Apple silicon (arm64). There is no Linux ARM64 or Windows
+ARM64 installer; those users use the source install.
 
 Licensing: `LICENSE` and `THIRD-PARTY-NOTICES.md` (whisper.cpp MIT, ffmpeg GPL
 with a source offer) are copied into every installer.
@@ -29,9 +29,11 @@ the exact commands to reproduce that locally.
 
 ## Release pipeline and supply chain
 
-- A `v*` tag runs `release.yml`, which first requires the tag to equal `v` +
-  `lib/desktop.py` `APP_VERSION` and the full `quality.yml` suite (all three
-  OSes) to pass; only then are installers built.
+- A push to `main` or a manual `workflow_dispatch` runs `release.yml`. It reads
+  `lib/desktop.py` `APP_VERSION`, skips versions that are already released,
+  requires the full `quality.yml` suite to pass, then builds and inspects every
+  installer. The workflow publishes the release and its `v<APP_VERSION>` tag
+  only after all installer assets and checksums are ready.
 - Pinned inputs: Python packages in `requirements-gui.txt` (GUI toolkits, the
   single place these pins live) and `requirements-release.txt` (adds the
   PyInstaller version); action SHAs; whisper.cpp tag + commit; ffmpeg URLs with

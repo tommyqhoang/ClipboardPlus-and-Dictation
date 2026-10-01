@@ -246,6 +246,15 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("Clipboard+-macOS-x86_64.dmg", self.release)
         self.assertIn("macos-15-intel", quality)
 
+    def test_packaging_docs_match_release_architectures_and_triggers(self):
+        docs = read("packaging", "README.md")
+        self.assertIn("macOS Intel", docs)
+        self.assertIn("Apple silicon (arm64)", docs)
+        self.assertNotIn("There is no Intel Mac", docs)
+        self.assertIn("A push to `main` or a manual `workflow_dispatch`", docs)
+        self.assertIn("only after all installer assets and checksums are ready", docs)
+        self.assertNotIn("A `v*` tag runs `release.yml`", docs)
+
     def test_signing_steps_only_run_when_secrets_exist(self):
         for secret in (
             "APPLE_CERTIFICATE",
