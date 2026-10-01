@@ -232,6 +232,14 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn("pystray==", workflow)
         self.assertIn("requirements-gui.txt", quality)
 
+    def test_macos_releases_build_native_installers_for_both_architectures(self):
+        quality = read(".github", "workflows", "quality.yml")
+        self.assertIn("macos-latest", self.release)  # Apple silicon build.
+        self.assertIn("macos-15-intel", self.release)
+        self.assertIn("Clipboard+-macOS-arm64.dmg", self.release)
+        self.assertIn("Clipboard+-macOS-x86_64.dmg", self.release)
+        self.assertIn("macos-15-intel", quality)
+
     def test_signing_steps_only_run_when_secrets_exist(self):
         for secret in (
             "APPLE_CERTIFICATE",

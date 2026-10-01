@@ -58,17 +58,15 @@ is configured. That secret is never included in the app or its installer.
 Download the installer for your OS from the
 [latest release](https://github.com/tommyqhoang/ClipboardPlus-and-Dictation/releases/latest):
 
-- **macOS**: `Clipboard+-macOS-arm64.dmg` (Apple Silicon). Open the DMG and
-  quit a running copy and double-click **Install Clipboard+** — it copies the app into Applications,
+- **macOS**: choose `Clipboard+-macOS-arm64.dmg` for Apple silicon or
+  `Clipboard+-macOS-x86_64.dmg` for Intel. Open the matching DMG, quit a running
+  copy and double-click **Install Clipboard+** — it copies the app into Applications,
   clears macOS's one-time block for unsigned apps, and launches it. (The app
   isn't notarized yet; without this step macOS 15+ may claim it "is damaged
   and can't be opened." If you instead drag the app yourself, run
   `xattr -dr com.apple.quarantine /Applications/Clipboard+.app` once in
   Terminal before opening it.) Signed and notarized builds skip this step
   once the maintainer's Apple credentials are configured for a release.
-  **Intel Macs:** no prebuilt installer is published (the release builds only
-  Apple Silicon); use the [source install](#build-from-source), which works on
-  Intel but gets less testing.
 - **Windows**: `Clipboard+-Setup.exe` — run it; if SmartScreen shows a
   notice, choose "More info" then "Run anyway" (unsigned unless the release
   was built with signing credentials). x86_64 only; Windows on ARM runs it

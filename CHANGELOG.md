@@ -5,6 +5,12 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-10-01
+
+### Added
+- Releases now include a native Intel Mac installer and run the macOS checks on both
+  Intel and Apple silicon hosts. Choose the installer that matches the Mac.
+
 ## [1.6.0] - 2026-10-01
 
 ### Fixed

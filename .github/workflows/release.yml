@@ -78,6 +78,10 @@ jobs:
             spec: packaging/macos/clipboardplus.spec
             wrap: packaging/macos/build-dmg.sh
             asset: dist/Clipboard+-macOS-arm64.dmg
+          - os: macos-15-intel
+            spec: packaging/macos/clipboardplus.spec
+            wrap: packaging/macos/build-dmg.sh
+            asset: dist/Clipboard+-macOS-x86_64.dmg
           - os: windows-latest
             spec: packaging/windows/clipboardplus.spec
             wrap: ""
