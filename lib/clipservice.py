@@ -44,6 +44,20 @@ PID_FILE = "clipservice.pid"
 MAX_SIGNAL_BYTES = 16  # Signal files carry a word or a digit; anything longer is not ours.
 
 
+def _open_claimed(path: Path, flags: int) -> int:
+    """Open a claimed file. On Windows a reader that lost the rename race can still hold
+    the file for a moment, which makes the winner's open fail with a sharing violation:
+    retry briefly instead of dropping a request that was correctly claimed."""
+    for attempt in range(20):
+        try:
+            return os.open(path, flags)
+        except PermissionError:
+            if sys.platform != "win32" or attempt == 19:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
+
+
 def consume_signal(path: Path, accepted: frozenset[str]) -> bool:
     """Claim a control file and say whether it was a valid request.
 
@@ -67,7 +81,7 @@ def consume_signal(path: Path, accepted: frozenset[str]) -> bool:
         ):
             return False
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        with os.fdopen(os.open(claimed, flags), "rb") as stream:
+        with os.fdopen(_open_claimed(claimed, flags), "rb") as stream:
             text = stream.read(MAX_SIGNAL_BYTES + 1).decode("utf-8", "replace").strip()
         return text in accepted
     except OSError:

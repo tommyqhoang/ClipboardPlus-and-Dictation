@@ -69,6 +69,25 @@ class ConsumeSignalTests(unittest.TestCase):
             self.assertFalse(clipservice.consume_signal(self.path, QUIT))
         self.assertEqual(self.leftovers(), [])
 
+    def test_a_windows_sharing_violation_is_retried_not_dropped(self):
+        self.path.write_text("quit")
+        real_open = os.open
+        calls = []
+
+        def flaky(path, flags, *args):
+            calls.append(path)
+            if len(calls) == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_open(path, flags, *args)
+
+        with (
+            patch.object(clipservice.sys, "platform", "win32"),
+            patch.object(clipservice.os, "open", flaky),
+            patch.object(clipservice.time, "sleep"),
+        ):
+            self.assertTrue(clipservice.consume_signal(self.path, QUIT))
+        self.assertGreater(len(calls), 1)
+
     def test_only_one_of_many_racing_readers_gets_the_request(self):
         for _ in range(20):
             self.path.write_text("quit")
