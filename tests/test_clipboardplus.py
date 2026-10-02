@@ -57,6 +57,19 @@ class KeychainTests(unittest.TestCase):
         patcher = patch.object(cp, "_keyring", side_effect=lambda: self.keyring)
         patcher.start()
         self.addCleanup(patcher.stop)
+        cp._keychain_cache.clear()
+        self.addCleanup(cp._keychain_cache.clear)
+
+    def test_repeated_link_checks_ask_the_keychain_once(self):
+        cp.save_key(self.folder, KEY)
+        calls = []
+        real = self.keyring.get_password
+        self.keyring.get_password = lambda *args: calls.append(args) or real(*args)
+        for _ in range(5):
+            self.assertTrue(cp.linked(self.folder))
+        self.assertEqual(len(calls), 1)
+        cp.remove_key(self.folder)
+        self.assertFalse(cp.linked(self.folder))
 
     def test_the_key_lives_in_the_keychain_and_the_file_is_only_a_marker(self):
         cp.save_key(self.folder, KEY)

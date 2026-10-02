@@ -852,6 +852,28 @@ class WindowTests(ServiceCase):
         self.finish()
         self.assertEqual(self.window.page, "closed")
 
+    def test_background_results_arrive_without_waiting_for_the_slow_poll(self):
+        got = []
+        self.window.background(lambda: "answer", got.append)
+        deadline = time.monotonic() + 2
+        while not got and time.monotonic() < deadline:
+            self.root.update()  # The half-second poll cannot fire in this time.
+            time.sleep(0.005)
+        self.assertEqual(got, ["answer"])
+        self.assertEqual(self.window.lookups, [])
+        self.assertIsNone(self.window.lookup_timer)
+
+    def test_a_failing_lookup_callback_is_reported_not_raised(self):
+        def explode(_value):
+            raise OSError("disk gone")
+
+        self.window.background(lambda: 1, explode)
+        deadline = time.monotonic() + 2
+        while self.window.lookups and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(0.005)
+        self.assertIn("Something went wrong", self.window.status.get())
+
     def test_settings_page_argument(self):
         self.window.destroy()
         with patch.object(self.service, "completed", return_value=True):

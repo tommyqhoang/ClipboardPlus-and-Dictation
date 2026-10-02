@@ -26,6 +26,7 @@ PAGE_SIZE = 50
 ROW_BATCH = 12
 PREVIEW_CHARS = 140
 SEARCH_DELAY_MS = 150
+SEARCH_INDICATOR_MS = 250  # A search quicker than this shows no "Searching…" label.
 THUMB_PIXELS = 96
 PAD = 20  # The window's side padding (app.PAD).
 SOURCES = {"desktop": "Desktop", "dictation": "Dictation", "cloud": "Cloud"}
@@ -116,6 +117,7 @@ class ClipboardPage:
         self._search_future: Any | None = None
         self._searching = False
         self._search_indicator: ttk.Label | None = None
+        self._indicator_after: str | None = None
         self._copy_after_search = False
         self.query.trace_add("write", lambda *_: self._query_changed())
 
@@ -216,6 +218,7 @@ class ClipboardPage:
             self._search_future.cancel()
         self._search_future = None
         self._searching = False
+        self._clear_search_indicator()
 
     def fit(self, width: int) -> None:
         """Below this width the item count would push the filters off the row."""
@@ -286,14 +289,14 @@ class ClipboardPage:
             return
 
         self._searching = True
-        if self._search_indicator is not None and self._search_indicator.winfo_exists():
-            self._search_indicator.destroy()
-        self._search_indicator = ttk.Label(
-            self.banner,
-            text="Searching clipboard…",
-            style="Hint.TLabel",
+        # Most searches finish in a few milliseconds; a label that appears and vanishes
+        # inside one keystroke only shoves the list down and back up. Show it for the
+        # slow ones.
+        if self._indicator_after is not None:
+            self.app.root.after_cancel(self._indicator_after)
+        self._indicator_after = self.app.root.after(
+            SEARCH_INDICATOR_MS, lambda: self._show_search_indicator(generation)
         )
-        self._search_indicator.pack(anchor="w", pady=(0, 8))
 
         def work() -> tuple[clipstore.Items | None, Exception | None]:
             try:
@@ -334,6 +337,23 @@ class ClipboardPage:
         queries = self.app.clipboard_queries
         queries.add(future)
         future.add_done_callback(queries.discard)
+
+    def _show_search_indicator(self, generation: int) -> None:
+        self._indicator_after = None
+        if generation != self._search_generation or not self._searching:
+            return
+        if self._search_indicator is not None and self._search_indicator.winfo_exists():
+            return
+        self._search_indicator = ttk.Label(
+            self.banner, text="Searching clipboard…", style="Hint.TLabel"
+        )
+        self._search_indicator.pack(anchor="w", pady=(0, 8))
+
+    def _clear_search_indicator(self) -> None:
+        if self._indicator_after is not None:
+            self.app.root.after_cancel(self._indicator_after)
+            self._indicator_after = None
+        self._search_indicator = None
 
     def set_query(self, text: str) -> None:
         self.query.set(text)
@@ -471,7 +491,7 @@ class ClipboardPage:
             return
         assert items is not None
         self._signature = signature
-        self._search_indicator = None
+        self._clear_search_indicator()
         for child in self.banner.winfo_children() + self.list_frame.winfo_children():
             if child is not self.card:
                 child.destroy()  # The paused banner and the empty-list hint.
@@ -545,7 +565,7 @@ class ClipboardPage:
                 child.destroy()
         for child in self.banner.winfo_children():
             child.destroy()
-        self._search_indicator = None
+        self._clear_search_indicator()
         ttk.Label(
             self.banner,
             text="Clipboard history couldn’t be refreshed. Your existing items are still here.",

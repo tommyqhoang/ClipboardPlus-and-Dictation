@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -114,6 +115,7 @@ def _keychain_name(config_dir: Path) -> str:
 
 def _keychain_store(config_dir: Path, key: str) -> bool:
     """Put the key in the system keychain; True only when it reads back identically."""
+    _keychain_cache.pop(_keychain_name(config_dir), None)
     keyring = _keyring()
     if keyring is None:
         return False
@@ -124,18 +126,32 @@ def _keychain_store(config_dir: Path, key: str) -> bool:
         return False
 
 
+# The window asks "is this device linked?" every second or two, on its UI thread. A
+# keychain read can take tens of milliseconds, or seconds behind a locked Secret Service,
+# so a recent answer is reused; saving or removing a key forgets it at once.
+_KEYCHAIN_TTL = 30.0
+_keychain_cache: dict[str, tuple[float, str]] = {}
+
+
 def _keychain_read(config_dir: Path) -> str:
+    name = _keychain_name(config_dir)
+    cached = _keychain_cache.get(name)
+    if cached is not None and time.monotonic() - cached[0] < _KEYCHAIN_TTL:
+        return cached[1]
     keyring = _keyring()
     if keyring is None:
         return ""
     try:
-        found = keyring.get_password(KEYRING_SERVICE, _keychain_name(config_dir))
-        return clean_key(found) if isinstance(found, str) else ""
+        found = keyring.get_password(KEYRING_SERVICE, name)
+        key = clean_key(found) if isinstance(found, str) else ""
     except Exception:  # noqa: BLE001
         return ""
+    _keychain_cache[name] = (time.monotonic(), key)
+    return key
 
 
 def _keychain_delete(config_dir: Path) -> None:
+    _keychain_cache.pop(_keychain_name(config_dir), None)
     keyring = _keyring()
     if keyring is None:
         return

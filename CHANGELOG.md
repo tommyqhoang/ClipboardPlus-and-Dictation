@@ -5,6 +5,17 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+### Fixed
+- Clipboard search and page loads no longer wait for the half-second window poll: results
+  are collected within about 15 ms, so typing a search and opening the history feel instant.
+- The "Searching clipboard…" label only appears for searches that take over a quarter of a
+  second, so fast searches no longer make the list jump down and back up on every keystroke.
+- The window no longer asks the system keychain (which can take seconds behind a locked
+  Secret Service) on every refresh to learn whether Clipboard+ is linked; the answer is
+  reused for 30 seconds and forgotten when a key is saved or removed.
+- Opening the history from its shortcut shows the finished window once, raised and focused,
+  instead of mapping it first and moving it a moment later.
+
 ## [1.6.4] - 2026-10-02
 
 ### Fixed

@@ -67,6 +67,7 @@ MODES = (
 # How long the scrollbar stays once shown, so a page at the window's height cannot
 # make it appear and disappear forever.
 SCROLLBAR_SETTLE = 0.4
+LOOKUP_MS = 15  # How often finished background lookups are collected while any run.
 PAD = 20  # The page's side padding.
 # Past this, a maximized window centers a readable column instead of stretching
 # buttons and fields across the whole screen.
@@ -95,6 +96,7 @@ class App:
         # Quiet lookups (microphones) that must not lock the page like `submit` does.
         self.helper = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.lookups: list[tuple[concurrent.futures.Future[Any], Callable[[Any], None]]] = []
+        self.lookup_timer: str | None = None
         self.clipboard_open_future: concurrent.futures.Future[Any] | None = None
         self.clipboard_queries: set[concurrent.futures.Future[Any]] = set()
         self.pending: concurrent.futures.Future[Any] | None = None
@@ -1784,6 +1786,7 @@ class App:
         """Run `work` off the UI thread; `poll` passes its result to `done`. Nothing locks."""
         future = self.helper.submit(work)
         self.lookups.append((future, done))
+        self.watch_lookups()
         return future
 
     def show_microphones(self, devices: list[str]) -> None:
@@ -2569,11 +2572,52 @@ class App:
 
     def bring_forward(self) -> None:
         """Show the window above others and give it the keyboard (a shortcut opened it)."""
+        self.root.update_idletasks()  # Lay the page out before it is mapped, so it never resizes on screen.
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)  # Otherwise many desktops only flash it.
         self.root.after_idle(lambda: self.root.attributes("-topmost", False))
         self.root.focus_force()
+
+    def deliver_lookups(self) -> None:
+        """Hand each finished background lookup to the code waiting for it."""
+        for lookup in [entry for entry in self.lookups if entry[0].done()]:
+            self.lookups.remove(lookup)
+            future, finished = lookup
+            if future.cancelled():
+                continue
+            finished(future.result())  # A failure is reported by the caller.
+
+    def watch_lookups(self) -> None:
+        """Check for finished lookups every few milliseconds while any are running.
+
+        The slow poll below would otherwise hold every result back by up to half a
+        second: a search would answer a beat after the typing, and a page would sit on
+        its "loading" card long after its data had arrived.
+        """
+        if self.lookup_timer is None and self.lookups and self.page != "closed":
+            self.lookup_timer = self.root.after(LOOKUP_MS, self.drain_lookups)
+
+    def drain_lookups(self) -> None:
+        self.lookup_timer = None
+        try:
+            self.deliver_lookups()
+        except Exception as exc:  # noqa: BLE001 - one failed callback must not stop the rest.
+            self.report_poll_failure(exc)
+        self.watch_lookups()
+
+    def report_poll_failure(self, exc: Exception) -> None:
+        if isinstance(exc, d.DictationError):  # Those are explained on screen.
+            self.status.set(str(exc))
+        elif isinstance(exc, (OSError, ValueError, subprocess.SubprocessError)):
+            telemetry.capture(exc, page=self.page)
+            self.status.set(
+                "Something went wrong. Check microphone permissions, connections, and free disk space, then retry."
+            )
+        else:
+            log.exception("window update failed")
+            telemetry.capture(exc, page=self.page)
+            self.status.set("Something went wrong. Please try again.")
 
     def poll(self) -> None:
         try:
@@ -2583,12 +2627,7 @@ class App:
                 activation.unlink()
                 self.bring_forward()
                 self.open_page(request)
-            for lookup in [entry for entry in self.lookups if entry[0].done()]:
-                self.lookups.remove(lookup)
-                future, finished = lookup
-                if future.cancelled():
-                    continue
-                finished(future.result())  # A failure is reported below, like any other.
+            self.deliver_lookups()
             if self.pending is not None and not self.pending.done():
                 self.show_download()
             if self.pending is not None and self.pending.done():
@@ -2615,18 +2654,8 @@ class App:
                 if self.polls % 5 == 0:  # About once a second.
                     self.clipboard_page.refresh()
             self.refresh_update_result()
-        except (d.DictationError, OSError, ValueError, subprocess.SubprocessError) as exc:
-            if not isinstance(exc, d.DictationError):  # Those are explained on screen.
-                telemetry.capture(exc, page=self.page)
-            self.status.set(
-                str(exc)
-                if isinstance(exc, d.DictationError)
-                else "Something went wrong. Check microphone permissions, connections, and free disk space, then retry."
-            )
         except Exception as exc:  # noqa: BLE001 - never let one failure stop the window updating.
-            log.exception("window update failed")
-            telemetry.capture(exc, page=self.page)
-            self.status.set("Something went wrong. Please try again.")
+            self.report_poll_failure(exc)
         if self.page != "closed":
             # Half a second is plenty when idle; recording screens update their own
             # state file in the meantime, and account/clipboard refresh still lands
@@ -2759,8 +2788,11 @@ def main(argv: list[str] | None = None) -> int:
 
         telemetry.watch_tk(root)
         telemetry.event("app_open", page=page or "home")
+        picker = page in ("clipboard", "clipboard-clear")
+        if picker:
+            root.withdraw()  # Shown once, raised and focused, instead of mapped then moved.
         window = App(root, Service(paths), page)
-        if page in ("clipboard", "clipboard-clear"):
+        if picker:
             root.after_idle(window.bring_forward)  # Opened by its shortcut: ready to type.
         if page == "clipboard-clear":
             root.after_idle(window.clear_clipboard_history)
