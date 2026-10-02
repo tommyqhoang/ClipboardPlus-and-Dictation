@@ -31,7 +31,10 @@ ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"
 # The executables read their data through that symlink; fail the build rather than
 # ship a menu bar app with no icon images.
 for required in menubar-icon.png menubar-recording.png libtk8.6.dylib; do
-  [[ -f "$APP/Contents/MacOS/_internal/$required" ]] || { echo "missing $required in the bundle" >&2; exit 1; }
+  [[ -f "$APP/Contents/MacOS/_internal/$required" ]] || {
+    echo "missing $required in the bundle" >&2
+    exit 1
+  }
 done
 
 # --- Ad-hoc code signing ----------------------------------------------------
