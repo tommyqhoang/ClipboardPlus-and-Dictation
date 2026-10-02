@@ -284,6 +284,16 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn("pystray==", workflow)
         self.assertIn("requirements-gui.txt", quality)
 
+    def test_macos_bundle_ships_the_permission_probe_frameworks(self):
+        gui = read("requirements-gui.txt")
+        spec = read("packaging", "macos", "clipboardplus.spec")
+        for module, pin in (
+            ("AVFoundation", "AVFoundation"),
+            ("HIServices", "ApplicationServices"),
+        ):
+            self.assertIn(f"pyobjc-framework-{pin}==", gui)
+            self.assertIn(f'"{module}"', spec)
+
     def test_macos_releases_build_native_installers_for_both_architectures(self):
         quality = read(".github", "workflows", "quality.yml")
         self.assertIn("macos-latest", self.release)  # Apple silicon build.

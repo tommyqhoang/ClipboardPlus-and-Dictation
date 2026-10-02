@@ -12,6 +12,7 @@ import logging
 import os
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -257,8 +258,31 @@ class GlobalHotKey:
                 log.warning("UnregisterEventHotKey failed with OSStatus %d", status)
 
 
-def template(name: str, template_image: bool = True) -> Any:
-    image = NSImage.alloc().initWithContentsOfFile_(str(HERE / name))
+def resource_path(name: str) -> Path | None:
+    """Where a bundled data file lives: next to this module, PyInstaller's data dir, or
+    the .app's Resources/_internal (build-dmg.sh moves _internal there)."""
+    candidates = [HERE]
+    bundled = getattr(sys, "_MEIPASS", "")
+    if bundled:
+        candidates.append(Path(bundled))
+    candidates.append(Path(sys.executable).resolve().parent.parent / "Resources/_internal")
+    for folder in candidates:
+        if (folder / name).is_file():
+            return folder / name
+    log.warning("menu bar image %s not found in %s", name, [str(c) for c in candidates])
+    return None
+
+
+def template(name: str, template_image: bool = True, symbol: str = "waveform") -> Any:
+    """The menu bar image: the bundled PNG, else a system symbol, else None (the caller
+    then shows the "C+" title so the item is never invisible)."""
+    path = resource_path(name)
+    image = NSImage.alloc().initWithContentsOfFile_(str(path)) if path else None
+    if image is None:
+        maker = getattr(NSImage, "imageWithSystemSymbolName_accessibilityDescription_", None)
+        image = maker(symbol, hotkeys.APP_NAME) if maker else None
+        if image is not None:
+            log.warning("using the %s system symbol for %s", symbol, name)
     if image is not None:
         image.setSize_((18, 18))
         image.setTemplate_(template_image)
@@ -349,7 +373,9 @@ class Controller(NSObject):  # type: ignore[misc]
     def applicationDidFinishLaunching_(self, _notification: Any) -> None:
         self.item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
         self.idle_image = template("menubar-icon.png")
-        self.recording_image = template("menubar-recording.png", template_image=False)
+        self.recording_image = template(
+            "menubar-recording.png", template_image=False, symbol="record.circle.fill"
+        )
         self.item.button().setImage_(self.idle_image)
         if self.idle_image is None:
             self.item.button().setTitle_("C+")

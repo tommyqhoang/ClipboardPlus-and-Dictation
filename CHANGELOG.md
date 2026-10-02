@@ -5,6 +5,17 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-10-02
+
+### Fixed
+- macOS: the recording bar appears again. It was created after the app object, which
+  stopped Tk from starting; it now starts first, and a failure is logged as a warning.
+- macOS: the menu bar icon is found wherever the app bundle keeps its images, with a
+  system-symbol fallback and a warning in the log if neither is available.
+- macOS: the packaged app now includes the frameworks that check microphone and
+  accessibility permission, so a denied microphone is explained instead of "unknown".
+- Release checks now launch the recording bar for real and verify the Mac bundle's icons.
+
 ## [1.6.3] - 2026-10-01
 
 ### Changed

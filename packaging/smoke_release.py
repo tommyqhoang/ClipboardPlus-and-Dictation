@@ -21,11 +21,18 @@ def main() -> int:
         if not binary.is_file():
             continue
         found += 1
-        command = [str(binary), "--status"] if entry == "dictation" else [str(binary)]
+        command = [str(binary)]
+        if entry == "dictation":
+            command.append("--status")
+        elif entry == "overlay":
+            command.append("smoke-test")  # Without a token it exits before Tk starts.
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=5)
             output = result.stdout + result.stderr
             crashed = any(marker in output for marker in IMPORT_ERRORS)
+            # 3/4 = the pill could not open a window; on macOS that is a Tk/NSApp bug.
+            if entry == "overlay" and sys.platform == "darwin" and result.returncode in (3, 4):
+                crashed = True
             print(f"{'FAIL' if crashed else 'OK'}: {entry} (exit {result.returncode})")
             if crashed:
                 print(output)

@@ -81,7 +81,13 @@ WINDOWS_APP_ID = "Aperca.ClipboardPlus"
 
 
 def set_macos_accessory_policy() -> None:
-    """Make Tk's NSApplication an accessory before it can appear in the Dock."""
+    """Keep Tk's NSApplication out of the Dock.
+
+    Call this only AFTER tk.Tk(): Tk must be the first thing to create NSApp (it
+    installs its own TKApplication subclass). Touching NSApplication.sharedApplication()
+    earlier hands Tk a plain NSApplication, tk.Tk() fails, and the pill silently never
+    appears. The packaged .app is already LSUIElement; this covers source installs.
+    """
     try:
         import AppKit  # type: ignore[import-not-found,unused-ignore]
 
@@ -112,7 +118,7 @@ def hide_from_app_switcher(root: tk.Tk) -> None:
                 log.info("could not set the Clipboard+ Windows app identity: %s", result)
         except (AttributeError, OSError) as exc:
             log.info("could not set the Clipboard+ Windows app identity: %s", exc)
-    else:
+    elif platform == "linux":
         # Notification windows are excluded from GNOME/KDE task lists and docks.
         try:
             root.tk.call("wm", "class", str(root), "ClipboardPlus", "ClipboardPlus")
@@ -617,13 +623,14 @@ def main() -> int:
     if reason:
         log.info("no recording pill: %s", reason)
         return EXIT_UNSUPPORTED  # Notifications and sounds still tell the story.
-    if desktop.platform_name() == "macos":
-        set_macos_accessory_policy()
     try:
         root = tk.Tk(className="ClipboardPlus")
     except tk.TclError as exc:
-        log.info("no recording pill: %s", exc)
+        # Warning, not info: on a desktop that should have a display this is a bug.
+        log.warning("no recording pill: %s", exc)
         return EXIT_NO_DISPLAY  # No display: the notifications still tell the story.
+    if desktop.platform_name() == "macos":
+        set_macos_accessory_policy()
     telemetry.watch_tk(root)
     hide_from_app_switcher(root)
     root.title(hotkeys.APP_NAME)

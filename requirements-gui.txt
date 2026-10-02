@@ -2,6 +2,10 @@
 # need (tray/menu-bar entry points). Referenced by release.yml and quality.yml.
 # Keep in step with the pins setup-desktop.py installs into its private venv.
 pyobjc-framework-Cocoa==12.2.2; sys_platform == "darwin"
+# permissions.py probes microphone/accessibility trust through these; without them the
+# packaged app reports "unknown" and never explains a denied microphone.
+pyobjc-framework-AVFoundation==12.2.2; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices==12.2.2; sys_platform == "darwin"
 pystray==0.19.5; sys_platform != "darwin"
 python-xlib==0.33; sys_platform == "linux"
 Pillow==12.3.0

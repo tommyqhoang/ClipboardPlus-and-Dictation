@@ -38,6 +38,25 @@ class HelperTests(unittest.TestCase):
             1
         )
 
+    def test_mac_pill_creates_tk_before_touching_nsapplication(self):
+        # Tk must create NSApp first (TKApplication); an earlier NSApplication
+        # makes tk.Tk() fail and the pill never shows on macOS.
+        order = []
+        with (
+            patch.object(overlay, "pill_unsupported", return_value=""),
+            patch.object(overlay.desktop, "platform_name", return_value="macos"),
+            patch.object(overlay, "set_macos_accessory_policy", lambda: order.append("policy")),
+            patch.object(overlay.tk, "Tk", side_effect=lambda **_: order.append("tk") or Mock()),
+            patch.object(overlay, "Overlay", Mock()),
+            patch.object(overlay, "hide_from_app_switcher"),
+            patch.object(overlay.telemetry, "install"),
+            patch.object(overlay.telemetry, "watch_tk"),
+            patch.object(overlay.d, "Paths"),
+            patch.object(sys, "argv", ["overlay", "token"]),
+        ):
+            overlay.main()
+        self.assertEqual(order, ["tk", "policy"])
+
     def test_windows_overlay_is_a_tool_window_with_product_identity(self):
         root = Mock()
         windll = Mock()

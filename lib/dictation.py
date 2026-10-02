@@ -787,7 +787,7 @@ class Session:
         if self.pill is None or self.pill_failed or self.pill.poll() in (None, 0):
             return
         self.pill_failed = True
-        log.info("recording pill exited with %s; using notifications", self.pill.returncode)
+        log.warning("recording pill exited with %s; using notifications", self.pill.returncode)
         self.tell("Recording. Press your shortcut again to stop.")
         self.cue("start")
 

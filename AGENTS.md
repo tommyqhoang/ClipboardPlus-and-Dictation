@@ -41,3 +41,10 @@ under Xvfb, never on the user's display.
 3. Never send transcripts, clipboard content or keys anywhere the user did not
    choose; telemetry must stay free of content (see `lib/telemetry.py`).
 4. Add a test with every bug fix; keep `mypy --strict` and ruff clean.
+5. **Versions: one source, never hand-edited.** The version lives in `lib/desktop.py`
+   (`APP_VERSION`). Never type a version number into `pyproject.toml`, the bootstrap
+   scripts, `Info.plist`, the installer or a workflow. To release, run
+   `python tools/bump_version.py X.Y.Z` (it also rolls `CHANGELOG.md`'s `[Unreleased]`
+   section), then commit. Only bump when the user asks for a release. If you add a new
+   place that needs the version, derive it from `APP_VERSION` or add it to
+   `tools/bump_version.py` plus its test in `tests/test_packaging.py`.

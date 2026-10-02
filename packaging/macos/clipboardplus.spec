@@ -30,6 +30,8 @@ PYOBJC_HIDDEN_IMPORTS = [
     "PyObjCTools",
     "objc._objc",
 ]
+# permissions.py imports these lazily, so PyInstaller cannot see them.
+PERMISSION_HIDDEN_IMPORTS = ["AVFoundation", "HIServices"]
 
 analyses = []
 for entry in ENTRIES:
@@ -45,6 +47,7 @@ for entry in ENTRIES:
             ],
             hiddenimports=[
                 *KEYRING_IMPORTS,
+                *PERMISSION_HIDDEN_IMPORTS,
                 *(PYOBJC_HIDDEN_IMPORTS if entry in ("menubar", "overlay") else []),
             ],
             hookspath=HOOKS,
