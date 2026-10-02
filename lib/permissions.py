@@ -227,5 +227,8 @@ def tail_of(data: bytes | str | None, limit: int = 300) -> str:
 
 if __name__ == "__main__":  # pragma: no cover - a quick manual check.
     print("session:", session_kind(), file=sys.stderr)
-    print("accessibility:", accessibility_trusted())
+    # Plain yes/no/unknown words, never the raw values (a name like "trusted" reads to
+    # code scanners as a credential even though this is only a permission switch).
+    granted = accessibility_trusted()
+    print("accessibility:", "unknown" if granted is None else ("yes" if granted else "no"))
     print("microphone:", microphone_status())
