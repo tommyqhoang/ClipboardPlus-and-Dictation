@@ -5,6 +5,8 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.5] - 2026-10-02
+
 ### Fixed
 - Clipboard search and page loads no longer wait for the half-second window poll: results
   are collected within about 15 ms, so typing a search and opening the history feel instant.
