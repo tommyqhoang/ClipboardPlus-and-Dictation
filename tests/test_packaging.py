@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -32,6 +33,16 @@ class MacBundleSigningTests(unittest.TestCase):
     """The DMG must not ship unsigned: Apple Silicon shows a quarantined
     unsigned app as "damaged and can't be opened" with no bypass on macOS
     15+, and dylibbundler invalidates Homebrew ffmpeg's signatures."""
+
+    def test_bundle_metadata_uses_the_clipboard_brand(self):
+        info = plistlib.loads((REPO_ROOT / "packaging/macos/Info.plist").read_bytes())
+        self.assertEqual(info["CFBundleName"], "Clipboard+")
+        self.assertEqual(info["CFBundleDisplayName"], "Clipboard+")
+        self.assertEqual(info["CFBundleIconFile"], "AppIcon")
+        self.assertEqual(
+            info["NSMicrophoneUsageDescription"],
+            "Clipboard+ records speech only when you press Record.",
+        )
 
     def test_build_dmg_adhoc_signs_and_verifies_every_macho(self):
         script = (REPO_ROOT / "packaging" / "macos" / "build-dmg.sh").read_text(encoding="utf-8")

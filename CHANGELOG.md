@@ -5,8 +5,15 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-10-01
+
 ### Changed
+- macOS microphone permission text now names Clipboard+.
 - The release version bump command now updates both platform bootstrap fallback tags.
+
+### Fixed
+- The recording pill now stays out of the app dock, task switcher and taskbar across
+  macOS, Windows and Linux.
 
 ### Fixed
 - The macOS/Linux and Windows bootstrap commands now fall back to the current

@@ -504,10 +504,13 @@ def install_app_launcher(prefix: Path) -> None:
                     "CFBundleExecutable": hotkeys.APP_NAME,
                     "CFBundlePackageType": "APPL",
                     "CFBundleIconFile": "AppIcon",
-                    "CFBundleVersion": "3",
+                    "CFBundleVersion": desktop.APP_VERSION,
+                    "CFBundleShortVersionString": desktop.APP_VERSION,
                     # A menu bar app: no Dock icon or app switcher entry.
                     "LSUIElement": True,
-                    "NSMicrophoneUsageDescription": "Record speech only when you press Record.",
+                    "NSMicrophoneUsageDescription": (
+                        "Clipboard+ records speech only when you press Record."
+                    ),
                 }
             ).decode("utf-8"),
         )

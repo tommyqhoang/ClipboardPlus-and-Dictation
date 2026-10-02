@@ -77,6 +77,48 @@ def primary_monitor(listing: str) -> tuple[int, int, int, int] | None:
 # Exit codes for the worker: it falls back to notifications for either.
 EXIT_NO_DISPLAY = 3
 EXIT_UNSUPPORTED = 4
+WINDOWS_APP_ID = "Aperca.ClipboardPlus"
+
+
+def set_macos_accessory_policy() -> None:
+    """Make Tk's NSApplication an accessory before it can appear in the Dock."""
+    try:
+        import AppKit  # type: ignore[import-not-found,unused-ignore]
+
+        AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+            AppKit.NSApplicationActivationPolicyAccessory
+        )
+    except Exception as exc:
+        log.info("could not hide the recording pill from the Dock: %s", exc)
+
+
+def hide_from_app_switcher(root: tk.Tk) -> None:
+    """Keep the transient recording pill out of the OS app dock/task switcher."""
+    platform = desktop.platform_name()
+    if platform == "windows":
+        # Tool windows have no taskbar button or Alt+Tab entry. Keep a stable
+        # product identity as well, in case a Windows shell groups the window.
+        try:
+            root.wm_attributes("-toolwindow", True)
+        except tk.TclError as exc:
+            log.info("could not mark the recording pill as a tool window: %s", exc)
+        try:
+            import ctypes
+
+            result = getattr(ctypes, "windll").shell32.SetCurrentProcessExplicitAppUserModelID(
+                WINDOWS_APP_ID
+            )
+            if result:
+                log.info("could not set the Clipboard+ Windows app identity: %s", result)
+        except (AttributeError, OSError) as exc:
+            log.info("could not set the Clipboard+ Windows app identity: %s", exc)
+    else:
+        # Notification windows are excluded from GNOME/KDE task lists and docks.
+        try:
+            root.tk.call("wm", "class", str(root), "ClipboardPlus", "ClipboardPlus")
+            root.wm_attributes("-type", "notification")
+        except tk.TclError as exc:
+            log.info("could not mark the recording pill as a notification: %s", exc)
 
 
 def pill_unsupported(environ: dict[str, str] | None = None) -> str:
@@ -575,12 +617,16 @@ def main() -> int:
     if reason:
         log.info("no recording pill: %s", reason)
         return EXIT_UNSUPPORTED  # Notifications and sounds still tell the story.
+    if desktop.platform_name() == "macos":
+        set_macos_accessory_policy()
     try:
-        root = tk.Tk(className="dictation-overlay")
+        root = tk.Tk(className="ClipboardPlus")
     except tk.TclError as exc:
         log.info("no recording pill: %s", exc)
         return EXIT_NO_DISPLAY  # No display: the notifications still tell the story.
     telemetry.watch_tk(root)
+    hide_from_app_switcher(root)
+    root.title(hotkeys.APP_NAME)
     overlay = Overlay(root, d.Paths(), sys.argv[1])
     root.update_idletasks()
     overlay.tick()

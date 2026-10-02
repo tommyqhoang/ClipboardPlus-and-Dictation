@@ -23,6 +23,6 @@
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Clipboard+ records audio only while you are actively dictating.</string>
+    <string>Clipboard+ records speech only when you press Record.</string>
 </dict>
 </plist>

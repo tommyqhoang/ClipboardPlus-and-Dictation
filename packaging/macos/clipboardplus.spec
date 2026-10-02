@@ -43,7 +43,10 @@ for entry in ENTRIES:
                 (str(LIB / "menubar-recording.png"), "."),
                 *KEYRING_DATA,
             ],
-            hiddenimports=[*KEYRING_IMPORTS, *(PYOBJC_HIDDEN_IMPORTS if entry == "menubar" else [])],
+            hiddenimports=[
+                *KEYRING_IMPORTS,
+                *(PYOBJC_HIDDEN_IMPORTS if entry in ("menubar", "overlay") else []),
+            ],
             hookspath=HOOKS,
             runtime_hooks=[],
             excludes=[],

@@ -29,6 +29,35 @@ def pcm(amplitude: int, count: int = 800) -> bytes:
 
 
 class HelperTests(unittest.TestCase):
+    def test_mac_overlay_uses_accessory_activation_policy(self):
+        appkit = Mock()
+        appkit.NSApplicationActivationPolicyAccessory = 1
+        with patch.dict(sys.modules, {"AppKit": appkit}):
+            overlay.set_macos_accessory_policy()
+        appkit.NSApplication.sharedApplication.return_value.setActivationPolicy_.assert_called_once_with(
+            1
+        )
+
+    def test_windows_overlay_is_a_tool_window_with_product_identity(self):
+        root = Mock()
+        windll = Mock()
+        with (
+            patch.object(overlay.desktop, "platform_name", return_value="windows"),
+            patch("ctypes.windll", windll, create=True),
+        ):
+            overlay.hide_from_app_switcher(root)
+        root.wm_attributes.assert_called_once_with("-toolwindow", True)
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID.assert_called_once_with(
+            overlay.WINDOWS_APP_ID
+        )
+
+    def test_linux_overlay_is_a_branded_notification_window(self):
+        root = Mock()
+        with patch.object(overlay.desktop, "platform_name", return_value="linux"):
+            overlay.hide_from_app_switcher(root)
+        root.tk.call.assert_any_call("wm", "class", str(root), "ClipboardPlus", "ClipboardPlus")
+        root.wm_attributes.assert_called_once_with("-type", "notification")
+
     def test_levels_follow_the_voice(self):
         self.assertEqual(d.audio_level(b""), 0.0)
         self.assertEqual(d.audio_level(pcm(0)), 0.0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
 import tempfile
 import unittest
@@ -12,15 +13,17 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
+HAS_PYOBJC = importlib.util.find_spec("objc") is not None
+
 
 class MenubarImportTests(unittest.TestCase):
-    @unittest.skipUnless(sys.platform == "darwin", "PyObjC runs on macOS")
+    @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
     def test_hover_table_and_controller_register_without_selector_errors(self):
         menubar = importlib.import_module("menubar")
         self.assertIsNotNone(menubar.HoverTableView)
         self.assertIsNotNone(menubar.Controller)
 
-    @unittest.skipUnless(sys.platform == "darwin", "PyObjC runs on macOS")
+    @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
     def test_hover_details_update_immediately_and_clear_on_exit(self):
         menubar = importlib.import_module("menubar")
         controller = SimpleNamespace(
@@ -37,7 +40,7 @@ class MenubarImportTests(unittest.TestCase):
         menubar.Controller.on_hover_row(controller, -1)
         controller.detail_label.setStringValue_.assert_called_with("")
 
-    @unittest.skipUnless(sys.platform == "darwin", "PyObjC runs on macOS")
+    @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
     def test_hover_time_uses_system_date_and_time_styles(self):
         menubar = importlib.import_module("menubar")
         item = SimpleNamespace(kind="text", source="desktop", created_at=1234)
@@ -49,7 +52,7 @@ class MenubarImportTests(unittest.TestCase):
             formatter.setDateStyle_.assert_called_once_with(menubar.NSDateFormatterMediumStyle)
             self.assertIn("1:05 PM", result)
 
-    @unittest.skipUnless(sys.platform == "darwin", "PyObjC runs on macOS")
+    @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
     def test_native_context_menu_has_valid_targets_and_expected_actions(self):
         # Build real Cocoa objects without showing a window, starting capture,
         # registering hotkeys, or touching the user's settings.

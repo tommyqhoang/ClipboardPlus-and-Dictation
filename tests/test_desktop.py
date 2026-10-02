@@ -484,6 +484,7 @@ class DesktopTests(unittest.TestCase):
                 patch.object(setup.desktop, "platform_name", return_value="macos"),
                 patch.object(setup, "gui_environment", return_value=venv),
                 patch.object(setup.hotkeys, "set_login_item") as login,
+                patch.object(setup.hotkeys, "start_login_item", return_value=False),
                 patch.object(setup, "stop_menubar") as stop,
             ):
                 setup.install_app_launcher(prefix)
@@ -492,11 +493,15 @@ class DesktopTests(unittest.TestCase):
                 login.assert_called_once_with(True, [str(bundle / "Contents/MacOS/Clipboard+")])
                 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
                 self.assertEqual(info["CFBundleIdentifier"], setup.hotkeys.BUNDLE_ID)
-                self.assertIn("Record speech only", info["NSMicrophoneUsageDescription"])
+                self.assertIn("Clipboard+", info["NSMicrophoneUsageDescription"])
+                self.assertIn("records speech only", info["NSMicrophoneUsageDescription"])
+                self.assertIn("when you press Record", info["NSMicrophoneUsageDescription"])
                 self.assertEqual(info["CFBundleIconFile"], "AppIcon")
                 self.assertEqual(info["CFBundleDisplayName"], setup.hotkeys.APP_NAME)
                 self.assertEqual(info["CFBundleName"], setup.hotkeys.APP_NAME)
                 self.assertEqual(info["CFBundleExecutable"], setup.hotkeys.APP_NAME)
+                self.assertEqual(info["CFBundleVersion"], setup.desktop.APP_VERSION)
+                self.assertEqual(info["CFBundleShortVersionString"], setup.desktop.APP_VERSION)
                 self.assertTrue((bundle / "Contents/Resources/AppIcon.icns").is_file())
                 self.assertTrue(info["LSUIElement"])
                 executable = bundle / "Contents/MacOS/Clipboard+"
