@@ -377,6 +377,8 @@ class InstallerScriptTests(unittest.TestCase):
 
     def test_appimage_includes_standard_and_file_manager_icons(self):
         script = read("packaging", "linux", "build-appimage.sh")
+        self.assertIn('"$ROOT/lib/whisper-dictation.png"', script)
+        self.assertTrue((REPO_ROOT / "lib/whisper-dictation.png").is_file())
         self.assertIn("hicolor/256x256/apps/clipboardplus.png", script)
         self.assertIn(
             'ln -sf usr/share/icons/hicolor/256x256/apps/clipboardplus.png "$APPDIR/.DirIcon"',

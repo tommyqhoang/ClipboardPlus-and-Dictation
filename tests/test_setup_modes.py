@@ -75,6 +75,8 @@ class SetupFlowTests(ModeCase):
         texts = " ".join(self.texts())
         for option in ("Dictation", "Clipboard history", "Both"):
             self.assertIn(option, texts)
+        self.assertIn("Save copies on this device", texts)
+        self.assertIn("history of your copies on this device", texts)
 
     def test_clipboard_only_skips_dictation_setup_entirely(self):
         self.window.after_features("clipboard")

@@ -17,7 +17,7 @@ mkdir -p \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
   "$APPDIR/usr/share/icons/hicolor/1024x1024/apps"
 cp "$ROOT/packaging/linux/AppDir/clipboardplus.desktop" "$APPDIR/usr/share/applications/"
-cp "$DIST/whisper-dictation.png" \
+cp "$ROOT/lib/whisper-dictation.png" \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps/clipboardplus.png"
 cp "$ROOT/assets/icon-1024.png" \
   "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/clipboardplus.png"

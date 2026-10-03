@@ -36,8 +36,8 @@ and exposes a scrollbar when all controls do not fit.
 
 ## Clipboard history
 
-Clipboard history is enabled by default when you choose Clipboard history or Both
-during setup; you can pause capture or turn it off in Settings. A separate headless
+Choosing Clipboard history or Both during setup enables local capture; you can
+pause it or turn it off in Settings. A separate headless
 process (`clipservice.py`) captures text, links and
 images; the tray or menu bar app starts it while the feature is on, restarts it if
 it exits, and asks it to quit through a `clip-quit` runtime file.

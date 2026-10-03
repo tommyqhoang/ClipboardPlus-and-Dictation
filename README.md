@@ -104,8 +104,9 @@ the user:
    - **Your own AI service**: OpenAI, Groq, or any OpenAI-compatible
      `/audio/transcriptions` endpoint, with your API key. Audio is sent to that
      service, which may charge.
-3. For clipboard history: an opt-in screen. Nothing is captured until you
-   press **Turn on**; **Not now** leaves it off.
+3. Choosing **Clipboard history** or **Both** enables local clipboard history
+   during setup. Copies stay on this device unless you connect a Clipboard+
+   account; turn capture off any time in Settings.
 4. A short walkthrough, and (for clipboard history) an optional card to connect a
    [Clipboard+](https://clipboardplus.apercallc.com) account so the history also
    shows on the website and in the browser extension.
@@ -186,7 +187,7 @@ does the capturing; the window and dictation only read the shared database.
 - Everything lives in the settings folder under `clipboard/`: a SQLite database
   (`clips.db`) and image files, readable only by you. It is **not** encrypted, so
   anything you copy that is not marked secret is stored in plain form.
-- Nothing is captured until you turn Clipboard history on. **Pause Clipboard
+- Clipboard history captures copies only while it is enabled. **Pause Clipboard
   Capture** stops it for an hour or until you resume.
 - Anything a password manager marks secret is skipped and never read: the
   `x-kde-passwordManagerHint` target on Linux, `org.nspasteboard.ConcealedType` /

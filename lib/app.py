@@ -60,8 +60,16 @@ except ImportError:
 ICON = Path(__file__).with_name("whisper-dictation.png")
 MODES = (
     ("dictation", "Dictation", "Press a shortcut, speak, and paste anywhere."),
-    ("clipboard", "Clipboard history", "Keep what you copy, search it, and copy it back."),
-    ("both", "Both", "Dictation and clipboard history, together."),
+    (
+        "clipboard",
+        "Clipboard history",
+        "Save copies on this device so you can search them and copy them back.",
+    ),
+    (
+        "both",
+        "Both",
+        "Dictation plus a searchable history of your copies on this device.",
+    ),
 )
 
 # How long the scrollbar stays once shown, so a page at the window's height cannot
