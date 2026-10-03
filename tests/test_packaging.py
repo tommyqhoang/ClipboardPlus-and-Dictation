@@ -375,6 +375,14 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn("--uninstall", read("packaging", "linux", "AppDir", "AppRun"))
         self.assertIn("Uninstall Clipboard+.command", read("packaging", "macos", "build-dmg.sh"))
 
+    def test_appimage_includes_standard_and_file_manager_icons(self):
+        script = read("packaging", "linux", "build-appimage.sh")
+        self.assertIn("hicolor/256x256/apps/clipboardplus.png", script)
+        self.assertIn(
+            'ln -sf usr/share/icons/hicolor/256x256/apps/clipboardplus.png "$APPDIR/.DirIcon"',
+            script,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

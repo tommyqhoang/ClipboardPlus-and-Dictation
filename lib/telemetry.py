@@ -120,7 +120,7 @@ CHOICES = {
     },
     "sync": {"off", "idle", "syncing", "error", "offline", "connected"},
     "page": {"home", "clipboard", "dictation", "settings", "account", "setup"},
-    "stage": {"sync", "capture", "watcher", "recording"},
+    "stage": {"sync", "capture", "watcher", "recording", "clipboard_copy"},
     "setting": {
         "share_usage",
         "overlay",

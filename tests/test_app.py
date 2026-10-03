@@ -685,7 +685,7 @@ class WindowTests(ServiceCase):
 
     def test_both_after_clipboard_only_still_sets_up_dictation(self):
         self.window.after_features("clipboard")
-        self.window.after_optin(True)  # Clipboard only: dictation saved as off.
+        self.assertEqual(self.window.page, "tutorial")
         self.window.choose_features()
         with patch.object(self.gui.App, "find_microphones"):
             self.window.after_features("both")

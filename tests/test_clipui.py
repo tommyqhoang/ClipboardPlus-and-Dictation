@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -774,23 +774,6 @@ class WindowTests(PageCase):
             stack.extend(widget.winfo_children())
             found.append(widget)
         return found
-
-
-class OptInTests(PageCase):
-    def test_turning_it_on_enables_the_feature(self):
-        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, False))
-        self.window.clipboard_optin(lambda enabled: None)
-        self.assertTrue(any("password manager" in t for t in self.texts()))
-        self.buttons("Turn on")[0].invoke()
-        self.assertTrue(hotkeys.Preferences(self.paths).features().clipboard)
-
-    def test_not_now_leaves_it_off_and_continues(self):
-        hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, False))
-        went = Mock()
-        self.window.clipboard_optin(went)
-        self.buttons("Not now")[0].invoke()
-        self.assertFalse(hotkeys.Preferences(self.paths).features().clipboard)
-        went.assert_called_once()
 
 
 if __name__ == "__main__":

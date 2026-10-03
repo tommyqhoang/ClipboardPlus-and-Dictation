@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 if ($Ref -and $Ref -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid application ref.' }
 $Repo = 'tommyqhoang/ClipboardPlus-and-Dictation'
 # Used only when the GitHub API cannot be reached; bump with each release.
-$PinnedTag = 'v1.6.5'
+$PinnedTag = 'v1.6.6'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
     throw 'Automatic Windows install currently supports x64. ARM64 requires manual dependencies.'

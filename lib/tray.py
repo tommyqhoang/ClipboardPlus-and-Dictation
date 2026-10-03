@@ -41,6 +41,38 @@ except ImportError:
 HERE = Path(__file__).resolve().parent
 WM_HOTKEY, WM_APP = 0x0312, 0x8000
 MENU_ROWS = 8  # Recent copies listed in the menu, like the macOS popover.
+SUPERVISED_CHILD = "--clipboardplus-supervised-child"
+RESTART_SECONDS = 5
+MAX_RESTART_SECONDS = 60
+
+
+def supervise(
+    command: list[str],
+    *,
+    popen: Callable[..., Any] = subprocess.Popen,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Restart the tray after an unexpected worker exit; a clean Quit stays quit."""
+    failures = 0
+    while True:
+        try:
+            worker = popen(
+                [*command, SUPERVISED_CHILD],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **desktop.process_options(),
+            )
+            code = worker.wait()
+        except OSError as exc:
+            code = 1
+            log.error("tray worker could not start (%s)", type(exc).__name__)
+        if code == 0:
+            return 0
+        delay = min(RESTART_SECONDS * (2**failures), MAX_RESTART_SECONDS)
+        log.error("tray worker exited with code %s; restarting in %d seconds", code, delay)
+        sleep(delay)
+        failures += 1
 
 
 class WindowsHotKey:
@@ -146,6 +178,7 @@ class Tray:
         self.announced: hotkeys.Conflict | None = None  # Told once per conflict.
         self.suspended = False
         self.running = False
+        self.quit_requested = False
         self.phase = "idle"
         self.state: tuple[str, int] = ("", 0)
         self.update: dict[str, str] | None = None  # A newer release to offer.
@@ -501,6 +534,7 @@ class Tray:
             self.notify("The update could not start. Try again, or re-run the installer.")
 
     def quit(self) -> None:
+        self.quit_requested = True
         self.clip.stop()
         if self.store is not None:
             self.store.close()
@@ -577,6 +611,11 @@ class Tray:
             self.service.copy_item(clip, self.store)
         except d.DictationError as exc:
             self.notify(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - a bad row must not take down the tray.
+            log.error("clipboard history copy failed (%s)", type(exc).__name__)
+            telemetry.capture(exc, stage="clipboard_copy")
+            self.notify("Couldn’t copy that item. Try again.")
             return
         telemetry.event("clipboard_copy", kind=clip.kind, favorite=clip.favorite)
         self.notify("Copied. Paste it anywhere.")
@@ -853,8 +892,9 @@ def main() -> int:
         print("On macOS, run menubar.py.")
         return 1
     paths = d.Paths()
-    fd = desktop.lock(paths.runtime / "menubar.lock")
-    if fd is None:
+    child = SUPERVISED_CHILD in sys.argv[1:]
+    fd = None if child else desktop.lock(paths.runtime / "menubar.lock")
+    if not child and fd is None:
         # Already running: opening the launcher again should show the window.
         open_app_window()
         return 0
@@ -863,6 +903,8 @@ def main() -> int:
             print("No desktop session to show the tray icon in; it starts at your next login.")
             return 1
         telemetry.install("tray")
+        if not child:
+            return supervise(desktop.relaunch("tray"))
         try:
             import pystray
         except Exception as exc:  # noqa: BLE001 - pystray connects to the display on import.
@@ -877,8 +919,10 @@ def main() -> int:
             announce_missing_tray(paths)
         tray = Tray(pystray, Image)
         tray.icon.run(setup=tray.started)
+        return 0 if tray.quit_requested else 1
     finally:
-        os.close(fd)
+        if fd is not None:
+            os.close(fd)
     return 0
 
 

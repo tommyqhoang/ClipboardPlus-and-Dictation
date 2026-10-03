@@ -380,8 +380,7 @@ class Features:
     """Which halves of the app the user chose in setup."""
 
     dictation: bool = True
-    # Clipboard capture remains off until setup explicitly confirms it. The setup UI
-    # preselects Both, but the background tray must never begin recording clipboard data.
+    # New installs choose Both on the setup screen; capture stays off until that choice is saved.
     clipboard: bool = False
 
 

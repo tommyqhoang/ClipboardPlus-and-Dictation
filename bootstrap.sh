@@ -25,7 +25,7 @@ install_curl() {
 
 REPO="tommyqhoang/ClipboardPlus-and-Dictation"
 # Used only when the GitHub API cannot be reached; bump with each release.
-PINNED_TAG="v1.6.5"
+PINNED_TAG="v1.6.6"
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then

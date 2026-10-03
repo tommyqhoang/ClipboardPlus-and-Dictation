@@ -12,12 +12,18 @@ APPDIR="$ROOT/dist/AppDir"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin"
 cp -R "$DIST"/* "$APPDIR/usr/bin/"
-mkdir -p "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/1024x1024/apps"
+mkdir -p \
+  "$APPDIR/usr/share/applications" \
+  "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
+  "$APPDIR/usr/share/icons/hicolor/1024x1024/apps"
 cp "$ROOT/packaging/linux/AppDir/clipboardplus.desktop" "$APPDIR/usr/share/applications/"
+cp "$DIST/whisper-dictation.png" \
+  "$APPDIR/usr/share/icons/hicolor/256x256/apps/clipboardplus.png"
 cp "$ROOT/assets/icon-1024.png" \
   "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/clipboardplus.png"
 ln -sf usr/share/applications/clipboardplus.desktop "$APPDIR/clipboardplus.desktop"
 ln -sf usr/share/icons/hicolor/1024x1024/apps/clipboardplus.png "$APPDIR/clipboardplus.png"
+ln -sf usr/share/icons/hicolor/256x256/apps/clipboardplus.png "$APPDIR/.DirIcon"
 # A dispatcher, not a plain symlink to tray: a persisted command (GNOME shortcut,
 # autostart entry) invokes $APPIMAGE with an entry name as its first argument
 # (desktop.persistent_relaunch()), since the mounted usr/bin path it would

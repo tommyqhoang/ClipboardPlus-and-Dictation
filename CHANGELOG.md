@@ -5,6 +5,8 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.6] - 2026-10-03
+
 ## [1.6.5] - 2026-10-02
 
 ### Fixed

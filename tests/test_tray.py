@@ -266,6 +266,20 @@ class TrayTests(unittest.TestCase):
             self.tray.copy_row(-1)
         copy.assert_not_called()
 
+    def test_unexpected_history_copy_error_is_reported_without_escaping(self):
+        self.tray.preferences.save(features=hotkeys.Features(True, True))
+        self.tray.rows = [ITEM]
+        self.tray.store = Mock()
+        with (
+            patch.object(self.tray.service, "copy_item", side_effect=TypeError("private value")),
+            patch.object(tray.telemetry, "capture") as capture,
+            patch.object(self.tray, "notify") as notify,
+        ):
+            self.tray.copy_row(0)
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.kwargs, {"stage": "clipboard_copy"})
+        notify.assert_called_once_with("Couldn’t copy that item. Try again.")
+
     @unittest.skipUnless(importlib.util.find_spec("pystray"), "pystray is not installed")
     def test_recent_rows_accept_real_pystray_callback_arguments(self):
         # Use the actual callback adapter, with no display or system tray.
@@ -496,6 +510,7 @@ class TrayTests(unittest.TestCase):
             patch.object(tray.desktop, "platform_name", return_value="linux"),  # macOS: menubar.py.
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install"),
+            patch.object(sys, "argv", [sys.argv[0], tray.SUPERVISED_CHILD]),
             patch("builtins.__import__", importing(unreachable)),
         ):
             self.assertEqual(tray.main(), 1)
@@ -503,6 +518,7 @@ class TrayTests(unittest.TestCase):
             patch.object(tray.desktop, "platform_name", return_value="linux"),  # macOS: menubar.py.
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install"),
+            patch.object(sys, "argv", [sys.argv[0], tray.SUPERVISED_CHILD]),
             patch("builtins.__import__", importing(ImportError("pystray missing"))),
             self.assertRaises(ImportError),
         ):
@@ -518,11 +534,13 @@ class TrayTests(unittest.TestCase):
             patch.object(tray.desktop, "platform_name", return_value="linux"),  # macOS: menubar.py.
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install") as install,
+            patch.object(sys, "argv", [sys.argv[0], tray.SUPERVISED_CHILD]),
             patch.object(tray, "tray_available", return_value=True),
             # Neither is installed where only the standard library is (Python 3.10/3.14 CI).
             patch.dict(sys.modules, {"pystray": fake, "PIL": MagicMock()}),
             patch.object(tray, "Tray") as made,
         ):
+            made.return_value.quit_requested = True
             self.assertEqual(tray.main(), 0)
         install.assert_called_once_with("tray")
         made.assert_called_once()
@@ -584,14 +602,43 @@ class TrayTests(unittest.TestCase):
             patch.object(tray.desktop, "platform_name", return_value="linux"),
             patch.object(tray.desktop, "has_display", return_value=True),
             patch.object(tray.telemetry, "install"),
+            patch.object(sys, "argv", [sys.argv[0], tray.SUPERVISED_CHILD]),
             patch.object(tray, "tray_available", return_value=False),
             patch.object(tray, "announce_missing_tray") as announce,
             patch.dict(sys.modules, {"pystray": fake, "PIL": MagicMock()}),
             patch.object(tray, "Tray") as made,
         ):
+            made.return_value.quit_requested = True
             self.assertEqual(tray.main(), 0)
         announce.assert_called_once()
         made.return_value.icon.run.assert_called_once()
+
+    def test_main_reports_an_unrequested_backend_exit_as_a_failure(self):
+        fake = MagicMock()
+        with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),
+            patch.object(tray.desktop, "has_display", return_value=True),
+            patch.object(tray.telemetry, "install"),
+            patch.object(tray, "tray_available", return_value=True),
+            patch.object(sys, "argv", [sys.argv[0], tray.SUPERVISED_CHILD]),
+            patch.dict(sys.modules, {"pystray": fake, "PIL": MagicMock()}),
+            patch.object(tray, "Tray") as made,
+        ):
+            made.return_value.quit_requested = False
+            self.assertEqual(tray.main(), 1)
+
+    def test_supervisor_restarts_a_failed_tray_and_stops_after_clean_quit(self):
+        failed, clean = Mock(), Mock()
+        failed.wait.return_value = 1
+        clean.wait.return_value = 0
+        start = Mock(side_effect=(failed, clean))
+        delays = []
+        result = tray.supervise(["tray"], popen=start, sleep=delays.append)
+        self.assertEqual(result, 0)
+        self.assertEqual(start.call_count, 2)
+        self.assertEqual(delays, [tray.RESTART_SECONDS])
+        self.assertEqual(start.call_args.args[0], ["tray", tray.SUPERVISED_CHILD])
+        self.assertEqual(start.call_args.kwargs["stdin"], tray.subprocess.DEVNULL)
 
     def use_features(self, dictation, clipboard):
         hotkeys.Preferences(self.paths).save(features=hotkeys.Features(dictation, clipboard))

@@ -691,37 +691,6 @@ class App:
             self.clipboard_clear_after_open = False
             self.root.after_idle(self.clear_clipboard_history)
 
-    def clipboard_optin(self, after: Callable[[bool], None]) -> None:
-        """Ask before anything is captured: the choice is explicit and reversible."""
-        self.reset(
-            "clipboard-optin",
-            "Keep a history of what you copy?",
-            "Search it, star favorites and copy things back, on every computer you use.",
-            self.step_label("clipboard"),
-        )
-        card = self.card(
-            "How it works",
-            "It saves text, links and images you copy so you can find them again. Everything "
-            "stays on this computer unless you connect a Clipboard+ account, and even then "
-            "images are never uploaded. Anything a password manager marks as secret, and anything that looks like an "
-            "API key or private key, is "
-            "skipped. You can pause or turn it off at any time.",
-        )
-
-        def choose(enabled: bool) -> None:
-            if enabled:
-                prefs = hotkeys.Preferences(self.service.paths)
-                features = prefs.features()
-                prefs.save(features=hotkeys.Features(features.dictation, True))
-            after(enabled)
-
-        row = ttk.Frame(card, style="Card.TFrame")
-        row.pack(fill="x")
-        self.button("Turn on", lambda: choose(True), True, row, "left")
-        self.button("Not now", lambda: choose(False), False, row, "left")
-        if not self.service.completed():
-            self.button("Back", self.choose_features, parent=self.actions(), side="left")
-
     def card(self, heading: str = "", hint: str = "") -> ttk.Frame:
         outline = tk.Frame(self.frame, background=BORDER, padx=1, pady=1)
         outline.pack(fill="x", pady=(0, 10))
@@ -885,41 +854,19 @@ class App:
         """Start only the setup steps the chosen features need."""
         self.setup_mode = mode
         dictation = mode != "clipboard"
-        if dictation:
-            # Saved first, so `ready()` checks dictation even after an earlier
-            # "Clipboard only" pass turned it off.
-            prefs = hotkeys.Preferences(self.service.paths)
-            clipboard = mode == "both" and prefs.features().clipboard
-            prefs.save(features=hotkeys.Features(True, clipboard))
+        prefs = hotkeys.Preferences(self.service.paths)
+        prefs.save(features=hotkeys.Features(dictation, mode != "dictation"))
         self.setup_steps = [
             "features",
             *(("dictation",) if dictation and not self.service.ready() else ()),
-            *(("clipboard",) if mode != "dictation" else ()),
             "done",
         ]
-        if mode == "clipboard":
-            self.clipboard_optin(self.after_optin)
-            return
         if self.service.ready():
             self.after_dictation_setup()
         else:
             self.settings()
 
     def after_dictation_setup(self) -> None:
-        if self.setup_mode == "both":
-            self.clipboard_optin(self.after_optin)
-        else:
-            self.tutorial()
-
-    def after_optin(self, enabled: bool) -> None:
-        prefs = hotkeys.Preferences(self.service.paths)
-        if self.setup_mode == "clipboard":
-            if not enabled:
-                self.choose_features("Choose at least one thing to use.")
-                return
-            prefs.save(features=hotkeys.Features(False, True))
-        else:
-            prefs.save(features=hotkeys.Features(True, enabled))
         self.tutorial()
 
     def apply_mode(self, mode: str) -> None:

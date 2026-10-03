@@ -78,40 +78,31 @@ class SetupFlowTests(ModeCase):
 
     def test_clipboard_only_skips_dictation_setup_entirely(self):
         self.window.after_features("clipboard")
-        self.assertEqual(self.window.page, "clipboard-optin")
-        self.press("Turn on")
-        self.assertEqual(self.prefs.features(), hotkeys.Features(False, True))
         self.assertEqual(self.window.page, "tutorial")
+        self.assertEqual(self.prefs.features(), hotkeys.Features(False, True))
         joined = " ".join(self.texts())
         self.assertNotIn("Microphone", joined)
         self.assertIn("Clipboard History", joined)
         self.service.complete()
         self.assertTrue(self.service.completed())  # No speech model needed.
 
-    def test_both_runs_dictation_setup_then_the_optin(self):
+    def test_both_runs_dictation_setup_with_clipboard_already_enabled(self):
         self.window.after_features("both")
         self.assertEqual(self.window.page, "settings")
         self.window.after_dictation_setup()
-        self.assertEqual(self.window.page, "clipboard-optin")
-        self.press("Turn on")
-        self.assertEqual(self.prefs.features(), hotkeys.Features(True, True))
         self.assertEqual(self.window.page, "tutorial")
+        self.assertEqual(self.prefs.features(), hotkeys.Features(True, True))
 
     def test_every_setup_screen_counts_the_same_steps(self):
         self.window.after_features("both")
-        self.assertEqual(self.window.step.get(), "Step 2 of 4")
-        # The feature choice was just made; offering it again here stranded setup.
+        self.assertEqual(self.window.step.get(), "Step 2 of 3")
         self.assertNotIn("What you use", self.texts())
         self.window.after_dictation_setup()
-        self.assertEqual(self.window.step.get(), "Step 3 of 4")
-        self.press("Turn on")
-        self.assertEqual(self.window.step.get(), "Step 4 of 4")
-
-    def test_a_clipboard_only_setup_counts_three_steps(self):
-        self.window.after_features("clipboard")
-        self.assertEqual(self.window.step.get(), "Step 2 of 3")
-        self.press("Turn on")
         self.assertEqual(self.window.step.get(), "Step 3 of 3")
+
+    def test_a_clipboard_only_setup_counts_two_steps(self):
+        self.window.after_features("clipboard")
+        self.assertEqual(self.window.step.get(), "Step 2 of 2")
 
     def test_dictation_only_has_no_clipboard_step(self):
         self.window.after_features("dictation")
@@ -120,18 +111,10 @@ class SetupFlowTests(ModeCase):
         self.assertEqual(self.window.page, "tutorial")
         self.assertEqual(self.prefs.features(), hotkeys.Features(True, False))
 
-    def test_not_now_with_both_keeps_dictation_and_leaves_clipboard_off(self):
+    def test_clipboard_can_be_disabled_in_settings_after_setup(self):
         self.window.after_features("both")
-        self.window.after_dictation_setup()
-        self.press("Not now")
+        self.window.apply_mode("dictation")
         self.assertEqual(self.prefs.features(), hotkeys.Features(True, False))
-        self.assertEqual(self.window.page, "tutorial")
-
-    def test_not_now_in_a_clipboard_only_setup_goes_back_to_the_choice(self):
-        self.window.after_features("clipboard")
-        self.press("Not now")
-        self.assertEqual(self.window.page, "features")
-        self.assertTrue(any("at least one" in t.lower() for t in self.texts()))
 
 
 class SettingsTests(ModeCase):
