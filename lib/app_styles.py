@@ -9,19 +9,19 @@ from __future__ import annotations
 from tkinter import font, ttk
 
 # One palette for every surface; the generated Clipboard+ icon is used everywhere.
-BACKGROUND = "#f6f4f0"
+BACKGROUND = "#f5f7fa"
 SURFACE = "#ffffff"
-BORDER = "#e5e0d8"
-TEXT = "#1c1a17"
-MUTED = "#6b645a"
+BORDER = "#e2e8f0"
+TEXT = "#1f2937"
+MUTED = "#5b6472"
 ACCENT = "#b45309"  # The logo's amber, darkened to read on white.
-ACCENT_ACTIVE = "#92400e"
-ACCENT_SOFT = "#fef6e7"
-DANGER = "#c93a2e"
-DANGER_ACTIVE = "#a82e24"
-WARNING = "#c98a12"
-IDLE = "#a39b90"
-HOVER = "#faf5ec"  # A list row under the pointer.
+ACCENT_ACTIVE = "#8f3f0b"
+ACCENT_SOFT = "#fff5e8"
+DANGER = "#b42318"
+DANGER_ACTIVE = "#912018"
+WARNING = "#a15c07"
+IDLE = "#98a2b3"
+HOVER = "#f8fafc"  # A list row under the pointer.
 
 Fonts = dict[str, tuple[str, int, str]]
 
@@ -34,11 +34,11 @@ def make_fonts() -> Fonts:
     # oversized points: 13 on a Mac, about 10 on Linux and 9 on Windows.
     base = max(9, min(13, abs(int(system["size"])) or 10))
     return {
-        "title": (family, base + 5, "bold"),
-        "heading": (family, base + 1, "bold"),
+        "title": (family, base + 7, "bold"),
+        "heading": (family, base + 2, "bold"),
         "body": (family, base, "normal"),
         "small": (family, max(8, base - 1), "normal"),
-        "brand": (family, base + 1, "bold"),
+        "brand": (family, base + 2, "bold"),
         "badge": (family, base, "bold"),
         "record": (family, base + 2, "bold"),
         "icon": (family, base + 3, "normal"),
@@ -123,9 +123,9 @@ def configure_inputs(style: ttk.Style, fonts: Fonts) -> None:
 
 def configure_buttons(style: ttk.Style, fonts: Fonts) -> None:
     buttons = {
-        "TButton": (SURFACE, TEXT, "#d8d1c6", "#f4efe7", SURFACE),
-        "Primary.TButton": (ACCENT, "white", ACCENT, ACCENT_ACTIVE, "#e3bf95"),
-        "Danger.TButton": (DANGER, "white", DANGER, DANGER_ACTIVE, "#e0a39d"),
+        "TButton": (SURFACE, TEXT, BORDER, "#edf1f6", SURFACE),
+        "Primary.TButton": (ACCENT, "white", ACCENT, ACCENT_ACTIVE, "#e7c5a7"),
+        "Danger.TButton": (DANGER, "white", DANGER, DANGER_ACTIVE, "#e8b4af"),
     }
     for name, (fill, ink, edge, active, muted) in buttons.items():
         style.configure(
@@ -135,10 +135,10 @@ def configure_buttons(style: ttk.Style, fonts: Fonts) -> None:
             bordercolor=edge,
             lightcolor=fill,
             darkcolor=fill,
-            focuscolor=fill,
+            focuscolor=ACCENT,
             relief="solid",
             borderwidth=1,
-            padding=(12, 5),
+            padding=(14, 7),
             font=fonts["body"],
         )
         style.map(
@@ -146,13 +146,16 @@ def configure_buttons(style: ttk.Style, fonts: Fonts) -> None:
             background=[("disabled", muted), ("pressed", active), ("active", active)],
             lightcolor=[("disabled", muted), ("pressed", active), ("active", active)],
             darkcolor=[("disabled", muted), ("pressed", active), ("active", active)],
-            bordercolor=[("disabled", BORDER if fill == SURFACE else muted)],
-            foreground=[("disabled", "#b3aa9d" if fill == SURFACE else "white")],
+            bordercolor=[
+                ("disabled", BORDER if fill == SURFACE else muted),
+                ("focus", ACCENT),
+            ],
+            foreground=[("disabled", "#98a2b3" if fill == SURFACE else "white")],
         )
     # Compact buttons for dense lists (clipboard rows, filters).
     # The theme's buttons are at least 11 characters wide; small ones fit their words.
     for name in ("Small.TButton", "Small.Primary.TButton", "Small.Danger.TButton"):
-        style.configure(name, padding=(10, 2), font=fonts["small"], width=-6)
+        style.configure(name, padding=(10, 4), font=fonts["small"], width=-6)
     # Idle Record is neutral: the shortcut, not this button, is the main way in.
     for name in ("", "Primary.", "Danger."):
         style.configure(f"Record.{name}TButton", padding=(18, 10), font=fonts["record"])
@@ -169,7 +172,7 @@ def configure_tabs(style: ttk.Style, fonts: Fonts) -> None:
         darkcolor=SURFACE,
         focuscolor=SURFACE,
         relief="flat",
-        padding=(12, 4),
+        padding=(13, 7),
         font=fonts["body"],
     )
     style.map(
@@ -189,7 +192,7 @@ def configure_tabs(style: ttk.Style, fonts: Fonts) -> None:
         darkcolor=ACCENT_SOFT,
         focuscolor=ACCENT_SOFT,
         relief="flat",
-        padding=(12, 4),
+        padding=(13, 7),
         font=fonts["body"],
     )
     style.map(
@@ -235,19 +238,19 @@ def configure_misc(style: ttk.Style, fonts: Fonts) -> None:
     )
     style.configure(
         "Vertical.TScrollbar",
-        background="#d9d2c7",
+        background="#cbd5e1",
         troughcolor=BACKGROUND,
         bordercolor=BACKGROUND,
-        lightcolor="#d9d2c7",
-        darkcolor="#d9d2c7",
+        lightcolor="#cbd5e1",
+        darkcolor="#cbd5e1",
         arrowcolor=MUTED,
         relief="flat",
     )
     style.configure(
         "TProgressbar",
         background=ACCENT,
-        troughcolor="#ece7df",
-        bordercolor="#ece7df",
+        troughcolor="#e8edf3",
+        bordercolor="#e8edf3",
         lightcolor=ACCENT,
         darkcolor=ACCENT,
         thickness=6,

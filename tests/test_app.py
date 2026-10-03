@@ -25,6 +25,39 @@ import hotkeys
 import support  # noqa: F401 - one Tk root per process on macOS (see there)
 
 
+class AppIdentityTests(unittest.TestCase):
+    def test_macos_identity_updates_the_bundle_and_process_names(self):
+        import app
+
+        localized = {}
+        bundle_info = {}
+        bundle = Mock()
+        bundle.localizedInfoDictionary.return_value = localized
+        bundle.infoDictionary.return_value = bundle_info
+        process_info = Mock()
+        foundation = SimpleNamespace(
+            NSBundle=SimpleNamespace(mainBundle=Mock(return_value=bundle)),
+            NSProcessInfo=SimpleNamespace(processInfo=Mock(return_value=process_info)),
+        )
+        with (
+            patch.object(app.sys, "platform", "darwin"),
+            patch.dict(sys.modules, {"Foundation": foundation}),
+        ):
+            app.set_macos_app_identity()
+
+        self.assertEqual(localized["CFBundleName"], hotkeys.APP_NAME)
+        self.assertEqual(localized["CFBundleDisplayName"], hotkeys.APP_NAME)
+        self.assertEqual(bundle_info["CFBundleName"], hotkeys.APP_NAME)
+        self.assertEqual(bundle_info["CFBundleDisplayName"], hotkeys.APP_NAME)
+        process_info.setProcessName_.assert_called_once_with(hotkeys.APP_NAME)
+
+    def test_non_macos_identity_setup_is_a_noop(self):
+        import app
+
+        with patch.object(app.sys, "platform", "linux"):
+            app.set_macos_app_identity()
+
+
 class ServiceCase(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -1195,6 +1228,11 @@ class WindowTests(ServiceCase):
         ):
             self.window.settings()
             self.assertEqual(self.window.step.get(), "")
+            self.assertIn("Settings", self.texts())
+            self.assertIn(
+                "Manage Dictation, clipboard history, account access and app behavior.",
+                self.texts(),
+            )
             # Everything saves as it changes: no Save button to forget.
             self.assertEqual(self.window.bar_actions.winfo_children(), [])
             self.window.language.set("Multilingual / auto-detect")

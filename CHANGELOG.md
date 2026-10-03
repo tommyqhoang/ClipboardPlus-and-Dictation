@@ -5,6 +5,13 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.7] - 2026-10-03
+
+### Changed
+- macOS now labels the app process and Dock/menu identity as Clipboard+.
+- Settings and the main window use clearer headings, more readable spacing, and a
+  calmer enterprise-oriented visual style.
+
 ## [1.6.6] - 2026-10-03
 
 ## [1.6.5] - 2026-10-02

@@ -131,6 +131,8 @@ class SettingsTests(ModeCase):
         self.prefs.save(features=hotkeys.Features(False, True))
         self.open_settings()
         joined = " ".join(self.texts())
+        self.assertIn("Settings", self.texts())
+        self.assertIn("Manage your clipboard history, account access and app behavior.", joined)
         self.assertIn("Keep up to this many items", joined)
         self.assertNotIn("Microphone", joined)
 

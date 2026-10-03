@@ -327,7 +327,7 @@ class App:
 
     def header(self) -> None:
         """Brand on the left; the tabs (or the setup step) on the right. Always in view."""
-        bar = self.header_bar = ttk.Frame(self.root, style="Header.TFrame", padding=(PAD - 4, 8))
+        bar = self.header_bar = ttk.Frame(self.root, style="Header.TFrame", padding=(PAD - 4, 10))
         bar.pack(fill="x")
         # Packed first so a narrow window clips the name, never the tabs.
         self.nav = ttk.Frame(bar, style="Header.TFrame")
@@ -337,7 +337,7 @@ class App:
         brand = ttk.Frame(bar, style="Header.TFrame")
         brand.pack(side="left")
         if self.icon is not None:
-            self.header_icon = self.icon.subsample(max(1, self.icon.width() // 24))
+            self.header_icon = self.icon.subsample(max(1, self.icon.width() // 28))
             ttk.Label(brand, image=self.header_icon, style="Brand.TLabel").pack(
                 side="left", padx=(0, 8)
             )
@@ -574,7 +574,7 @@ class App:
         if subtitle:
             ttk.Label(
                 self.frame, text=subtitle, wraplength=self.wraplength, style="Subtitle.TLabel"
-            ).pack(anchor="w", pady=(0, 14))
+            ).pack(anchor="w", pady=(0, 18))
         self.status.set("")
         # The page fills the bar after this; show or hide it once it has.
         if self.bottom_timer is None:
@@ -701,15 +701,15 @@ class App:
 
     def card(self, heading: str = "", hint: str = "") -> ttk.Frame:
         outline = tk.Frame(self.frame, background=BORDER, padx=1, pady=1)
-        outline.pack(fill="x", pady=(0, 10))
-        body = ttk.Frame(outline, style="Card.TFrame", padding=(16, 12))
+        outline.pack(fill="x", pady=(0, 14))
+        body = ttk.Frame(outline, style="Card.TFrame", padding=(20, 16))
         body.pack(fill="both", expand=True)
         if heading:
             ttk.Label(body, text=heading, style="CardHeading.TLabel").pack(anchor="w")
         if hint:
             ttk.Label(
-                body, text=hint, style="CardHint.TLabel", wraplength=self.wraplength - 40
-            ).pack(anchor="w", pady=(1, 8))
+                body, text=hint, style="CardHint.TLabel", wraplength=self.wraplength - 48
+            ).pack(anchor="w", pady=(4, 10))
         return body
 
     def steps(self, parent: ttk.Frame, items: list[tuple[str, str]]) -> None:
@@ -1368,7 +1368,12 @@ class App:
             ).pack_configure(anchor="w", fill="none", pady=(6, 0))
 
     def clipboard_settings(self) -> None:
-        self.reset("settings", "", "")
+        title, subtitle = (
+            ("Clipboard settings", "Manage history, sync, privacy and app behavior.")
+            if not self.service.completed()
+            else ("Settings", "Manage your clipboard history, account access and app behavior.")
+        )
+        self.reset("settings", title, subtitle)
         if self.service.completed():  # During setup the choice was just made.
             self.features_card()
             self.shortcuts_card()
@@ -1426,7 +1431,11 @@ class App:
                 self.step_label("dictation"),
             )
         else:
-            self.reset("settings", "", "")
+            self.reset(
+                "settings",
+                "Settings",
+                "Manage Dictation, clipboard history, account access and app behavior.",
+            )
         try:
             config = d.Config(self.service.paths)
         except d.DictationError as exc:
@@ -2739,6 +2748,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     telemetry.install("window")
     try:
+        set_macos_app_identity()
         root = tk.Tk(className="ClipboardPlus")
 
         telemetry.watch_tk(root)
@@ -2755,6 +2765,24 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         os.close(fd)
     return 0
+
+
+def set_macos_app_identity() -> None:
+    """Give Tk's Dock tile and application menu the Clipboard+ name, not Python."""
+    if sys.platform != "darwin":
+        return
+    try:
+        import Foundation
+    except ImportError:
+        return  # Tk can still open if optional macOS GUI bindings are unavailable.
+
+    bundle = Foundation.NSBundle.mainBundle()
+    if bundle is not None:
+        for info in (bundle.localizedInfoDictionary(), bundle.infoDictionary()):
+            if info is not None:
+                info["CFBundleName"] = hotkeys.APP_NAME
+                info["CFBundleDisplayName"] = hotkeys.APP_NAME
+    Foundation.NSProcessInfo.processInfo().setProcessName_(hotkeys.APP_NAME)
 
 
 if __name__ == "__main__":
