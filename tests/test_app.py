@@ -720,7 +720,10 @@ class WindowTests(ServiceCase):
         self.window.after_features("clipboard")
         self.assertEqual(self.window.page, "tutorial")
         self.window.choose_features()
-        with patch.object(self.gui.App, "find_microphones"):
+        with (
+            patch.object(self.gui.App, "find_microphones"),
+            patch.object(self.window, "prepare_recommended_setup"),
+        ):
             self.window.after_features("both")
         self.assertIn("dictation", self.window.setup_steps)
         self.assertEqual(self.window.page, "settings")
@@ -732,6 +735,7 @@ class WindowTests(ServiceCase):
         with (
             patch.object(self.service, "action") as record,
             patch.object(self.service, "ready", return_value=False),
+            patch.object(self.window, "prepare_recommended_setup"),
         ):
             self.window.after_features("dictation")
             self.assertEqual(self.window.page, "settings")
@@ -982,6 +986,24 @@ class WindowTests(ServiceCase):
         with patch.object(desktop, "platform_name", return_value="linux"):
             self.window.tutorial()
             self.assertTrue(any("dictate-toggle" in text for text in self.texts()))
+
+    def test_first_run_tutorial_offers_a_guided_shortcut_and_recording_path(self):
+        self.window.tutorial()
+        texts = " ".join(self.texts())
+        shortcut = hotkeys.Preferences(self.paths).shortcut().label()
+        self.assertIn(f"Press {shortcut} in any app to start speaking", texts)
+        self.assertIn(f"Press {shortcut} again to stop", texts)
+        self.assertIn("Choose Record", texts)
+        button_labels = [button.cget("text") for button in self.window.buttons]
+        self.assertIn("Open recorder", button_labels)
+        self.assertIn("Choose a shortcut", button_labels)
+        with patch.object(self.window, "shortcut_page") as choose:
+            next(
+                button
+                for button in self.window.buttons
+                if button.cget("text") == "Choose a shortcut"
+            ).invoke()
+        choose.assert_called_once_with(back=self.window.tutorial)
 
     def texts(self):
         found, stack = [], [self.window.frame]

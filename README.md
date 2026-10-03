@@ -94,16 +94,15 @@ bundled components are in `THIRD-PARTY-NOTICES.md`. Prefer a one-line install sc
 Once you open Clipboard+ for the first time, the first-run screens help
 the user:
 
-1. Choose what to use: **Dictation**, **Clipboard history**, or **Both**. Only the
-   steps for what you chose follow, and you can change it later in Settings.
-2. For dictation: choose English or multilingual transcription and select a
-   microphone (microphones are found automatically), then choose the transcription AI:
-   - **Free on-device AI** (recommended): a verified 148 MB Whisper model,
-     downloaded once; audio never leaves the computer.
-   - **A Whisper model file you already have.**
-   - **Your own AI service**: OpenAI, Groq, or any OpenAI-compatible
-     `/audio/transcriptions` endpoint, with your API key. Audio is sent to that
-     service, which may charge.
+1. Choose what to use: **Dictation**, **Clipboard history**, or **Both** (**Both** is
+   selected by default). Only the steps for what you chose follow, and you can change
+   it later in Settings.
+2. For dictation, setup automatically downloads the recommended free on-device AI: a
+   verified 148 MB Whisper model. Setup uses English and your system microphone by
+   default; you can change the language, microphone, or transcription AI in Settings
+   later. Alternatives are a Whisper model file you already have, or your own AI service
+   (OpenAI, Groq, or any OpenAI-compatible `/audio/transcriptions` endpoint). Audio sent
+   to your own service may incur charges.
 3. Choosing **Clipboard history** or **Both** enables local clipboard history
    during setup. Copies stay on this device unless you connect a Clipboard+
    account; turn capture off any time in Settings.

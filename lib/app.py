@@ -245,6 +245,7 @@ class App:
         self.account: clipui.AccountCard | None = None
         self.setup_mode = ""
         self.setup_steps: list[str] = []  # The first-run screens this setup shows.
+        self.auto_prepare_recommended = False
         self.clipboard_page: clipui.ClipboardPage | None = None
         self.clipboard_opening = False
         # Opened by the history shortcut or menu: Esc (with no search typed) closes it.
@@ -862,6 +863,7 @@ class App:
         """Start only the setup steps the chosen features need."""
         self.setup_mode = mode
         dictation = mode != "clipboard"
+        self.auto_prepare_recommended = dictation
         prefs = hotkeys.Preferences(self.service.paths)
         prefs.save(features=hotkeys.Features(dictation, mode != "dictation"))
         self.setup_steps = [
@@ -873,6 +875,27 @@ class App:
             self.after_dictation_setup()
         else:
             self.settings()
+            self.prepare_recommended_setup()
+
+    def prepare_recommended_setup(self) -> None:
+        """Start the recommended local model during first-run setup."""
+        if (
+            self.page != "settings"
+            or not self.auto_prepare_recommended
+            or self.service.completed()
+            or self.model_source.get() != "download"
+            or self.pending is not None
+        ):
+            return
+        if desktop.platform_name() == "windows" and self.device.get() == "default":
+            # Windows recording needs a concrete input device. Prefer the first device
+            # discovered during setup, while keeping the picker available to change it.
+            device = next((item for item in self.device_ids.values() if item != "default"), "")
+            if not device:
+                return  # show_microphones() will retry when discovery finishes.
+            self.device.set(next(name for name, item in self.device_ids.items() if item == device))
+        self.auto_prepare_recommended = False
+        self.prepare()
 
     def after_dictation_setup(self) -> None:
         self.tutorial()
@@ -1769,7 +1792,10 @@ class App:
             current = "default" if "default" in devices else devices[0]
         self.device.set(names.get(current, current))
         found = f"{len(devices)} microphone{'s' if len(devices) != 1 else ''} found."
-        self.status.set(f"{found} Pick the one you’ll speak into.")
+        if self.pending is None:
+            self.status.set(f"{found} Pick the one you’ll speak into.")
+        if self.auto_prepare_recommended:
+            self.prepare_recommended_setup()
 
     def prepare(self) -> None:
         language = app_settings.language_code(self.language.get())
@@ -1839,8 +1865,8 @@ class App:
             return
         self.reset(
             "tutorial",
-            "You’re ready to speak",
-            "Three steps, no commands to learn.",
+            "Your first dictation" if not self.service.completed() else "How Dictation works",
+            "Follow these steps once; then use the shortcut anywhere.",
             self.step_label("done"),
         )
         paste = "Command + V" if desktop.platform_name() == "macos" else "Ctrl + V"
@@ -1854,7 +1880,7 @@ class App:
             body,
             [
                 (
-                    f"Press {shortcut} in any app and speak",
+                    f"Press {shortcut} in any app to start speaking",
                     "A small bar near the top of your screen shows it’s listening; "
                     f"the icon in the {place} turns red.",
                 ),
@@ -1864,7 +1890,7 @@ class App:
                     "text is ready.",
                 ),
                 (
-                    "Your words appear where you were typing",
+                    "Your words are ready to paste",
                     f"They’re also copied, so {paste} pastes them anywhere else.",
                 )
                 if auto_paste
@@ -1872,31 +1898,38 @@ class App:
             ],
         )
         if self.features().dictation:
-            check = self.card("Try your shortcut", "Make sure it works before you need it.")
+            check = self.card(
+                "Try your shortcut", "Choose Test shortcut, then press the keys shown."
+            )
             panel = shortcut_panel.TestPanel(
                 self.root, self.service.paths, check, "dictation", self.wraplength - 50
             )
             self.shortcut_panels.append(panel)
-            self.button("Test it", panel.start, parent=check)
+            self.button("Test shortcut", panel.start, parent=check)
+            self.button(
+                "Choose a shortcut",
+                lambda: self.shortcut_page(back=self.tutorial),
+                parent=check,
+            )
             panel.frame.pack(anchor="w", pady=(4, 0))
             if not self.service.completed():
                 sample = self.card(
-                    "Try a real dictation",
-                    "Record a short phrase and check that it turns into text.",
-                )
-                self.button(
                     "Try a recording",
+                    "Choose Record, say the phrase below, then choose Stop and transcribe to see it turn into text.",
+                )
+                ttk.Label(
+                    sample,
+                    text="“Hello world. New paragraph. This is my first dictation.”",
+                    style="Card.TLabel",
+                    wraplength=self.wraplength - 50,
+                ).pack(anchor="w", pady=(4, 8))
+                self.button(
+                    "Open recorder",
                     lambda: self.finish_setup(try_recording=True),
                     primary=True,
                     parent=sample,
                 )
-        tips = self.card("Try saying")
-        ttk.Label(
-            tips,
-            text="“Hello world. New paragraph. This is my first dictation.”",
-            style="Card.TLabel",
-            wraplength=self.wraplength - 50,
-        ).pack(anchor="w")
+        tips = self.card("Change settings anytime")
         ttk.Label(
             tips,
             text="Change the shortcut, microphone, or AI anytime in Settings, from this "

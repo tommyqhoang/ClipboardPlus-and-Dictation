@@ -66,6 +66,10 @@ class ModeCase(ServiceCase):
                 return
         self.fail(f"No button {label!r} on the {self.window.page} page")
 
+    def setup_features_without_auto_download(self, mode):
+        with patch.object(self.window, "prepare_recommended_setup"):
+            self.window.after_features(mode)
+
 
 class SetupFlowTests(ModeCase):
     def test_get_started_asks_what_the_user_wants_to_use(self):
@@ -77,9 +81,33 @@ class SetupFlowTests(ModeCase):
             self.assertIn(option, texts)
         self.assertIn("Save copies on this device", texts)
         self.assertIn("history of your copies on this device", texts)
+        self.assertEqual(self.window.mode_var.get(), "both")
+
+    def test_recommended_model_starts_automatically_for_both_features(self):
+        with (
+            patch.object(self.gui.desktop, "platform_name", return_value="linux"),
+            patch.object(self.gui.App, "find_microphones"),
+            patch.object(self.window, "prepare") as prepare,
+        ):
+            self.window.after_features("both")
+        prepare.assert_called_once_with()
+        self.assertEqual(self.window.model_source.get(), "download")
+        self.assertEqual(self.prefs.features(), hotkeys.Features(True, True))
+
+    def test_windows_waits_for_microphone_discovery_before_download(self):
+        with (
+            patch.object(self.gui.desktop, "platform_name", return_value="windows"),
+            patch.object(self.gui.App, "find_microphones"),
+            patch.object(self.window, "prepare") as prepare,
+        ):
+            self.window.after_features("both")
+            prepare.assert_not_called()
+            self.window.show_microphones(["microphone-1"])
+        prepare.assert_called_once_with()
+        self.assertEqual(self.window.device.get(), "microphone-1")
 
     def test_clipboard_only_skips_dictation_setup_entirely(self):
-        self.window.after_features("clipboard")
+        self.setup_features_without_auto_download("clipboard")
         self.assertEqual(self.window.page, "tutorial")
         self.assertEqual(self.prefs.features(), hotkeys.Features(False, True))
         joined = " ".join(self.texts())
@@ -89,32 +117,32 @@ class SetupFlowTests(ModeCase):
         self.assertTrue(self.service.completed())  # No speech model needed.
 
     def test_both_runs_dictation_setup_with_clipboard_already_enabled(self):
-        self.window.after_features("both")
+        self.setup_features_without_auto_download("both")
         self.assertEqual(self.window.page, "settings")
         self.window.after_dictation_setup()
         self.assertEqual(self.window.page, "tutorial")
         self.assertEqual(self.prefs.features(), hotkeys.Features(True, True))
 
     def test_every_setup_screen_counts_the_same_steps(self):
-        self.window.after_features("both")
+        self.setup_features_without_auto_download("both")
         self.assertEqual(self.window.step.get(), "Step 2 of 3")
         self.assertNotIn("What you use", self.texts())
         self.window.after_dictation_setup()
         self.assertEqual(self.window.step.get(), "Step 3 of 3")
 
     def test_a_clipboard_only_setup_counts_two_steps(self):
-        self.window.after_features("clipboard")
+        self.setup_features_without_auto_download("clipboard")
         self.assertEqual(self.window.step.get(), "Step 2 of 2")
 
     def test_dictation_only_has_no_clipboard_step(self):
-        self.window.after_features("dictation")
+        self.setup_features_without_auto_download("dictation")
         self.assertEqual(self.window.page, "settings")
         self.window.after_dictation_setup()
         self.assertEqual(self.window.page, "tutorial")
         self.assertEqual(self.prefs.features(), hotkeys.Features(True, False))
 
     def test_clipboard_can_be_disabled_in_settings_after_setup(self):
-        self.window.after_features("both")
+        self.setup_features_without_auto_download("both")
         self.window.apply_mode("dictation")
         self.assertEqual(self.prefs.features(), hotkeys.Features(True, False))
 
