@@ -401,6 +401,16 @@ class TrayTests(unittest.TestCase):
         self.tray.tick()
         self.assertTrue(self.tray.icon.stopped)
 
+    def test_restore_request_reregisters_the_visible_tray_icon(self):
+        self.tray.icon.visible = True
+        self.tray.icon.icon = "missing"
+        (self.paths.runtime / tray.STATUS_ITEM_RESTORE).write_text("restore")
+        self.tray.tick()
+        self.assertFalse((self.paths.runtime / tray.STATUS_ITEM_RESTORE).exists())
+        self.assertTrue(self.tray.icon.visible)
+        self.assertEqual(self.tray.icon.icon, "whisper-dictation.png")
+        self.assertGreater(self.tray.icon.updates, 0)
+
     def test_login_item_and_startup(self):
         with patch.object(hotkeys, "set_login_item") as login:
             self.item("Open at Login").action()
@@ -480,6 +490,17 @@ class TrayTests(unittest.TestCase):
     def test_main_refuses_macos(self):
         with patch.object(tray.desktop, "platform_name", return_value="macos"):
             self.assertEqual(tray.main(), 1)
+
+    def test_reopening_an_existing_tray_requests_icon_restore_and_opens_window(self):
+        with (
+            patch.object(tray.desktop, "platform_name", return_value="linux"),
+            patch.object(tray.d, "Paths", return_value=self.paths),
+            patch.object(tray.desktop, "lock", return_value=None),
+            patch.object(tray, "open_app_window") as open_window,
+        ):
+            self.assertEqual(tray.main(), 0)
+        self.assertEqual((self.paths.runtime / tray.STATUS_ITEM_RESTORE).read_text(), "restore")
+        open_window.assert_called_once_with()
 
     def test_main_without_a_display_exits_quietly_instead_of_crashing(self):
         with (

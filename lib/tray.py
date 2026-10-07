@@ -44,6 +44,7 @@ MENU_ROWS = 8  # Recent copies listed in the menu, like the macOS popover.
 SUPERVISED_CHILD = "--clipboardplus-supervised-child"
 RESTART_SECONDS = 5
 MAX_RESTART_SECONDS = 60
+STATUS_ITEM_RESTORE = "status-item-restore"
 
 
 def supervise(
@@ -737,6 +738,10 @@ class Tray:
             self.notify(f"{wanted.label()} is in use by another app. Choose another in Settings.")
 
     def tick(self) -> None:
+        restore_request = self.paths.runtime / STATUS_ITEM_RESTORE
+        if restore_request.exists():
+            restore_request.unlink(missing_ok=True)
+            self.restore_status_icon()
         self.clip.supervise()
         self.start_update_check()
         self.collect_update()
@@ -798,6 +803,16 @@ class Tray:
         )
         if changed:
             self.icon.update_menu()
+
+    def restore_status_icon(self) -> None:
+        """Reattach a tray icon when reopening the app finds its process still alive."""
+        # Toggling visibility makes pystray re-register with the notification area;
+        # assigning the current image also repairs backends that dropped only its image.
+        self.icon.visible = False
+        self.icon.icon = self.images["recording" if self.phase == "recording" else "idle"]
+        self.icon.visible = True
+        self.icon.update_menu()
+        log.info("restored tray status icon")
 
 
 APPINDICATOR_STEPS = (
@@ -895,7 +910,9 @@ def main() -> int:
     child = SUPERVISED_CHILD in sys.argv[1:]
     fd = None if child else desktop.lock(paths.runtime / "menubar.lock")
     if not child and fd is None:
-        # Already running: opening the launcher again should show the window.
+        # The existing process owns the notification-area item; have it register the
+        # item again, then keep the familiar behavior of opening the app window.
+        d.atomic(paths.runtime / STATUS_ITEM_RESTORE, "restore")
         open_app_window()
         return 0
     try:

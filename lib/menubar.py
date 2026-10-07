@@ -98,6 +98,7 @@ POPOVER_PREVIEW_CHARS = 60
 ROW_HEIGHT = 40.0
 THUMB_SIZE = 28.0
 TOAST_SECONDS = 0.9  # How long "Copied" shows over the list before the popover closes.
+STATUS_ITEM_RESTORE = "status-item-restore"
 
 
 def fourcc(code: str) -> int:
@@ -371,19 +372,7 @@ class Controller(NSObject):  # type: ignore[misc]
 
     # -- lifecycle --------------------------------------------------------
     def applicationDidFinishLaunching_(self, _notification: Any) -> None:
-        self.item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
-        self.idle_image = template("menubar-icon.png")
-        self.recording_image = template(
-            "menubar-recording.png", template_image=False, symbol="record.circle.fill"
-        )
-        self.item.button().setImage_(self.idle_image)
-        if self.idle_image is None:
-            self.item.button().setTitle_("C+")
-        self.item.button().setToolTip_(hotkeys.APP_NAME)
-        self.item.button().setAccessibilityLabel_(hotkeys.APP_NAME)
-        self.item.button().setTarget_(self)
-        self.item.button().setAction_("statusClicked:")
-        self.item.button().sendActionOn_(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)
+        self.install_status_item()
         self.build_popover()
         # Carbon calls these from inside its event handler: they only note the press and
         # schedule the real work for the next run-loop turn (see hotkey_pressed).
@@ -410,6 +399,32 @@ class Controller(NSObject):  # type: ignore[misc]
         self.refresh_(None)
         if not self.service.completed():
             self.open_window("--setup")
+
+    @objc.python_method
+    def install_status_item(self) -> None:
+        """Attach a fresh status item to the current macOS menu bar."""
+        self.item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+        self.idle_image = template("menubar-icon.png")
+        self.recording_image = template(
+            "menubar-recording.png", template_image=False, symbol="record.circle.fill"
+        )
+        self.item.button().setImage_(self.idle_image)
+        if self.idle_image is None:
+            self.item.button().setTitle_("C+")
+        self.item.button().setToolTip_(hotkeys.APP_NAME)
+        self.item.button().setAccessibilityLabel_(hotkeys.APP_NAME)
+        self.item.button().setTarget_(self)
+        self.item.button().setAction_("statusClicked:")
+        self.item.button().sendActionOn_(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)
+
+    @objc.python_method
+    def restore_status_item(self) -> None:
+        """Recreate an item macOS stopped displaying without restarting recording work."""
+        self.popover.close()
+        NSStatusBar.systemStatusBar().removeStatusItem_(self.item)
+        self.install_status_item()
+        self.view = None  # refresh_state() redraws its current recording state below.
+        log.info("restored menu bar status item")
 
     @objc.python_method
     def framed(self, view: Any, rect: Any) -> Any:
@@ -938,6 +953,10 @@ class Controller(NSObject):  # type: ignore[misc]
             quit_request.unlink(missing_ok=True)
             self.quit_(None)
             return
+        restore_request = self.paths.runtime / STATUS_ITEM_RESTORE
+        if restore_request.exists():
+            restore_request.unlink(missing_ok=True)
+            self.restore_status_item()
         self.clip.supervise()
         self.start_update_check()
         self.collect_update()
@@ -1242,8 +1261,11 @@ def main() -> int:
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "menubar.lock")
     if fd is None:
-        # Already running: opening it again shows the window. A start by launchd (the
-        # login item loaded while the app runs) is not someone opening it.
+        # The running process owns the visible item. Ask it to recreate that item before
+        # opening the window, so Finder can recover an item macOS stopped displaying.
+        d.atomic(paths.runtime / STATUS_ITEM_RESTORE, "restore")
+        # Already running: opening it again also shows the window. A start by launchd
+        # (the login item loaded while the app runs) is not someone opening it.
         if os.environ.get("XPC_SERVICE_NAME") != hotkeys.AGENT_LABEL:
             open_app_window()
         return 0

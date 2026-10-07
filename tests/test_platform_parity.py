@@ -62,6 +62,10 @@ CAPABILITIES: dict[str, tuple[str, str]] = {
         r"self\.clip\.supervise\(\)",
         r"self\.clip\.supervise\(\)",
     ),
+    "reopening an already-running app restores its status icon": (
+        r"STATUS_ITEM_RESTORE",
+        r"STATUS_ITEM_RESTORE",
+    ),
     "copying a row goes through the shared service": (
         r"service\.copy_item\(",
         r"service\.copy_item\(",

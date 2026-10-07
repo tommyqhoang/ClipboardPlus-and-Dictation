@@ -5,6 +5,12 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.8] - 2026-10-06
+
+### Fixed
+- Reopening Clipboard+ now restores a missing menu-bar or tray icon when its background
+  process is still running, across macOS, Windows, and Linux.
+
 ## [1.6.7] - 2026-10-03
 
 ### Changed
