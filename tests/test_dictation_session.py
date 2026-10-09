@@ -52,11 +52,48 @@ class SessionTests(unittest.TestCase):
             patch.object(d, "start_overlay", return_value=None),
             patch.object(d.time, "sleep"),
             patch.object(d.desktop, "recorder_command", return_value=["arecord"]),
+            patch.object(d, "fallback_devices", return_value=iter(["default"])),
             self.assertRaises(d.DictationError) as caught,
         ):
             self.session.start_recorder()
         self.assertIn("Microphone could not start", str(caught.exception))
         self.assertIn("Device busy", str(caught.exception))
+
+    def test_an_unavailable_microphone_falls_back_to_the_system_default(self):
+        dead, live = MagicMock(stdin=None), MagicMock(stdin=None)
+        dead.poll.return_value = 1
+        live.poll.return_value = None
+        used = []
+
+        def start(command, **kwargs):
+            used.append(command)
+            return dead if len(used) == 1 else live
+
+        self.config.values["backend"] = "http"
+        self.config.values["audio_backend"] = "alsa"
+        self.config.values["device"] = "plughw:CARD=Gone"
+        with (
+            patch.object(d.permissions, "microphone_blocked", return_value=None),
+            patch.object(d.subprocess, "Popen", side_effect=start),
+            patch.object(d, "start_overlay", return_value=None),
+            patch.object(d.time, "sleep"),
+            patch.object(d, "notify"),
+        ):
+            self.session.start_recorder()
+        self.assertIs(self.session.recorder, live)
+        self.assertIn("-D", used[1])
+        self.assertEqual(used[1][used[1].index("-D") + 1], "default")
+
+    def test_fallback_devices_add_other_cards_and_skip_windows(self):
+        self.config.values["audio_backend"] = "alsa"
+        listing = MagicMock(stdout=b"null\nplughw:CARD=USB,DEV=0\n    USB mic\n")
+        with patch.object(d.subprocess, "run", return_value=listing):
+            self.assertEqual(
+                list(d.fallback_devices(self.config, "default")),
+                ["default", "pipewire", "pulse", "plughw:CARD=USB,DEV=0"],
+            )
+        with patch.object(d.desktop, "audio_backend", return_value="dshow"):
+            self.assertEqual(list(d.fallback_devices(self.config, "Mic")), ["Mic"])
 
     def test_a_known_blocked_microphone_never_starts_the_recorder(self):
         with (

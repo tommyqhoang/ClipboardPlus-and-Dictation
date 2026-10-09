@@ -364,9 +364,11 @@ def audio_backend(values: dict[str, Any]) -> str:
     return {"linux": "alsa", "macos": "avfoundation", "windows": "dshow"}[platform_name()]
 
 
-def recorder_command(values: dict[str, Any], listing: bool = False) -> list[str]:
+def recorder_command(
+    values: dict[str, Any], listing: bool = False, device: str | None = None
+) -> list[str]:
     backend = audio_backend(values)
-    device = str(values["device"])
+    device = str(values["device"]) if device is None else device
     if backend == "alsa":
         args = executable(str(values["arecord"]))
         return args + (

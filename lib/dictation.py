@@ -821,17 +821,12 @@ class Session:
         except OSError:
             return ""
 
-    def start_recorder(self) -> None:
-        """Start the microphone (and the pill and engine) and confirm it is recording."""
+    def launch_recorder(self, device: str) -> None:
         config, paths = self.config, self.paths
-        blocked = permissions.microphone_blocked()
-        if blocked:
-            raise DictationError(blocked)
-        paths.preview.unlink(missing_ok=True)
         # Raw PCM has no unfinalized WAV header; snapshots are wrapped on demand.
         with paths.audio.open("wb") as output, self.recorder_errors.open("wb") as errors:
             self.recorder = subprocess.Popen(
-                desktop.recorder_command(config.values),
+                desktop.recorder_command(config.values, device=device),
                 stdout=output,
                 stdin=subprocess.PIPE
                 if desktop.audio_backend(config.values) != "alsa"
@@ -840,6 +835,32 @@ class Session:
                 close_fds=True,
                 **desktop.process_options(),
             )
+
+    def start_recorder(self) -> None:
+        """Start the microphone (and the pill and engine) and confirm it is recording."""
+        config, paths = self.config, self.paths
+        blocked = permissions.microphone_blocked()
+        if blocked:
+            raise DictationError(blocked)
+        paths.preview.unlink(missing_ok=True)
+        # A configured microphone that is unplugged (or a new one the default has not picked up
+        # yet) falls back to the system default; only when that fails too is it an error.
+        chosen = config.s("device")
+        reason = ""
+        for device in fallback_devices(config, chosen):
+            self.launch_recorder(device)
+            time.sleep(0.08)
+            if self.recorder.poll() is None:
+                if device != chosen:
+                    log.warning("microphone %r unavailable; using %r", chosen, device)
+                    self.tell("Your microphone wasn’t available, so the system default is in use.")
+                break
+            reason = self.recorder_reason()
+            log.warning("recorder %r exited at start: %s", device, reason or "no output")
+            if self.recorder.stdin:
+                self.recorder.stdin.close()
+        else:
+            raise DictationError(permissions.microphone_message(reason=reason))
         # The pill adds to the notifications (a notification is never missed).
         self.pill = start_overlay(config, self.token)  # Starts up while the microphone does.
         if config.s("backend") == "local":
@@ -847,11 +868,6 @@ class Session:
 
             if engine.read_info(paths) is None:
                 engine.start(paths, config)  # Loads the model while the user speaks.
-        time.sleep(0.08)
-        if self.recorder.poll() is not None:
-            reason = self.recorder_reason()
-            log.warning("recorder exited at start: %s", reason or "no output")
-            raise DictationError(permissions.microphone_message(reason=reason))
 
     def stop_requested(self) -> bool:
         """Whether the shortcut asked to stop or cancel (which is remembered)."""
@@ -1221,6 +1237,35 @@ def print_status(config: Config, paths: Paths) -> None:
             indent=2,
         )
     )
+
+
+def fallback_devices(config: Config, chosen: str):
+    """The chosen microphone, then whatever else the system offers (found only when needed)."""
+    yield chosen
+    backend = desktop.audio_backend(config.values)
+    if backend == "dshow":
+        return  # Windows has no "default" to fall back to; the user picks one in Settings.
+    tried = {chosen}
+    for device in ("default", "pipewire", "pulse") if backend == "alsa" else ("default",):
+        if device not in tried:
+            tried.add(device)
+            yield device
+    if backend != "alsa":
+        return
+    try:  # A newly connected card the sound server has not made the default.
+        listing = subprocess.run(
+            desktop.recorder_command(config.values, listing=True),
+            capture_output=True,
+            timeout=5,
+            check=False,
+            **desktop.process_options(),
+        ).stdout.decode("utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return
+    for line in listing.splitlines():
+        if line.startswith("plughw:") and line.strip() not in tried:
+            tried.add(line.strip())
+            yield line.strip()
 
 
 def list_devices(config: Config) -> int:
