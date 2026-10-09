@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import wave
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -821,11 +822,11 @@ class Session:
         except OSError:
             return ""
 
-    def launch_recorder(self, device: str) -> None:
+    def launch_recorder(self, device: str) -> subprocess.Popen[bytes]:
         config, paths = self.config, self.paths
         # Raw PCM has no unfinalized WAV header; snapshots are wrapped on demand.
         with paths.audio.open("wb") as output, self.recorder_errors.open("wb") as errors:
-            self.recorder = subprocess.Popen(
+            self.recorder = recorder = subprocess.Popen(
                 desktop.recorder_command(config.values, device=device),
                 stdout=output,
                 stdin=subprocess.PIPE
@@ -835,6 +836,7 @@ class Session:
                 close_fds=True,
                 **desktop.process_options(),
             )
+        return recorder
 
     def start_recorder(self) -> None:
         """Start the microphone (and the pill and engine) and confirm it is recording."""
@@ -848,17 +850,17 @@ class Session:
         chosen = config.s("device")
         reason = ""
         for device in fallback_devices(config, chosen):
-            self.launch_recorder(device)
+            recorder = self.launch_recorder(device)
             time.sleep(0.08)
-            if self.recorder.poll() is None:
+            if recorder.poll() is None:
                 if device != chosen:
                     log.warning("microphone %r unavailable; using %r", chosen, device)
                     self.tell("Your microphone wasn’t available, so the system default is in use.")
                 break
             reason = self.recorder_reason()
             log.warning("recorder %r exited at start: %s", device, reason or "no output")
-            if self.recorder.stdin:
-                self.recorder.stdin.close()
+            if recorder.stdin:
+                recorder.stdin.close()
         else:
             raise DictationError(permissions.microphone_message(reason=reason))
         # The pill adds to the notifications (a notification is never missed).
@@ -1239,7 +1241,7 @@ def print_status(config: Config, paths: Paths) -> None:
     )
 
 
-def fallback_devices(config: Config, chosen: str):
+def fallback_devices(config: Config, chosen: str) -> Iterator[str]:
     """The chosen microphone, then whatever else the system offers (found only when needed)."""
     yield chosen
     backend = desktop.audio_backend(config.values)

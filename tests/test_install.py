@@ -58,7 +58,7 @@ class InstallDependencyTests(unittest.TestCase):
         result = self.run_script(
             "need() { return 0; }; python_has() { return 0; }; typelib_available() { return 0; }; "
             "find_python() { PYTHON=/usr/bin/python3; }; "
-            "pm_install() { echo INSTALLED; }; SKIP_MODEL=1; install_packages"
+            "pm_install() { echo INSTALLED; }; SKIP_MODEL=1; XDG_CURRENT_DESKTOP=KDE; install_packages"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("INSTALLED", result.stdout)
