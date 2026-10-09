@@ -5,6 +5,13 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.6.9] - 2026-10-09
+
+### Fixed
+- Dictation no longer errors when the chosen microphone is unplugged or a newly connected
+  one isn't the system default yet: it falls back to the system default (then any other
+  available card) and says so. An error appears only when no microphone works.
+
 ## [1.6.8] - 2026-10-06
 
 ### Fixed
