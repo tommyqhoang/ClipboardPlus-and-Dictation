@@ -65,7 +65,11 @@ class ThemeLoadingTests(unittest.TestCase):
         self.root.destroy()
 
     def test_the_modern_theme_is_used_and_styles_borrow_its_buttons(self):
-        self.assertTrue(app_styles.apply(self.root, self.fonts))
+        tk_version = self.root.tk.call("info", "patchlevel")
+        self.assertTrue(
+            app_styles.apply(self.root, self.fonts),
+            f"Tk {tk_version}: {app_styles.load_error}",
+        )
         style = self.ttk.Style(self.root)
         self.assertEqual(style.theme_use(), app_styles.THEME_NAME)
         for name in ("Primary.TButton", "Danger.TButton", "Tab.TButton", "Link.TButton"):

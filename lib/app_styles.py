@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 # tools/build_theme.py). Without the file the classic styles below still work.
 THEME_FILE = Path(__file__).with_name("clipboardplus-theme.tcl")
 THEME_NAME = "clipboardplus"
+load_error = ""  # Why the modern theme could not load, for diagnostics and tests.
 
 # One palette for every surface; the generated Clipboard+ icon is used everywhere.
 BACKGROUND = "#f5f7fa"
@@ -271,12 +272,14 @@ def configure_misc(style: ttk.Style, fonts: Fonts, modern: bool = False) -> None
 
 def load_theme(style: ttk.Style) -> bool:
     """Switch to the modern theme; False (and the clam theme) when it cannot load."""
+    global load_error
     try:
         style.tk.call("source", str(THEME_FILE))
         style.theme_use(THEME_NAME)
         # The theme resets "." when it is applied; let that finish before ours.
         style.master.update_idletasks()
     except (tkinter.TclError, OSError) as exc:
+        load_error = str(exc)
         log.warning("modern theme unavailable, using the classic one: %s", exc)
         style.theme_use("clam")
         return False
