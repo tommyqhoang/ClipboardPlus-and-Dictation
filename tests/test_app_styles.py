@@ -97,7 +97,12 @@ class ThemeLoadingTests(unittest.TestCase):
         self.assertNotIn("arrow", layout)
 
     def test_a_missing_theme_falls_back_to_the_classic_one(self):
-        with patch.object(app_styles, "THEME_FILE", LIB / "no-such-theme.tcl"):
+        # Some Tk builds (macOS) keep a loaded theme for the whole process; pretend it is
+        # not loaded so the missing file is actually tried.
+        with (
+            patch.object(app_styles, "THEME_FILE", LIB / "no-such-theme.tcl"),
+            patch.object(self.ttk.Style, "theme_names", return_value=()),
+        ):
             self.assertFalse(app_styles.apply(self.root, self.fonts))
         style = self.ttk.Style(self.root)
         self.assertEqual(style.theme_use(), "clam")
