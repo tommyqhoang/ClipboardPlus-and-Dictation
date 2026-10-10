@@ -274,7 +274,10 @@ def load_theme(style: ttk.Style) -> bool:
     """Switch to the modern theme; False (and the clam theme) when it cannot load."""
     global load_error
     try:
-        style.tk.call("source", str(THEME_FILE))
+        # A theme exists once per process on some Tk builds (macOS), so a second window
+        # must reuse it: sourcing it again fails with "Theme ... already exists".
+        if THEME_NAME not in style.theme_names():
+            style.tk.call("source", str(THEME_FILE))
         style.theme_use(THEME_NAME)
         # The theme resets "." when it is applied; let that finish before ours.
         style.master.update_idletasks()

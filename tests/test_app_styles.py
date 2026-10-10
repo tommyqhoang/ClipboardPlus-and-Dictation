@@ -83,6 +83,13 @@ class ThemeLoadingTests(unittest.TestCase):
         self.ttk.Frame(self.root, style="Panel.TFrame").destroy()
         self.root.update_idletasks()
 
+    def test_applying_the_theme_again_reuses_it_instead_of_failing(self):
+        # Sourcing the theme twice raises "Theme clipboardplus already exists"; on macOS
+        # that happened for every window after the first and fell back to the old look.
+        self.assertTrue(app_styles.apply(self.root, self.fonts))
+        self.assertTrue(app_styles.apply(self.root, self.fonts), app_styles.load_error)
+        self.assertEqual(self.ttk.Style(self.root).theme_use(), app_styles.THEME_NAME)
+
     def test_the_scrollbar_has_no_arrow_buttons(self):
         app_styles.apply(self.root, self.fonts)
         layout = str(self.ttk.Style(self.root).layout("Vertical.TScrollbar"))
