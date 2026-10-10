@@ -43,6 +43,8 @@ for entry in ENTRIES:
             datas=[
                 (str(LIB / "menubar-icon.png"), "."),
                 (str(LIB / "menubar-recording.png"), "."),
+                (str(LIB / "clipboardplus-theme.tcl"), "."),
+                (str(LIB / "clipboardplus-theme.png"), "."),
                 *KEYRING_DATA,
             ],
             hiddenimports=[

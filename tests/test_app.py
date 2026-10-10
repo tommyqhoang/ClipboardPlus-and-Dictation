@@ -526,14 +526,18 @@ class ClipboardOpenTests(ServiceCase):
         window.clipboard_clear_after_open = True
         window.root = SimpleNamespace(after_idle=Mock())
         store, page = Mock(), Mock()
+        calls = Mock()
+        window.reset = calls.reset
+        page.render = calls.render
         with patch.object(self.gui.clipui, "ClipboardPage", return_value=page):
             window._clipboard_store_opened((store, None))
+        # The "Opening clipboard history" card goes before the list is drawn.
+        self.assertEqual([call[0] for call in calls.mock_calls], ["reset", "render"])
 
         self.assertIs(window.clipboard_store, store)
         self.assertIs(window.clipboard_page, page)
         self.assertFalse(window.clipboard_opening)
         self.assertFalse(window.clipboard_clear_after_open)
-        page.render.assert_called_once_with()
         window.root.after_idle.assert_called_once_with(window.clear_clipboard_history)
 
     def test_pending_store_is_closed_and_a_slow_open_gets_a_cleanup_callback(self):

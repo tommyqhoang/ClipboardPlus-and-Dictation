@@ -32,6 +32,8 @@ for entry in ENTRIES:
             datas=[
                 (str(LIB / "whisper-dictation.png"), "."),
                 (str(LIB / "tray-recording.png"), "."),
+                (str(LIB / "clipboardplus-theme.tcl"), "."),
+                (str(LIB / "clipboardplus-theme.png"), "."),
                 *KEYRING_DATA,
             ],
             hiddenimports=[*KEYRING_IMPORTS],

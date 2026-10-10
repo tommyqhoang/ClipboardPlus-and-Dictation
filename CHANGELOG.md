@@ -5,6 +5,21 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-10
+
+### Changed
+- A new look for the Clipboard+ window on every platform: rounded buttons, cards and
+  inputs, a slim scrollbar with no arrow buttons, and amber accents, built on the MIT
+  Sun Valley theme recolored to the logo. The classic look remains as a fallback.
+
+### Fixed
+- macOS: after updating, opening Clipboard+ no longer hands off to the menu bar process
+  left running from the old version (which kept a missing icon and ignored the 1.6.8
+  icon-restore request). A resident process of another version is now asked to quit and
+  the new one takes over, so the menu bar icon comes back.
+- Clipboard history no longer leaves an "Opening clipboard history" card above the list
+  when the history is opened for the first time in a session.
+
 ## [1.6.9] - 2026-10-09
 
 ### Fixed

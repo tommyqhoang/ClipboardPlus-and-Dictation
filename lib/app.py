@@ -324,7 +324,18 @@ class App:
     def styles(self) -> None:
         self.fonts = app_styles.make_fonts()
         self.colors = app_styles.make_colors()
-        app_styles.apply(self.root, self.fonts)
+        self.modern = app_styles.apply(self.root, self.fonts)
+
+    def panel(self, parent: tk.Misc, padding: Any) -> tuple[tk.Widget, ttk.Frame]:
+        """A white, bordered surface: (what to pack, where its content goes). Rounded
+        with the modern theme; a 1px outline around a frame with the classic one."""
+        if self.modern:
+            body = ttk.Frame(parent, style="Panel.TFrame", padding=padding)
+            return body, body
+        outline = tk.Frame(parent, background=BORDER, padx=1, pady=1)
+        body = ttk.Frame(outline, style="Card.TFrame", padding=padding)
+        body.pack(fill="both", expand=True)
+        return outline, body
 
     def header(self) -> None:
         """Brand on the left; the tabs (or the setup step) on the right. Always in view."""
@@ -694,6 +705,7 @@ class App:
             self.button("Try again", self.clipboard, True, self.actions(), "right")
             return
         self.clipboard_store = store
+        self.reset("clipboard", "", "")  # Drops the "Opening clipboard history" card.
         self.clipboard_page = clipui.ClipboardPage(self, store)
         self.clipboard_page.render()
         if getattr(self, "clipboard_clear_after_open", False):
@@ -701,10 +713,8 @@ class App:
             self.root.after_idle(self.clear_clipboard_history)
 
     def card(self, heading: str = "", hint: str = "") -> ttk.Frame:
-        outline = tk.Frame(self.frame, background=BORDER, padx=1, pady=1)
+        outline, body = self.panel(self.frame, padding=(20, 16))
         outline.pack(fill="x", pady=(0, 14))
-        body = ttk.Frame(outline, style="Card.TFrame", padding=(20, 16))
-        body.pack(fill="both", expand=True)
         if heading:
             ttk.Label(body, text=heading, style="CardHeading.TLabel").pack(anchor="w")
         if hint:
@@ -2279,10 +2289,10 @@ class App:
         ttk.Label(
             line, textvariable=self.status, style="Hint.TLabel", wraplength=self.wraplength
         ).pack(side="left", fill="x")
-        outline = tk.Frame(self.frame, background=BORDER, padx=1, pady=1)
+        outline, body = self.panel(self.frame, padding=(6, 6) if self.modern else 0)
         outline.pack(fill="both", expand=True, pady=(4, 10))
         self.transcript = tk.Text(
-            outline,
+            body,
             height=6,
             wrap="word",
             font=self.fonts["body"],

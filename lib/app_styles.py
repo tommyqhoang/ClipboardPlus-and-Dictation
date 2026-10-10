@@ -6,7 +6,17 @@ window; each function only configures the ttk.Style (or returns plain data) it i
 
 from __future__ import annotations
 
+import logging
+import tkinter
+from pathlib import Path
 from tkinter import font, ttk
+
+log = logging.getLogger(__name__)
+
+# Rounded, modern widgets: the Sun Valley theme recolored to the logo's amber (built by
+# tools/build_theme.py). Without the file the classic styles below still work.
+THEME_FILE = Path(__file__).with_name("clipboardplus-theme.tcl")
+THEME_NAME = "clipboardplus"
 
 # One palette for every surface; the generated Clipboard+ icon is used everywhere.
 BACKGROUND = "#f5f7fa"
@@ -205,8 +215,11 @@ def configure_tabs(style: ttk.Style, fonts: Fonts) -> None:
     )
 
 
-def configure_misc(style: ttk.Style, fonts: Fonts) -> None:
+def configure_misc(style: ttk.Style, fonts: Fonts, modern: bool = False) -> None:
     style.configure("Toolbar.TFrame", background=BACKGROUND)
+    style.configure("Placeholder.TLabel", background=SURFACE, foreground=IDLE, font=fonts["body"])
+    if modern:
+        return
     style.configure(
         "Card.TCheckbutton",
         background=SURFACE,
@@ -219,7 +232,6 @@ def configure_misc(style: ttk.Style, fonts: Fonts) -> None:
         background=[("active", SURFACE)],
         indicatorcolor=[("selected", ACCENT)],
     )
-    style.configure("Placeholder.TLabel", background=SURFACE, foreground=IDLE, font=fonts["body"])
     style.configure(
         "Link.TButton",
         background=BACKGROUND,
@@ -257,12 +269,64 @@ def configure_misc(style: ttk.Style, fonts: Fonts) -> None:
     )
 
 
-def apply(root: object, fonts: Fonts) -> None:
-    """Switch to the clam theme and configure every style the window uses."""
+def load_theme(style: ttk.Style) -> bool:
+    """Switch to the modern theme; False (and the clam theme) when it cannot load."""
+    try:
+        style.tk.call("source", str(THEME_FILE))
+        style.theme_use(THEME_NAME)
+        # The theme resets "." when it is applied; let that finish before ours.
+        style.master.update_idletasks()
+    except (tkinter.TclError, OSError) as exc:
+        log.warning("modern theme unavailable, using the classic one: %s", exc)
+        style.theme_use("clam")
+        return False
+    return True
+
+
+def configure_modern(style: ttk.Style, fonts: Fonts) -> None:
+    """Fit our palette and fonts onto the modern theme, whose widgets are drawn from
+    images: only text, spacing and which image a named style borrows are set here."""
+    style.configure("TEntry", padding=(8, 5), foreground=TEXT, insertcolor=TEXT, font=fonts["body"])
+    style.configure("TCombobox", padding=(8, 5), foreground=TEXT, font=fonts["body"])
+    style.configure("Panel.TFrame", background=BACKGROUND)
+    for name in ("Card.TRadiobutton", "Card.TCheckbutton"):
+        style.configure(name, background=SURFACE, foreground=TEXT, font=fonts["body"])
+        style.map(name, background=[("active", SURFACE)])
+    # Buttons borrow the theme's accent (amber) and danger (red) images.
+    for name, borrowed, ink in (
+        ("Primary.TButton", "Accent.TButton", "white"),
+        ("Danger.TButton", "Danger.TButton", "white"),
+        ("Tab.Current.TButton", "Accent.TButton", "white"),
+        ("Tab.TButton", "Toolbutton", MUTED),
+        ("Link.TButton", "Toolbutton", ACCENT),
+    ):
+        style.layout(name, style.layout(borrowed))
+        style.configure(name, foreground=ink, font=fonts["body"], padding=(14, 7))
+    style.map("Primary.TButton", foreground=[("disabled", "#ffffff"), ("pressed", "#f6dcc0")])
+    style.map("Tab.Current.TButton", foreground=[("disabled", "#ffffff"), ("pressed", "#f6dcc0")])
+    style.map("Danger.TButton", foreground=[("disabled", "#ffffff"), ("pressed", "#f6d0cb")])
+    style.map("Tab.TButton", foreground=[("active", TEXT)])
+    style.map("Link.TButton", foreground=[("disabled", IDLE), ("active", ACCENT_ACTIVE)])
+    style.configure("TButton", padding=(14, 7), font=fonts["body"])
+    style.configure("Tab.TButton", padding=(13, 6))
+    style.configure("Tab.Current.TButton", padding=(13, 6))
+    style.configure("Link.TButton", padding=(6, 4))
+    for name in ("Small.TButton", "Small.Primary.TButton", "Small.Danger.TButton"):
+        style.configure(name, padding=(10, 4), font=fonts["small"], width=-6)
+    for name in ("", "Primary.", "Danger."):
+        style.configure(f"Record.{name}TButton", padding=(18, 10), font=fonts["record"])
+
+
+def apply(root: object, fonts: Fonts) -> bool:
+    """Choose the theme and configure every style the window uses; True when modern."""
     style = ttk.Style(root)  # type: ignore[arg-type]
-    style.theme_use("clam")
+    modern = load_theme(style)
     configure_labels(style, fonts)
-    configure_inputs(style, fonts)
-    configure_buttons(style, fonts)
-    configure_tabs(style, fonts)
-    configure_misc(style, fonts)
+    if modern:
+        configure_modern(style, fonts)
+    else:
+        configure_inputs(style, fonts)
+        configure_buttons(style, fonts)
+        configure_tabs(style, fonts)
+    configure_misc(style, fonts, modern)
+    return modern

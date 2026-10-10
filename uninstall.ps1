@@ -81,7 +81,8 @@ $modules = @(
 )
 $assets = @(
     'tray-recording.png', 'menubar-icon.png', 'menubar-recording.png',
-    'whisper-dictation.png', 'whisper-dictation.ico'
+    'whisper-dictation.png', 'whisper-dictation.ico',
+    'clipboardplus-theme.tcl', 'clipboardplus-theme.png'
 )
 foreach ($module in $modules) {
     Remove-Item -LiteralPath (Join-Path $lib "$module.py") -Force -ErrorAction SilentlyContinue

@@ -99,6 +99,8 @@ ROW_HEIGHT = 40.0
 THUMB_SIZE = 28.0
 TOAST_SECONDS = 0.9  # How long "Copied" shows over the list before the popover closes.
 STATUS_ITEM_RESTORE = "status-item-restore"
+OWNER_VERSION = "menubar.version"  # The version of the process holding menubar.lock.
+TAKEOVER_SECONDS = 6.0
 
 
 def fourcc(code: str) -> int:
@@ -1253,6 +1255,32 @@ def open_app_window(page: str = "") -> None:
     )
 
 
+def replace_stale_owner(paths: d.Paths, wait: float = TAKEOVER_SECONDS) -> int | None:
+    """Take the lock from a menu bar process left running by an older install.
+
+    Updating swaps the .app on disk but not the process already running, which keeps
+    its old code, its lock and a status item macOS may have stopped drawing; asking it
+    to restore the icon does nothing because old code never reads that request. A
+    holder that is not this version (or predates the version marker) is asked to quit,
+    and its lock is returned once it lets go; None when it is current or will not quit.
+    """
+    try:
+        recorded = (paths.runtime / OWNER_VERSION).read_text(encoding="utf-8").strip()
+    except OSError:
+        recorded = ""
+    if recorded == desktop.APP_VERSION:
+        return None
+    log.info("replacing menu bar process %s with %s", recorded or "unknown", desktop.APP_VERSION)
+    d.atomic(paths.runtime / "menubar-quit", "quit")
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        fd = desktop.lock(paths.runtime / "menubar.lock")
+        if fd is not None:
+            return fd
+        time.sleep(0.1)
+    return None
+
+
 def main() -> int:
     os.umask(0o077)
     if desktop.platform_name() != "macos":
@@ -1260,6 +1288,8 @@ def main() -> int:
         return 1
     paths = d.Paths()
     fd = desktop.lock(paths.runtime / "menubar.lock")
+    if fd is None:
+        fd = replace_stale_owner(paths)
     if fd is None:
         # The running process owns the visible item. Ask it to recreate that item before
         # opening the window, so Finder can recover an item macOS stopped displaying.
@@ -1271,6 +1301,7 @@ def main() -> int:
         return 0
     try:
         (paths.runtime / "menubar-quit").unlink(missing_ok=True)
+        d.atomic(paths.runtime / OWNER_VERSION, desktop.APP_VERSION)
         telemetry.install("menubar")
         app = NSApplication.sharedApplication()
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)

@@ -167,7 +167,7 @@ for library in "$APP_LIB" "$LEGACY_LIB"; do
     fi
     rm -f "${library}/${module}.py" "${library}/__pycache__/${module}".*.pyc
   done
-  for asset in tray-recording.png menubar-icon.png menubar-recording.png whisper-dictation.png whisper-dictation.ico; do
+  for asset in tray-recording.png menubar-icon.png menubar-recording.png whisper-dictation.png whisper-dictation.ico clipboardplus-theme.tcl clipboardplus-theme.png; do
     if [[ "$library" == "$LEGACY_LIB" && "$asset" != whisper-dictation.* ]]; then
       continue
     fi

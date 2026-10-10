@@ -98,6 +98,8 @@ ICONS = (
     (REPOSITORY / "lib/menubar-icon.png", "menubar-icon.png"),
     (REPOSITORY / "lib/menubar-recording.png", "menubar-recording.png"),
     (REPOSITORY / "lib/tray-recording.png", "tray-recording.png"),
+    (REPOSITORY / "lib/clipboardplus-theme.tcl", "clipboardplus-theme.tcl"),
+    (REPOSITORY / "lib/clipboardplus-theme.png", "clipboardplus-theme.png"),
     (REPOSITORY / "assets/icon.ico", "whisper-dictation.ico"),
 )
 MODULES = (

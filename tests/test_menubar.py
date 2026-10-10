@@ -88,12 +88,68 @@ class MenubarImportTests(unittest.TestCase):
                 patch.object(menubar.d, "Paths", return_value=paths),
                 patch.object(menubar.desktop, "platform_name", return_value="macos"),
                 patch.object(menubar.desktop, "lock", return_value=None),
+                patch.object(menubar, "replace_stale_owner", return_value=None),
                 patch.object(menubar, "open_app_window") as open_window,
                 patch.dict(menubar.os.environ, {}, clear=True),
             ):
                 self.assertEqual(menubar.main(), 0)
             self.assertEqual((paths.runtime / menubar.STATUS_ITEM_RESTORE).read_text(), "restore")
             open_window.assert_called_once_with()
+
+    @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
+    def test_a_running_menubar_of_another_version_is_replaced_not_reused(self):
+        menubar = importlib.import_module("menubar")
+        for recorded in (None, "1.0.0"):  # None: a process older than the version marker.
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as folder:
+                paths = SimpleNamespace(runtime=Path(folder))
+                if recorded:
+                    (paths.runtime / menubar.OWNER_VERSION).write_text(recorded)
+                with (
+                    patch.object(menubar.desktop, "lock", side_effect=[None, 7]),
+                    patch.object(menubar.time, "sleep"),
+                ):
+                    self.assertEqual(menubar.replace_stale_owner(paths), 7)
+                self.assertEqual((paths.runtime / "menubar-quit").read_text(), "quit")
+
+    @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
+    def test_a_current_or_stubborn_menubar_is_left_running(self):
+        menubar = importlib.import_module("menubar")
+        with tempfile.TemporaryDirectory() as folder:
+            paths = SimpleNamespace(runtime=Path(folder))
+            (paths.runtime / menubar.OWNER_VERSION).write_text(menubar.desktop.APP_VERSION)
+            with patch.object(menubar.desktop, "lock") as lock:
+                self.assertIsNone(menubar.replace_stale_owner(paths))
+            lock.assert_not_called()
+            self.assertFalse((paths.runtime / "menubar-quit").exists())
+            (paths.runtime / menubar.OWNER_VERSION).write_text("1.0.0")
+            with patch.object(menubar.desktop, "lock", return_value=None):
+                self.assertIsNone(menubar.replace_stale_owner(paths, wait=0))
+
+    @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
+    def test_starting_over_a_stale_menubar_runs_as_the_new_owner(self):
+        menubar = importlib.import_module("menubar")
+        with tempfile.TemporaryDirectory() as folder:
+            paths = SimpleNamespace(runtime=Path(folder))
+            app = Mock()
+            with (
+                patch.object(menubar.d, "Paths", return_value=paths),
+                patch.object(menubar.desktop, "platform_name", return_value="macos"),
+                patch.object(menubar.desktop, "lock", return_value=None),
+                patch.object(menubar, "replace_stale_owner", return_value=9),
+                patch.object(menubar.os, "close") as close,
+                patch.object(menubar.telemetry, "install"),
+                patch.object(menubar, "NSApplication") as ns_app,
+                patch.object(menubar, "Controller"),
+                patch.object(menubar, "open_app_window") as open_window,
+            ):
+                ns_app.sharedApplication.return_value = app
+                self.assertEqual(menubar.main(), 0)
+            app.run.assert_called_once_with()
+            close.assert_called_with(9)
+            open_window.assert_not_called()
+            self.assertEqual(
+                (paths.runtime / menubar.OWNER_VERSION).read_text(), menubar.desktop.APP_VERSION
+            )
 
     @unittest.skipUnless(sys.platform == "darwin" and HAS_PYOBJC, "PyObjC runs on macOS")
     def test_restore_status_item_replaces_the_lost_native_item(self):
