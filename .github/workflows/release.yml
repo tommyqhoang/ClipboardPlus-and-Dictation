@@ -115,7 +115,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          curl -fsSL -o /tmp/ffmpeg-static.tar.xz "$FFMPEG_LINUX_URL"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 300 \
+            -o /tmp/ffmpeg-static.tar.xz "$FFMPEG_LINUX_URL"
           echo "$FFMPEG_LINUX_SHA256  /tmp/ffmpeg-static.tar.xz" | sha256sum -c -
           mkdir -p /tmp/ffmpeg-static
           tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp/ffmpeg-static --strip-components=1
@@ -175,7 +176,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest -Uri $env:FFMPEG_WINDOWS_URL -OutFile ffmpeg.zip
+          Invoke-WebRequest -Uri $env:FFMPEG_WINDOWS_URL -OutFile ffmpeg.zip -MaximumRetryCount 5 -RetryIntervalSec 5 -TimeoutSec 300
           $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $env:FFMPEG_WINDOWS_SHA256) {
             throw "ffmpeg.zip SHA-256 mismatch: expected $($env:FFMPEG_WINDOWS_SHA256), got $actual"
@@ -222,7 +223,8 @@ jobs:
       - name: Wrap (Linux)
         if: runner.os == 'Linux'
         run: |
-          curl -fsSL -o /usr/local/bin/appimagetool \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 300 \
+            -o /usr/local/bin/appimagetool \
             "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
           echo "$APPIMAGETOOL_SHA256  /usr/local/bin/appimagetool" | sha256sum -c -
           chmod +x /usr/local/bin/appimagetool
