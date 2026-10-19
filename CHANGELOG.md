@@ -5,6 +5,8 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-19
+
 ### Fixed
 - Linux: a copying app that never answers no longer freezes clipboard capture and sync.
 - Linux: tray messages (updates, shortcut conflicts, "Copied") now appear; they were
@@ -22,6 +24,15 @@ history; versions follow the `v*` release tags.
   window and reports failures.
 - Re-running the Linux installer no longer resets a changed GNOME shortcut; uninstall
   also removes the `Clipboard+.command` launcher.
+- macOS: the menu has an "Update to X…" row when a release is waiting, instead of a
+  one-time notice.
+- Uninstall: Windows, macOS and AppImage purges now delete the account key from the
+  system keychain; KDE shortcut launchers are removed; the Windows uninstaller waits for
+  the tray to quit and warns if it could not remove the environment.
+- A paused or failed model download keeps its partial file (it was deleted after ten
+  minutes) and its button becomes "Retry download".
+- Ctrl+Enter views the chosen clipboard row in full; the header tabs can be reached
+  with Tab.
 - README corrections (install ref, key storage, tray menu, whisper-server build).
 
 ## [1.7.0] - 2026-10-10

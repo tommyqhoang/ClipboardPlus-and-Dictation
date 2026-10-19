@@ -96,12 +96,22 @@ if ((Get-ChildItem -LiteralPath $lib -Force -ErrorAction SilentlyContinue | Meas
 }
 Remove-Item -LiteralPath (Join-Path $prefix 'bin\dictate-toggle.cmd') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $prefix '.dictation-install.json') -Force -ErrorAction SilentlyContinue
-# Only the private environment the installer created.
+# Only the private environment the installer created. The tray's pythonw.exe runs from
+# it and locks the files until it has seen its quit file, so wait, then check.
+Start-Sleep -Seconds 3
 if (Test-Path -LiteralPath (Join-Path $venvRoot 'pyvenv.cfg')) {
     Remove-Item -LiteralPath $venvRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $venvRoot) {
+        Write-Warning "Could not remove $venvRoot because Clipboard+ is still running. Quit it from the tray icon, then delete that folder."
+    }
 }
 if ($Purge) {
-    Start-Sleep -Seconds 1  # Let the tray and clipboard service see their quit files.
+    # The account key lives in Windows Credential Manager, not in the data folder.
+    cmdkey /list 2>$null | ForEach-Object {
+        if ($_ -match 'Target:\s*(?:LegacyGeneric:target=)?(.*Clipboard\+ desktop.*?)\s*$') {
+            cmdkey "/delete:$($Matches[1])" | Out-Null
+        }
+    }
     # Config/ holds clipboard/ (history database), the account key, telemetry-id,
     # settings and models/; Cache/ holds recoverable audio.
     Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'WhisperDictation') -Recurse -Force -ErrorAction SilentlyContinue

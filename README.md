@@ -127,7 +127,8 @@ seconds and keeps nothing).
   is heard and offers another shortcut when it is not.
 - In the window, Ctrl+F (⌘F) searches the clipboard history, Ctrl+, (⌘,) opens
   Settings and Ctrl+W (⌘W) closes it. In the search box, ↑/↓ choose a result,
-  Enter copies it and Esc clears the search. Opened by the history shortcut, a
+  Enter copies it, Ctrl+Enter views it in full, Ctrl+S stars it, F2 labels it,
+  Ctrl+Delete deletes it and Esc clears the search. Opened by the history shortcut, a
   second Esc closes the window.
 - On macOS, **left-click** the icon for recent copies and search; **right-click**
   (or Control-click) for app actions. On Windows, left-click opens clipboard history
@@ -137,8 +138,8 @@ seconds and keeps nothing).
 - The icon's menu: a status line, Start/Stop, Cancel Recording (while recording),
   Copy Last Transcript (dictation items appear only while Dictation is on),
   **Clipboard History…**, **Pause Clipboard Capture** (for an hour, or until you
-  resume), **Clear Clipboard History…**, **Check for Updates…** (**Update to X…**
-  when one is waiting; Windows and Linux), **Settings…**, and **Quit Clipboard+**. Windows/Linux keep **Shortcut**
+  resume), **Clear Clipboard History…**, **Check for Updates…** (Windows and Linux) or
+  **Update to X…** when one is waiting (all platforms), **Settings…**, and **Quit Clipboard+**. Windows/Linux keep **Shortcut**
   (presets or *Record New Shortcut…*), **Open at Login** and **Clipboard+ Website…**
   under **More**; macOS keeps these in its right-click menu. **Open at login** is
   also available in Settings on every platform.

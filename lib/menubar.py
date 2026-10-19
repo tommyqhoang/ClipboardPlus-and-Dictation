@@ -632,6 +632,9 @@ class Controller(NSObject):  # type: ignore[misc]
             )
             menu.addItem_(self.menu_item("Record New Shortcut…", "recordShortcut:"))
             menu.addItem_(NSMenuItem.separatorItem())
+        if self.update is not None:
+            # The one-time notice is easy to miss; the menu keeps the way to update.
+            menu.addItem_(self.menu_item(f"Update to {self.update['version']}…", "openSettings:"))
         menu.addItem_(self.menu_item("Settings…", "openSettings:"))
         login = self.menu_item("Open at Login", "toggleLogin:")
         login.setState_(int(self.preferences.open_at_login()))

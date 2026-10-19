@@ -55,6 +55,8 @@ Filename: "{app}\Clipboard+.exe"; Flags: nowait postinstall skipifsilent
 { Uninstall keeps the user's data by default, like the other platforms. The
   question is skipped for silent uninstalls, which always keep it. }
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
     RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'ClipboardPlus');
@@ -64,6 +66,10 @@ begin
               'Choose No to keep it for a future reinstall.',
               mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
     begin
+      { The account key is kept in Credential Manager, outside the data folder. }
+      Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+        '-NoProfile -NonInteractive -Command "cmdkey /list | ForEach-Object { if ($_ -match ''Target:\s*(?:LegacyGeneric:target=)?(.*Clipboard\+ desktop.*?)\s*$'') { cmdkey (''/delete:'' + $Matches[1]) } }"',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       DelTree(ExpandConstant('{localappdata}\WhisperDictation'), True, True, True);
       DelTree(ExpandConstant('{%USERPROFILE}\.local\share\whisper.cpp\models'), True, True, True);
     end;

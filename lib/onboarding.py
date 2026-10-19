@@ -154,10 +154,12 @@ def _download_model(
             return destination
         # Damaged or replaced: keep it aside (never delete a user's file) and fetch anew.
         os.replace(destination, destination.with_name(destination.name + ".damaged"))
-    for stale in folder.glob("ggml-*.bin.part"):
-        if time.time() - stale.stat().st_mtime > STALE_PARTIAL_SECONDS:
-            stale.unlink(missing_ok=True)
     partial = destination.with_suffix(".bin.part")
+    for stale in folder.glob("ggml-*.bin.part"):
+        # Another model's leftovers go; this model's own partial is what a paused or
+        # failed download resumes from, however long ago it stopped.
+        if stale != partial and time.time() - stale.stat().st_mtime > STALE_PARTIAL_SECONDS:
+            stale.unlink(missing_ok=True)
     if partial.is_symlink():
         raise dictation.DictationError("The partial model file must not be a symlink.")
     keep_partial = False

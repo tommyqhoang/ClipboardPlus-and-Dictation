@@ -143,6 +143,7 @@ class ClipboardPage:
         if macos:
             entry.bind("<Command-s>", lambda _: self.star_selected())
         entry.bind("<F2>", lambda _: self.label_selected())
+        entry.bind("<Control-Return>", lambda _: self.view_selected())
         entry.bind("<Control-Delete>", lambda _: self.delete_selected())
         # A placeholder (ttk has none): shown while the box is empty.
         self.placeholder = ttk.Label(
@@ -946,6 +947,13 @@ class ClipboardPage:
         item_id = self._selected_id()
         if item_id is not None:
             self.toggle_favorite(item_id)
+        return "break"
+
+    def view_selected(self) -> str:
+        """Ctrl+Enter: open the chosen row in full, like its View action."""
+        item_id = self._selected_id()
+        if item_id is not None:
+            self.view(item_id)
         return "break"
 
     def label_selected(self) -> str:

@@ -44,7 +44,24 @@ rm -f "$HOME/.config/autostart/clipboardplus.desktop" \
   "$HOME/.local/share/applications/clipboardplus.desktop" \
   "$HOME/.local/share/applications/whisper-dictation.desktop"
 
+# KDE shortcuts: the launchers and their kglobalshortcutsrc entries.
+for launcher in "$HOME"/.local/share/applications/clipboardplus-*.desktop; do
+  [[ -e "$launcher" ]] || continue
+  service="$(basename "$launcher")"
+  for writer in kwriteconfig6 kwriteconfig5; do
+    if command -v "$writer" >/dev/null 2>&1; then
+      "$writer" --file kglobalshortcutsrc --group services --group "$service" --key _launch --delete 2>/dev/null || true
+      break
+    fi
+  done
+  rm -f -- "$launcher"
+done
+
 if [[ "$PURGE" == 1 ]]; then
+  # The account key lives in the desktop's keyring (Secret Service) when there is one.
+  if command -v secret-tool >/dev/null 2>&1; then
+    secret-tool clear service "Clipboard+ desktop" 2>/dev/null || true
+  fi
   rm -rf -- "${XDG_CONFIG_HOME:-$HOME/.config}/dictation" \
     "${XDG_CACHE_HOME:-$HOME/.cache}/dictation" \
     "$HOME/.local/share/whisper.cpp/models"

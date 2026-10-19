@@ -151,6 +151,18 @@ if [[ "$PURGE" == 1 ]]; then
     "$key_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import clipboardplus, pathlib; clipboardplus.remove_key(pathlib.Path(sys.argv[2]))' "$APP_LIB" "$key_config" 2>/dev/null || true
   fi
 fi
+# KDE shortcuts: the launchers and their kglobalshortcutsrc entries.
+for launcher in "${HOME}"/.local/share/applications/clipboardplus-*.desktop; do
+  [[ -e "$launcher" ]] || continue
+  service="$(basename "$launcher")"
+  for writer in kwriteconfig6 kwriteconfig5; do
+    if command -v "$writer" >/dev/null 2>&1; then
+      "$writer" --file kglobalshortcutsrc --group services --group "$service" --key _launch --delete 2>/dev/null || true
+      break
+    fi
+  done
+  rm -f -- "$launcher"
+done
 rm -f "$BIN_DEST" \
   "${HOME}/.config/autostart/whisper-dictation.desktop" "${HOME}/.config/autostart/clipboardplus.desktop" \
   "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/share/applications/clipboardplus.desktop" \

@@ -228,7 +228,7 @@ class MenubarBoundaryTests(unittest.TestCase):
         )
 
     def test_context_menu_matches_features_pause_and_recording_state(self):
-        me = self.controller(clip=MagicMock(), preferences=MagicMock())
+        me = self.controller(clip=MagicMock(), preferences=MagicMock(), update=None)
         me.paths.text = me.paths.cache / "last.txt"
         me.paths.text.write_text("a previous transcript")
         me.preferences.open_at_login.return_value = True
@@ -270,6 +270,11 @@ class MenubarBoundaryTests(unittest.TestCase):
                     items["Transcribing…"].setEnabled_.assert_called_with(False)
                     items["Copy Last Transcript"].setEnabled_.assert_called_with(False)
                 items["Open at Login"].setState_.assert_called_with(1)
+                self.assertFalse([label for label in items if str(label).startswith("Update to")])
+            created.clear()
+            me.update = {"version": "9.9.9", "url": "https://example.invalid"}
+            self.menubar.Controller.context_menu(me)
+            self.assertIn("Update to 9.9.9…", {entry.label for entry in created})
 
     def test_clear_history_uses_the_shared_confirmation_without_deleting(self):
         me = self.controller(popover=MagicMock(), open_window=MagicMock(), service=MagicMock())

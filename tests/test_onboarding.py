@@ -170,6 +170,18 @@ class OnboardingTests(unittest.TestCase):
         self.assertFalse(stale.exists())
         self.assertTrue(active.exists())
 
+    def test_an_old_partial_of_the_model_being_downloaded_is_kept_for_resuming(self):
+        folder = Path(self.temp.name) / "models"
+        folder.mkdir()
+        own = folder / "ggml-base.en.bin.part"
+        own.write_bytes(b"lmgg")
+        old = own.stat().st_mtime - onboarding.STALE_PARTIAL_SECONDS - 1
+        os.utime(own, (old, old))
+        with patch.object(onboarding, "open_url", side_effect=OSError("offline")):
+            with self.assertRaises(dictation.DictationError):
+                onboarding.download_model(folder, "en")
+        self.assertTrue(own.exists())
+
     def test_pause_preserves_bytes_and_resume_requests_validated_range(self):
         data = b"lmgg" + b"a" * (1024 * 1024 + 20)
         folder = Path(self.temp.name) / "models"

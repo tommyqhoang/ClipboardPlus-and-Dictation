@@ -654,7 +654,6 @@ class App:
                 text=labels[name],
                 command=functools.partial(self.tab, name),
                 style="Tab.Current.TButton" if name == active else "Tab.TButton",
-                takefocus=False,
             ).pack(side="left", padx=(4, 0))
 
     def clipboard(self) -> None:
@@ -1894,6 +1893,17 @@ class App:
             else "Getting your speech model ready. Nothing is recording.",
         )
 
+    def retire_pause_button(self) -> None:
+        """A download that ended without finishing leaves a retry, not a dead Pause."""
+        button = self.pause_download
+        if (
+            button is not None
+            and button.winfo_exists()
+            and button.winfo_manager()
+            and str(button.cget("text")) == "Pause download"
+        ):
+            button.configure(text="Retry download", command=self.prepare)
+
     def pause_model(self) -> None:
         self.download_pause.set()
         if self.pause_download is not None:
@@ -2680,7 +2690,10 @@ class App:
                 if self.closing:
                     self.destroy()
                     return
-                done(future.result())
+                try:
+                    done(future.result())
+                finally:
+                    self.retire_pause_button()
             if self.page == "home" and self.pending is None:
                 self.refresh()
             if self.account is not None and self.pending is None:
