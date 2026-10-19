@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -166,7 +166,7 @@ def read_info(paths: d.Paths, clock: Callable[[], float] = time.time) -> dict[st
             return None
         if not isinstance(started, (int, float)) or clock() - started > 12 * 3600:
             return None  # A leftover pointer from an old login session.
-        return {"port": port, "pid": pid}
+        return {"port": port, "pid": pid, "model": raw.get("model"), "vad": raw.get("vad")}
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
@@ -174,11 +174,25 @@ def read_info(paths: d.Paths, clock: Callable[[], float] = time.time) -> dict[st
         return None
 
 
-def write_info(paths: d.Paths, port: int) -> None:
+def write_info(paths: d.Paths, port: int, model: str = "", vad: str = "") -> None:
     d.private_dir(paths.runtime)
     d.atomic(
         info_file(paths),
-        json.dumps({"port": port, "pid": os.getpid(), "started": time.time()}),
+        json.dumps(
+            {"port": port, "pid": os.getpid(), "started": time.time(), "model": model, "vad": vad}
+        ),
+    )
+
+
+def _option(command: Sequence[str], flag: str) -> str:
+    return command[command.index(flag) + 1] if flag in command else ""
+
+
+def _configured(config: d.Config) -> tuple[str, str]:
+    """The model and VAD model settings call for, as server_command passes them."""
+    return (
+        str(Path(config.s("model")).expanduser()),
+        str(Path(config.s("vad_model")).expanduser()) if config.s("vad_model") else "",
     )
 
 
@@ -207,6 +221,8 @@ def transcribe(config: d.Config, paths: d.Paths, wav: bytes, timeout: float) -> 
     info = read_info(paths)
     if info is None:
         return None
+    if info.get("model") is not None and (info["model"], info["vad"]) != _configured(config):
+        return None  # Settings changed the model since this engine loaded; use the CLI.
     boundary = "engine-" + os.urandom(8).hex()
     body = bytearray()
     body.extend(
@@ -307,6 +323,15 @@ def _healthy(port: int, timeout: float = HEALTH_SECONDS) -> bool:
         return False
 
 
+def _model_changed(paths: d.Paths, command: Sequence[str]) -> bool:
+    """Whether settings now name a different model than the one this server loaded."""
+    try:
+        config = d.Config(paths)
+    except (d.DictationError, OSError):
+        return False
+    return (_option(command, "-m"), _option(command, "--vad-model")) != _configured(config)
+
+
 def supervise(paths: d.Paths, command: list[str]) -> int:
     """Run whisper-server until it is idle too long; the return code is its own."""
     import signal
@@ -333,7 +358,7 @@ def supervise(paths: d.Paths, command: list[str]) -> int:
             if server.poll() is not None:
                 return server.returncode  # Bad model or flags; dictation falls back.
             if _healthy(port):
-                write_info(paths, port)
+                write_info(paths, port, _option(command, "-m"), _option(command, "--vad-model"))
                 touch(paths)
                 break
             time.sleep(0.25)
@@ -347,7 +372,7 @@ def supervise(paths: d.Paths, command: list[str]) -> int:
                 idle = time.time() - used_file(paths).stat().st_mtime
             except OSError:  # Nobody has touched the marker: treat as long idle.
                 idle = float("inf")
-            if idle > IDLE_SECONDS:
+            if idle > IDLE_SECONDS or _model_changed(paths, command):
                 break
         return server.returncode if server.poll() is not None else 0
     finally:

@@ -430,7 +430,9 @@ class TrayTests(unittest.TestCase):
         self.assertTrue(self.tray.hotkey_ok)
         self.assertIn("--setup", self.popen.call_args.args[0])
         self.tray.icon.notify = Mock(side_effect=NotImplementedError)
-        self.tray.notify("ignored when unsupported")
+        with patch.object(tray.d, "notify") as notify:
+            self.tray.notify("shown by the desktop notifier when pystray cannot")
+        notify.assert_called_once_with(None, "shown by the desktop notifier when pystray cannot")
 
     def test_the_history_shortcut_is_registered_while_clipboard_is_on(self):
         hotkeys.Preferences(self.paths).save(features=hotkeys.Features(True, True))

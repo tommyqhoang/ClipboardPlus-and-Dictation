@@ -432,7 +432,10 @@ install_gnome_shortcut() {
   if [[ "$current" == "@as []" || "$current" == "[]" ]]; then
     updated="['${KEYBINDING_PATH}']"
   elif [[ "$current" == *"'${KEYBINDING_PATH}'"* ]]; then
-    updated="$current"
+    # Already registered: the tray owns it now, and a re-run or update must not put
+    # back the default over a shortcut the user changed or turned off.
+    echo "GNOME shortcut already set up; keeping your current choice."
+    return 0
   else
     updated="${current%]}, '${KEYBINDING_PATH}']"
   fi

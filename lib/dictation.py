@@ -997,7 +997,7 @@ class Session:
             overlay=config.b("overlay"),
         )
 
-    def fail(self, exc: DictationError | OSError) -> None:
+    def fail(self, exc: Exception) -> None:
         """Record the error where the pill and app read it and send a notification.
 
         The notification goes out whether or not the pill is on screen: it is the one
@@ -1038,7 +1038,7 @@ class Session:
             self.cue("start")
             self.record_until_stopped()
             self.finalize()
-        except (DictationError, OSError) as exc:
+        except Exception as exc:  # The worker is detached: nothing else would tell the user.
             self.fail(exc)
         finally:
             self.cleanup()

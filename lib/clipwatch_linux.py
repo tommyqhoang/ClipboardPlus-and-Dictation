@@ -17,6 +17,7 @@ import os
 import select
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -434,6 +435,11 @@ def _read_command(command: Sequence[str], max_bytes: int) -> bytes | None:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
         return None
+    # A source that never answers would block the read forever, and with it the only
+    # capture thread; the watchdog kills the child so the read ends.
+    watchdog = threading.Timer(_READ_TIMEOUT, process.kill)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         assert process.stdout is not None
         data = process.stdout.read(max_bytes + 1)
@@ -443,6 +449,7 @@ def _read_command(command: Sequence[str], max_bytes: int) -> bytes | None:
     except subprocess.TimeoutExpired:
         return None
     finally:
+        watchdog.cancel()
         process.kill()
         process.wait()
         if process.stdout is not None:

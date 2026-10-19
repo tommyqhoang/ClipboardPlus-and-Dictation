@@ -283,10 +283,13 @@ class Store:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 yield self._db
+                self._db.execute("COMMIT")
             except BaseException:
-                self._db.execute("ROLLBACK")
+                # A failed COMMIT (busy, disk full) leaves the transaction open; without
+                # this, every later BEGIN on this long-lived connection would fail.
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
                 raise
-            self._db.execute("COMMIT")
             # PRAGMA data_version changes for commits by other connections, not this one.
             # Invalidate explicitly so local UI edits refresh the cached history stamp too.
             self._stamp_cache = None
@@ -585,20 +588,26 @@ class Store:
         """
         if not doomed:
             return
-        marks = ",".join("?" * len(doomed))
+        ids = sorted(doomed)
+        newest = None
         with self._lock:
-            row = self._db.execute(
-                f"SELECT MAX(created_at) AS newest FROM items WHERE id IN ({marks}) "
-                "AND cloud_id != '' AND favorite = 0",
-                tuple(doomed),
-            ).fetchone()
-        if row is None or row["newest"] is None:
+            for start in range(0, len(ids), _BATCH):
+                batch = ids[start : start + _BATCH]
+                marks = ",".join("?" * len(batch))
+                row = self._db.execute(
+                    f"SELECT MAX(created_at) AS newest FROM items WHERE id IN ({marks}) "
+                    "AND cloud_id != '' AND favorite = 0",
+                    batch,
+                ).fetchone()
+                if row is not None and row["newest"] is not None:
+                    newest = row["newest"] if newest is None else max(newest, row["newest"])
+        if newest is None:
             return
         try:
             before = float(self.meta_get(META_PRUNED) or 0.0)
         except ValueError:
             before = 0.0
-        self.meta_set(META_PRUNED, repr(max(before, float(row["newest"]))))
+        self.meta_set(META_PRUNED, repr(max(before, float(newest))))
 
     @staticmethod
     def _evict_over_cap(
@@ -687,7 +696,10 @@ class Store:
         """An item whose cloud key starts with `prefix` (`type|time|`)."""
         if not prefix:
             return None
-        return self._find("cloud_key != '' AND substr(cloud_key, 1, ?) = ?", (len(prefix), prefix))
+        # A range, not substr(), and the != '' term the partial index is declared with:
+        # without both, SQLite scans the whole table for every pulled item.
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        return self._find("cloud_key != '' AND cloud_key >= ? AND cloud_key < ?", (prefix, upper))
 
     def find_text(self, text: str) -> Item | None:
         """The item holding exactly this text or link, if any."""

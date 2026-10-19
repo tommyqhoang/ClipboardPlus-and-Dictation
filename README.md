@@ -137,7 +137,8 @@ seconds and keeps nothing).
 - The icon's menu: a status line, Start/Stop, Cancel Recording (while recording),
   Copy Last Transcript (dictation items appear only while Dictation is on),
   **Clipboard History…**, **Pause Clipboard Capture** (for an hour, or until you
-  resume), **Settings…**, and **Quit Clipboard+**. Windows/Linux keep **Shortcut**
+  resume), **Clear Clipboard History…**, **Check for Updates…** (**Update to X…**
+  when one is waiting; Windows and Linux), **Settings…**, and **Quit Clipboard+**. Windows/Linux keep **Shortcut**
   (presets or *Record New Shortcut…*), **Open at Login** and **Clipboard+ Website…**
   under **More**; macOS keeps these in its right-click menu. **Open at login** is
   also available in Settings on every platform.
@@ -319,14 +320,15 @@ and commit. Git is only needed for that Linux fallback. Dependencies and model
 downloads need internet access.
 
 Unlike the downloadable installers, this path installs the menu bar/tray
-component (PyObjC and Pillow on macOS; pystray, Pillow and, on Linux,
-python-xlib elsewhere) into `~/.local/share/whisper-dictation/venv`
+component (PyObjC and Pillow on macOS; pystray and Pillow elsewhere, plus
+python-xlib on Linux) into `~/.local/share/whisper-dictation/venv`
 (Windows: under the app folder in `%LOCALAPPDATA%`), so the system Python
 is not modified. No shell profile or system `PATH` is silently changed.
 
-For reproducible deployment, download bootstrap from a reviewed commit and set
-`DICTATION_REF` to that commit (Windows: pass `-Ref`). The quick commands track
-`main`; app snapshots are HTTPS downloads, not signed application releases.
+For reproducible deployment, set `DICTATION_REF` to a release tag (Windows: pass
+`-Ref`). Only tags that publish a checksum are accepted; the quick commands install the
+latest release. App snapshots are HTTPS downloads checked against that checksum, not
+signed application releases.
 
 ### Linux, from a Git checkout
 
@@ -432,8 +434,8 @@ Local server settings:
 
 Run your own whisper.cpp server, for example:
 `whisper-server -m /path/to/model.bin --host 127.0.0.1 --port 8080`.
-The installer builds the CLI only; build the optional `whisper-server` target
-in your whisper.cpp checkout if needed. A server retains the model in memory
+A source install builds both `whisper-cli` and `whisper-server`; packaged whisper.cpp
+builds may not include the server, so build that target yourself then. A server retains the model in memory
 between requests, avoiding repeated CLI model startup.
 
 For an external compatible provider:
@@ -449,10 +451,11 @@ For an external compatible provider:
 }
 ```
 
-Set the named API key environment variable in the desktop session or a private
-launcher. Terminal exports only apply to commands launched from that terminal.
-Keys are read from the environment and are not stored in settings, command-line
-arguments, or application logs. Remote endpoints require HTTPS and explicit
+Enter the key in Settings; it is kept in a private `transcription-key` file, not in
+`config.json`. The environment variable named by `api_key_env` still takes precedence
+when set in the desktop session or a private launcher (terminal exports only apply to
+commands launched from that terminal). Keys are never written to command-line
+arguments or application logs. Remote endpoints require HTTPS and explicit
 `allow_remote` consent. Redirects are rejected so credentials and audio cannot
 be forwarded unexpectedly. Failed requests are not automatically retried or
 silently sent to another provider.

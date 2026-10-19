@@ -227,8 +227,12 @@ class SettingsTests(ModeCase):
         self.assertEqual(store.count(), 1)
         with patch.object(self.gui.messagebox, "askyesno", return_value=True):
             self.window.delete_clipboard_data()
+        for future, _ in list(self.window.lookups):
+            future.result(timeout=5)
+        self.window.deliver_lookups()
         self.assertEqual(store.count(), 0)
         self.assertEqual(store.tombstones(), [])
+        self.assertEqual(self.window.status.get(), "Clipboard data deleted.")
 
 
 if __name__ == "__main__":

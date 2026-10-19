@@ -499,5 +499,20 @@ class X11Tests(unittest.TestCase):
                 linux.X11Source()
 
 
+@unittest.skipIf(sys.platform == "win32", "uses a POSIX shell")
+class ReadCommandTests(unittest.TestCase):
+    def test_a_source_that_never_answers_is_cut_off_instead_of_blocking_capture(self):
+        import time
+
+        started = time.monotonic()
+        with patch.object(linux, "_READ_TIMEOUT", 0.3):
+            result = linux._read_command(["sh", "-c", "exec sleep 30"], 1024)
+        self.assertIsNone(result)
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_prompt_answer_is_returned(self):
+        self.assertEqual(linux._read_command(["sh", "-c", "printf hi"], 1024), b"hi")
+
+
 if __name__ == "__main__":
     unittest.main()

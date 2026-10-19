@@ -194,7 +194,10 @@ class Engine:
 
     def _pull(self, report: Report) -> cp.Pull:
         cursor = self._store.meta_get(CURSOR)
-        since = float(cursor) - OVERLAP_SECONDS if cursor else None
+        try:
+            since = float(cursor) - OVERLAP_SECONDS if cursor else None
+        except ValueError:
+            since = None  # A damaged cursor means a full pull, not a sync loop that never recovers.
         pulled = self._cloud.pull(since)
         self._cleared = self._cleared_at()
         try:

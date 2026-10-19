@@ -110,6 +110,15 @@ class EngineTests(unittest.TestCase):
         # Use was noted, so the supervisor keeps the engine alive.
         self.assertTrue(engine.used_file(self.paths).exists())
 
+    def test_an_engine_loaded_with_another_model_is_not_used(self):
+        engine.write_info(self.paths, self.port, "/models/old.bin", "")
+        self.assertIsNone(engine.transcribe(self.config, self.paths, WAV, timeout=5))
+        model = str(Path(self.config.s("model")).expanduser())
+        engine.write_info(self.paths, self.port, model, "")
+        self.assertEqual(
+            engine.transcribe(self.config, self.paths, WAV, timeout=5), "hello from the engine"
+        )
+
     def test_no_registered_engine_means_fallback(self):
         self.assertIsNone(engine.transcribe(self.config, self.paths, WAV, timeout=5))
 

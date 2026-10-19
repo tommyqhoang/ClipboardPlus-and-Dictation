@@ -5,6 +5,25 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+### Fixed
+- Linux: a copying app that never answers no longer freezes clipboard capture and sync.
+- Linux: tray messages (updates, shortcut conflicts, "Copied") now appear; they were
+  silently dropped because the tray library cannot show them.
+- Large first syncs no longer scan the whole history once per item.
+- A failed database commit no longer leaves the clipboard service unable to write.
+- A damaged sync cursor, or an unexpected error in a sync step, no longer stops syncing
+  or capture for good; a dictation worker error now reaches the user instead of hanging.
+- Changing the AI model in Settings takes effect on the next recording, not up to 30
+  minutes later.
+- Choosing multilingual language with an English-only model now says what else to change.
+- The history shortcut opens history even when the dictation model needs repair.
+- Enter in a text field no longer triggers Apply or closes Settings; the sound-cues
+  choice in first-run setup is saved; "Delete all clipboard data" no longer freezes the
+  window and reports failures.
+- Re-running the Linux installer no longer resets a changed GNOME shortcut; uninstall
+  also removes the `Clipboard+.command` launcher.
+- README corrections (install ref, key storage, tray menu, whisper-server build).
+
 ## [1.7.0] - 2026-10-10
 
 ### Changed

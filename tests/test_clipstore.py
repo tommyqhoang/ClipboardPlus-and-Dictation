@@ -564,5 +564,49 @@ class ConcurrencyAndSchemaTests(StoreCase):
         self.assertEqual(self.store.count(), 1)
 
 
+class CloudKeyAndCommitTests(StoreCase):
+    def test_the_key_prefix_lookup_uses_the_index_and_still_matches_by_prefix(self):
+        item = self.store.add_text("hello", now=1.0)
+        self.store.link(item.id, "c1", False, cloud_key="text|1.0|abc")
+        self.store.link(
+            self.store.add_text("other", now=2.0).id, "c2", False, cloud_key="text|2.0|x"
+        )
+        found = self.store.find_by_key_prefix("text|1.0|")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.id, item.id)
+        self.assertIsNone(self.store.find_by_key_prefix("text|3.0|"))
+        self.assertIsNone(self.store.find_by_key_prefix(""))
+        plan = self.store._db.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM items "
+            "WHERE cloud_key != '' AND cloud_key >= ? AND cloud_key < ?",
+            ("text|1.0|", "text|1.0}"),
+        ).fetchall()
+        self.assertTrue(any("items_cloud_key" in row["detail"] for row in plan), plan)
+
+    def test_a_failed_commit_rolls_back_so_the_connection_stays_usable(self):
+        real = self.store._db
+
+        class Failing:
+            """Wraps the connection and fails the next COMMIT once."""
+
+            def __init__(self):
+                self.armed = True
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def execute(self, sql, *args):
+                if sql == "COMMIT" and self.armed:
+                    self.armed = False
+                    raise sqlite3.OperationalError("database is locked")
+                return real.execute(sql, *args)
+
+        self.store._db = Failing()
+        with self.assertRaises(sqlite3.OperationalError):
+            self.store.add_text("lost", now=1.0)
+        self.assertFalse(real.in_transaction)
+        self.assertIsNotNone(self.store.add_text("kept", now=2.0))
+
+
 if __name__ == "__main__":
     unittest.main()

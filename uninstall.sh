@@ -154,7 +154,8 @@ fi
 rm -f "$BIN_DEST" \
   "${HOME}/.config/autostart/whisper-dictation.desktop" "${HOME}/.config/autostart/clipboardplus.desktop" \
   "${HOME}/.local/share/applications/whisper-dictation.desktop" "${HOME}/.local/share/applications/clipboardplus.desktop" \
-  "${HOME}/.local/bin/Whisper Dictation.command" "${HOME}/.local/.dictation-install.json"
+  "${HOME}/.local/bin/Whisper Dictation.command" "${HOME}/.local/bin/Clipboard+.command" \
+  "${HOME}/.local/.dictation-install.json"
 # Only this app's own files: other tools may share ~/.local/lib.
 for library in "$APP_LIB" "$LEGACY_LIB"; do
   if [[ "$library" == "$LEGACY_LIB" ]] && ! legacy_owned; then

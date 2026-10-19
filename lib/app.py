@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -263,10 +264,12 @@ class App:
         elif page == "history-shortcut":
             self.shortcut_page(kind="history")
         elif (
-            self.service.completed()
+            (self.service.completed() or self.service.setup_marked())
             and page in ("clipboard", "clipboard-clear")
             and self.features().clipboard
         ):
+            # History never depends on the dictation model, so a broken dictation setup
+            # must not send someone to the welcome page when they only want their clips.
             self.clipboard()
         elif self.service.completed() and page == "settings":
             self.settings()
@@ -775,8 +778,15 @@ class App:
             or self.page in ("clipboard", "shortcut", "closed")  # They handle Enter.
         ):
             return None
+        if isinstance(widget, (ttk.Entry, ttk.Combobox)):
+            return None  # Enter in a field must not run the page's main action.
         target = widget if isinstance(widget, ttk.Button) else self.default_button
-        if target is None or not target.winfo_exists() or target.instate(["disabled"]):
+        if (
+            target is None
+            or not target.winfo_exists()
+            or not target.winfo_manager()
+            or target.instate(["disabled"])
+        ):
             return None
         target.invoke()
         return "break"
@@ -942,7 +952,7 @@ class App:
                 command=lambda: self.apply_mode(self.settings_mode.get()),
             ).pack(anchor="w", pady=(6, 0))
 
-    def sound_cues_row(self, parent: ttk.Frame, config: d.Config, setup: bool) -> None:
+    def sound_cues_row(self, parent: ttk.Frame, config: d.Config) -> None:
         """Choose the audible cues (start, stop, error): saved as soon as it is picked."""
         ttk.Label(parent, text="Sound cues", style="Card.TLabel").pack(anchor="w", pady=(14, 0))
         labels = dict(app_settings.SOUND_CHOICES)
@@ -965,8 +975,7 @@ class App:
             )  # A sample of what it sounds like.
             self.saved("Saved. It applies to your next recording.")
 
-        if not setup:
-            picker.bind("<<ComboboxSelected>>", save)
+        picker.bind("<<ComboboxSelected>>", save)
 
     def permissions_card(self) -> None:
         """What macOS still needs allowed (Accessibility, microphone), each with its Settings link."""
@@ -1274,8 +1283,23 @@ class App:
             "Your Clipboard+ account is not changed.",
             parent=self.root,
         ):
-            self.service.delete_clipboard_data()
-            self.status.set("Clipboard data deleted.")
+            self.status.set("Deleting clipboard data…")
+
+            def finished(error: object) -> None:
+                if isinstance(error, Exception):
+                    log.warning("clipboard data was not deleted: %s", error)
+                    self.status.set("Clipboard data couldn’t be deleted. Try again.")
+                else:
+                    self.status.set("Clipboard data deleted.")
+
+            def work() -> Exception | None:
+                try:
+                    self.service.delete_clipboard_data()
+                except (sqlite3.Error, clipstore.StoreError, OSError) as exc:
+                    return exc
+                return None
+
+            self.background(work, finished)
 
     def shortcuts_card(self) -> None:
         """The global shortcuts. Each is recorded on the same page and reports the same way."""
@@ -1586,7 +1610,7 @@ class App:
                 style="Card.TCheckbutton",
                 command=functools.partial(self.set_option, key, switch),
             ).pack(anchor="w", pady=(10 if key == "overlay" else 4, 0))
-        self.sound_cues_row(voice, config, setup)
+        self.sound_cues_row(voice, config)
 
     def ai_card(self, config: d.Config, setup: bool, remote: bool) -> None:
         """Where transcription runs: on-device, a model file, or an AI service."""
@@ -1668,6 +1692,13 @@ class App:
             self.status.set(str(exc))
             return
         telemetry.event("setting_changed", setting="voice", on=True)
+        if language == "auto" and self.service.english_only_model():
+            # The language setting alone cannot make an English-only model hear others.
+            self.saved(
+                "Saved, but the current AI model is English-only. "
+                "Choose a multilingual model below and press Apply."
+            )
+            return
         self.saved("Saved. It applies to your next recording.")
 
     def after_edit(self) -> None:

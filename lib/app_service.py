@@ -173,8 +173,12 @@ class Service:
             log.debug("setup check failed: %s", exc)
             return False
 
+    def setup_marked(self) -> bool:
+        """Whether first-run setup was finished once, whatever the model's state now."""
+        return d.read_json(self.marker).get("complete") is True
+
     def completed(self) -> bool:
-        return d.read_json(self.marker).get("complete") is True and self.ready()
+        return self.setup_marked() and self.ready()
 
     def complete(self) -> None:
         d.private_dir(self.marker.parent)
@@ -504,6 +508,14 @@ class Service:
         saved = d.DEFAULTS | d.read_json(self.paths.config)
         saved.update(language=language, device=device.strip())
         d.atomic(self.paths.config, json.dumps(saved, indent=2))
+
+    def english_only_model(self) -> bool:
+        """Whether dictation runs a local English-only model (whisper's `*.en` files)."""
+        try:
+            config = d.Config(self.paths)
+        except (d.DictationError, OSError):
+            return False
+        return config.s("backend") == "local" and Path(config.s("model")).name.endswith(".en.bin")
 
     def set_option(self, key: str, value: bool) -> None:
         """Save one on/off dictation option at once (the recording bar, live drafts)."""

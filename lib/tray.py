@@ -547,8 +547,9 @@ class Tray:
         try:
             self.icon.notify(message, hotkeys.APP_NAME)
         except (NotImplementedError, OSError) as exc:
-            # No notification service here: the message still reaches the log.
-            log.info("tray notification not shown (%s): %s", exc, message)
+            # pystray's Linux backends cannot notify; the desktop's own notifier can.
+            log.info("tray notification fell back to the desktop notifier (%s)", exc)
+            d.notify(None, message)
 
     # -- recent copies -----------------------------------------------------
     def open_store(self) -> clipstore.Store | None:

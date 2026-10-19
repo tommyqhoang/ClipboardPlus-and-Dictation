@@ -387,8 +387,8 @@ class Service:
         if self._syncer is not None:
             try:
                 self._syncer.step(now)
-            except (OSError, sqlite3.Error):
-                pass  # Syncing is optional: it must never stop the capturing.
+            except Exception:  # noqa: BLE001 - syncing is optional: it must never stop the capturing.
+                log.exception("sync step failed")
         self._maintain(now)
         return ok
 

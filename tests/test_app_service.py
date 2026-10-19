@@ -54,6 +54,15 @@ class SettingsTests(ServiceCase):
         ):
             self.service.set_voice("en", "default")
 
+    def test_an_english_only_model_is_recognised(self):
+        d.private_dir(self.paths.config.parent)
+        d.atomic(
+            self.paths.config, json.dumps({"backend": "local", "model": "/m/ggml-base.en.bin"})
+        )
+        self.assertTrue(self.service.english_only_model())
+        d.atomic(self.paths.config, json.dumps({"backend": "local", "model": "/m/ggml-base.bin"}))
+        self.assertFalse(self.service.english_only_model())
+
     def test_saving_one_setting_keeps_the_others(self):
         self.service.set_voice("auto", "USB Mic")
         self.service.set_option("live", False)
