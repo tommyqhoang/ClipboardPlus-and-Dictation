@@ -95,8 +95,6 @@ jobs:
       # Supply chain: exact versioned URLs, each verified against a SHA-256 below.
       # Bump the URL and hash together (sha256sum the download; gyan.dev also
       # publishes the Windows hash next to the archive as <name>.sha256).
-      FFMPEG_LINUX_URL: https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz
-      FFMPEG_LINUX_SHA256: abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67
       FFMPEG_WINDOWS_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip
       FFMPEG_WINDOWS_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
       APPIMAGETOOL_VERSION: "1.9.1"
@@ -110,19 +108,13 @@ jobs:
       # PyInstaller analyzes them) and the pinned PyInstaller: one place each.
       - run: python -m pip install -r requirements-release.txt
       - run: pyinstaller ${{ matrix.spec }}
-      - name: Bundle ffmpeg + whisper.cpp (Linux)
+      # Linux records through the system arecord, so no ffmpeg ships there (only
+      # whisper.cpp). macOS and Windows record through ffmpeg and bundle it below.
+      - name: Bundle whisper.cpp (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -e
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 300 \
-            -o /tmp/ffmpeg-static.tar.xz "$FFMPEG_LINUX_URL"
-          echo "$FFMPEG_LINUX_SHA256  /tmp/ffmpeg-static.tar.xz" | sha256sum -c -
-          mkdir -p /tmp/ffmpeg-static
-          tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp/ffmpeg-static --strip-components=1
-          cp /tmp/ffmpeg-static/ffmpeg dist/clipboardplus/ffmpeg
-          chmod +x dist/clipboardplus/ffmpeg
-
           git clone --depth 1 --branch "$WHISPER_VERSION" \
             https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp
           [ "$(git -C /tmp/whisper.cpp rev-parse HEAD)" = "$WHISPER_COMMIT" ]
@@ -339,13 +331,12 @@ jobs:
           cp "$GITHUB_WORKSPACE/${{ matrix.asset }}" ./inspect.AppImage
           chmod +x inspect.AppImage
           ./inspect.AppImage --appimage-extract >/dev/null
-          for f in AppRun usr/bin/tray usr/bin/ffmpeg usr/bin/whisper-cli usr/bin/whisper-server \
+          for f in AppRun usr/bin/tray usr/bin/whisper-cli usr/bin/whisper-server \
             usr/share/doc/clipboardplus/LICENSE usr/share/doc/clipboardplus/THIRD-PARTY-NOTICES.md \
             usr/share/clipboardplus/uninstall-appimage.sh clipboardplus.desktop; do
             test -e "squashfs-root/$f" || { echo "::error::AppImage is missing $f"; exit 1; }
           done
-          test -x squashfs-root/usr/bin/ffmpeg
-          squashfs-root/usr/bin/ffmpeg -version | head -1
+          test -x squashfs-root/usr/bin/whisper-cli
           squashfs-root/usr/bin/whisper-cli --help >/dev/null 2>&1 || true
       - name: Inspect the built installer (macOS DMG)
         if: runner.os == 'macOS'

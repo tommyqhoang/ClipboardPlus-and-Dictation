@@ -5,6 +5,10 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+### Changed
+- Linux AppImage no longer bundles ffmpeg (it records through `arecord` and never ran it),
+  so the release no longer depends on a third-party ffmpeg host and the download is smaller.
+
 ## [1.7.1] - 2026-10-19
 
 ### Fixed

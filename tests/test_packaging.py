@@ -268,10 +268,15 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("/continuous/", self.release)
         self.assertNotIn("ffmpeg-release-amd64-static", self.release)
         self.assertNotIn("ffmpeg-release-essentials", self.release)
-        for name in ("FFMPEG_LINUX_SHA256", "FFMPEG_WINDOWS_SHA256", "APPIMAGETOOL_SHA256"):
+        for name in ("FFMPEG_WINDOWS_SHA256", "APPIMAGETOOL_SHA256"):
             self.assertRegex(self.release, rf"{name}: [0-9a-f]{{64}}")
         self.assertIn("sha256sum -c -", self.release)
         self.assertIn("Get-FileHash", self.release)
+
+    def test_linux_bundles_no_ffmpeg_because_it_records_through_arecord(self):
+        self.assertNotIn("FFMPEG_LINUX", self.release)
+        self.assertNotIn("johnvansickle", self.release)
+        self.assertNotIn("usr/bin/ffmpeg", self.release)
 
     def test_gui_and_build_pins_live_in_requirements_files_only(self):
         gui = read("requirements-gui.txt")

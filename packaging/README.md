@@ -7,8 +7,8 @@ design (a historical record; this file and the code describe what ships).
 
 One residual dependency: on Linux, ALSA-backend mic capture still shells
 out to the system `arecord` (from `alsa-utils`) rather than a bundled
-binary — only ffmpeg and whisper.cpp are bundled, per the design spec's
-scope. Most desktops already have `alsa-utils` installed. The AppImage's
+binary. Only whisper.cpp is bundled on Linux (ffmpeg too on macOS and
+Windows, where recording uses it). Most desktops already have `alsa-utils` installed. The AppImage's
 `AppRun` runs a preflight at startup: if `arecord` is missing it prints and
 notifies a message naming the package, and clipboard history keeps working.
 This is a documented requirement, not an oversight.
@@ -18,11 +18,11 @@ Architectures: the release builds Linux x86_64, Windows x86_64, macOS Intel
 ARM64 installer; those users use the source install.
 
 Licensing: `LICENSE` and `THIRD-PARTY-NOTICES.md` (whisper.cpp MIT, ffmpeg GPL
-with a source offer) are copied into every installer.
+with a source offer on macOS and Windows) are copied into every installer.
 
 The commands below produce a bundle with no ffmpeg or whisper.cpp — that
 bundling is a separate step CI runs after `pyinstaller` and before wrapping
-(fetches a static ffmpeg, builds whisper.cpp from the same pinned source
+(fetches ffmpeg on macOS and Windows, builds whisper.cpp from the same pinned source
 install.sh uses, and copies both into `dist/clipboardplus/`); see the
 "Bundle ffmpeg + whisper.cpp" steps in `.github/workflows/release.yml` for
 the exact commands to reproduce that locally.
@@ -40,7 +40,7 @@ the exact commands to reproduce that locally.
   only after all installer assets and checksums are ready.
 - Pinned inputs: Python packages in `requirements-gui.txt` (GUI toolkits, the
   single place these pins live) and `requirements-release.txt` (adds the
-  PyInstaller version); action SHAs; whisper.cpp tag + commit; ffmpeg URLs with
+  PyInstaller version); action SHAs; whisper.cpp tag + commit; the Windows ffmpeg URL with
   SHA-256 (`FFMPEG_*` in `release.yml`); `appimagetool` release tag with
   SHA-256; Inno Setup version. To bump a downloaded tool, change the URL and its
   hash together (download it and run `sha256sum`); a mismatch fails the build.

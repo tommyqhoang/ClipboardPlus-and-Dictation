@@ -28,11 +28,11 @@ OpenAI under the MIT license.
 
 ## FFmpeg (GPL)
 
-The installers bundle an unmodified `ffmpeg` executable:
+The macOS and Windows installers bundle an unmodified `ffmpeg` executable. The
+Linux AppImage does not; it records through the system `arecord`:
 
 | Platform | Build | Upstream |
 |---|---|---|
-| Linux x86_64 | static build 7.0.2 | https://johnvansickle.com/ffmpeg/ |
 | Windows x86_64 | gyan.dev "essentials" 9.0.2 | https://www.gyan.dev/ffmpeg/builds/ |
 | macOS | Homebrew `ffmpeg` bottle plus its dylibs (dylibbundler) | https://formulae.brew.sh/formula/ffmpeg |
 
@@ -44,7 +44,7 @@ as a separate process and does not link against it.
 **Source offer.** The complete corresponding source for the bundled FFmpeg is
 available from the FFmpeg project at https://ffmpeg.org/releases/ and, with
 the exact build scripts and configuration used, from the upstream builders
-listed above (Linux: https://johnvansickle.com/ffmpeg/ , Windows:
+listed above (Windows:
 https://github.com/GyanD/codexffmpeg , macOS: https://github.com/Homebrew/homebrew-core).
 On request to the maintainer (open an issue at
 https://github.com/tommyqhoang/ClipboardPlus-and-Dictation/issues), we will

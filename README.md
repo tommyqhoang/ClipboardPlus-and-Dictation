@@ -85,7 +85,7 @@ Download the installer for your OS from the
   clipboard history works without it.
 
 No Python and no terminal needed. Everything else ships inside the download
-(Python runtime, whisper.cpp and ffmpeg); the only outside pieces are the
+(Python runtime and whisper.cpp, plus ffmpeg on macOS and Windows); the only outside pieces are the
 Linux `arecord` above and the operating system itself. Licenses of the
 bundled components are in `THIRD-PARTY-NOTICES.md`. Prefer a one-line install script instead
 (or want to build from a Git checkout)? See

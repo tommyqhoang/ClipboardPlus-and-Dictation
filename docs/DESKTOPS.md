@@ -9,7 +9,7 @@ over from there. Users do not need a Git checkout or application commands.
 
 The table below describes `install.sh`/`bootstrap.ps1`'s Python-based install —
 see [Build from source](../README.md#build-from-source). The downloadable
-installer bundles its own copy of ffmpeg and whisper.cpp (built by
+installer bundles its own copy of whisper.cpp (and ffmpeg on macOS and Windows; built by
 `.github/workflows/release.yml`) and needs none of this; ALSA tools remain a
 system dependency for microphone capture even there (see `packaging/README.md`).
 
