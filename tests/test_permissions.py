@@ -100,10 +100,6 @@ class MessageTests(unittest.TestCase):
             self.assertIn("PipeWire", permissions.microphone_message("x11"))
         with patch.object(permissions, "linux_audio_server", return_value="alsa"):
             self.assertIn("ALSA", permissions.microphone_message("x11", "busy"))
-        self.assertEqual(
-            permissions.microphone_settings_url("windows"), "ms-settings:privacy-microphone"
-        )
-        self.assertIsNone(permissions.microphone_settings_url("x11"))
 
     def test_the_accessibility_link_is_exact(self):
         self.assertEqual(

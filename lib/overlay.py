@@ -41,7 +41,6 @@ WIDTH, HEIGHT, DRAFT_HEIGHT = 480, 76, 104
 MARGIN = 200  # Below the top edge: clear of the top bar and notification banners.
 BARS = 19
 FRAME_MS = 33  # About 30 frames a second.
-SAMPLE_RATE = 16_000  # The recorder writes raw 16-bit mono PCM at this rate.
 WINDOW_SAMPLES = 800  # 50 ms of audio per level reading.
 HOLD = {"copied": 1.6, "empty": 2.2, "cancelled": 1.0, "error": 8.0}  # A click dismisses.
 LIFETIME_SECONDS = 1200.0  # A stuck session never leaves the pill up for good.

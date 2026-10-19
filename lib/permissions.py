@@ -207,15 +207,6 @@ def microphone_blocked() -> str | None:
     return None
 
 
-def microphone_settings_url(session: str | None = None) -> str | None:
-    session = session or session_kind()
-    if session == "macos":
-        return MAC_MICROPHONE_URL
-    if session == "windows":
-        return WINDOWS_MICROPHONE_URL
-    return None
-
-
 def tail_of(data: bytes | str | None, limit: int = 300) -> str:
     """The last few lines of a tool's output, for a message or a log line."""
     if not data:

@@ -61,14 +61,7 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(hotkeys.Shortcut(("cmd",), "D").problem("macos"), "")
 
     def test_captured_keys(self):
-        flags = hotkeys.EVENT_FLAGS["shift"] | hotkeys.EVENT_FLAGS["ctrl"]
         old = hotkeys.Shortcut(("ctrl", "shift"), "D")
-        self.assertEqual(hotkeys.from_mac_event(2, flags, "d"), old)
-        self.assertEqual(hotkeys.from_mac_event(49, flags, " ").key, "Space")
-        # Every modifier survives, whatever order the event flags are read in.
-        every = sum(hotkeys.EVENT_FLAGS.values())
-        self.assertEqual(hotkeys.from_mac_event(2, every, "d").modifiers, hotkeys.MODIFIER_ORDER)
-        self.assertEqual(hotkeys.from_mac_event(200, 0, "é").key, "É")
         self.assertIsNone(hotkeys.from_tk("Control_L", set()))
         self.assertEqual(hotkeys.from_tk("d", {"ctrl", "shift"}), old)
         self.assertEqual(hotkeys.from_tk("space", {"alt"}), hotkeys.Shortcut(("alt",), "Space"))

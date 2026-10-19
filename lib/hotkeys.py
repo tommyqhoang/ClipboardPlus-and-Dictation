@@ -15,6 +15,7 @@ import string
 import subprocess
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -46,7 +47,6 @@ MAC_SYMBOLS = {"ctrl": "⌃", "alt": "⌥", "shift": "⇧", "cmd": "⌘"}
 # Carbon (macOS) modifier masks from Events.h.
 CARBON = {"ctrl": 0x1000, "alt": 0x800, "shift": 0x200, "cmd": 0x100}
 # NSEvent modifierFlags bits.
-EVENT_FLAGS = {"shift": 1 << 17, "ctrl": 1 << 18, "alt": 1 << 19, "cmd": 1 << 20}
 # RegisterHotKey (Windows) modifiers; MOD_NOREPEAT stops auto-repeat toggling.
 WINDOWS = {"alt": 0x1, "ctrl": 0x2, "shift": 0x4, "cmd": 0x8}
 MOD_NOREPEAT = 0x4000
@@ -320,11 +320,6 @@ def history_presets(platform: str) -> tuple[Shortcut, ...]:
 
 
 HISTORY_PRESETS = history_presets(desktop.platform_name())
-
-
-def from_mac_event(key_code: int, flags: int, characters: str) -> Shortcut:
-    key = MAC_KEY_NAMES.get(key_code) or characters.strip().upper()
-    return Shortcut(canonical(n for n in EVENT_FLAGS if flags & EVENT_FLAGS[n]), key)
 
 
 def tk_modifier(keysym: str, platform: str | None = None) -> str:
@@ -836,6 +831,13 @@ def gnome_release(path: str, run: Any = subprocess.run) -> bool:
     return not result.returncode
 
 
+def _gsettings(run: Any, *args: str) -> str:
+    result = run(["gsettings", *args], capture_output=True, text=True, timeout=10)
+    if result.returncode:
+        raise OSError(result.stderr)
+    return str(result.stdout).strip()
+
+
 def _gnome_command(command: Path | list[str]) -> str:
     return shlex.join(command) if isinstance(command, list) else shlex.quote(str(command))
 
@@ -899,11 +901,7 @@ def gnome_shortcut(
         return False
     schema = f"{GNOME_LIST[0]}.custom-keybinding:{path}"
 
-    def gsettings(*args: str) -> str:
-        result = run(["gsettings", *args], capture_output=True, text=True, timeout=10)
-        if result.returncode:
-            raise OSError(result.stderr)
-        return str(result.stdout).strip()
+    gsettings = partial(_gsettings, run)
 
     try:
         current = gsettings("get", *GNOME_LIST)
@@ -956,11 +954,7 @@ def gnome_remove(
         return
     schema = f"{GNOME_LIST[0]}.custom-keybinding:{path}"
 
-    def gsettings(*args: str) -> str:
-        result = run(["gsettings", *args], capture_output=True, text=True, timeout=10)
-        if result.returncode:
-            raise OSError(result.stderr)
-        return str(result.stdout).strip()
+    gsettings = partial(_gsettings, run)
 
     try:
         ours = (repr(_gnome_command(command)), repr(_gnome_command(via_shortcut(command))))
