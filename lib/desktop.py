@@ -518,6 +518,66 @@ def clipboard_command(values: dict[str, Any]) -> list[str]:
 NOTIFY_NAME = "Clipboard+"
 DESKTOP_ENTRY_ID = "clipboardplus"
 FORMER_DESKTOP_ENTRY_IDS = ("whisper-dictation",)
+WM_CLASS = "ClipboardPlus"  # Tk's className; a launcher's StartupWMClass must match it.
+WINDOWS_APP_ID = "Aperca.ClipboardPlus"  # Must match the Start Menu shortcut's AppUserModelID.
+
+
+def set_windows_app_id() -> None:
+    """Name this process "Clipboard+" to the Windows shell (taskbar grouping, toasts).
+    Call before the first window; a no-op elsewhere."""
+    if platform_name() != "windows":
+        return
+    try:
+        import ctypes
+
+        getattr(ctypes, "windll").shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+    except (AttributeError, OSError):
+        pass
+
+
+def appimage_launcher(appimage: str, icon: str = DESKTOP_ENTRY_ID) -> str:
+    """The .desktop entry for a running AppImage. Without one, GNOME and KDE list the
+    app's windows and notifications as "Unknown app"."""
+    exec_path = (
+        appimage.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("`", "\\`")
+        .replace("$", "\\$")
+        .replace("%", "%%")
+    )
+    return (
+        "[Desktop Entry]\nType=Application\nName=Clipboard+\n"
+        "Comment=Dictation and clipboard history\n"
+        f'Exec="{exec_path}"\nIcon={icon}\nTerminal=false\nCategories=Utility;Audio;\n'
+        f"StartupWMClass={WM_CLASS}\nX-GNOME-UsesNotifications=true\n"
+    )
+
+
+def integrate_appimage(home: Path | None = None, icon_source: Path | None = None) -> bool:
+    """Register the running AppImage with the desktop (menu entry, icon, window and
+    notification identity) in the user's own folders. Rewritten when the AppImage moved
+    or an upgrade changed the entry. True when written; never raises."""
+    appimage = os.environ.get("APPIMAGE")
+    if platform_name() != "linux" or not appimage or not Path(appimage).is_absolute():
+        return False
+    home = home or Path.home()
+    data = home / ".local/share"
+    try:
+        source = icon_source or Path(__file__).with_name("whisper-dictation.png")
+        if source.is_file():
+            target = data / f"icons/hicolor/256x256/apps/{DESKTOP_ENTRY_ID}.png"
+            if not target.is_file() or target.read_bytes() != source.read_bytes():
+                write_private(target, source.read_bytes())
+                target.chmod(0o644)
+        entry = data / f"applications/{DESKTOP_ENTRY_ID}.desktop"
+        text = appimage_launcher(appimage)
+        if entry.is_file() and entry.read_text(encoding="utf-8") == text:
+            return False
+        write_private(entry, text)
+        entry.chmod(0o644)
+        return True
+    except OSError:
+        return False
 
 
 def notification_command(values: dict[str, Any]) -> list[str]:

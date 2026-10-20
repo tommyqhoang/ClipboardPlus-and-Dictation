@@ -76,7 +76,6 @@ def primary_monitor(listing: str) -> tuple[int, int, int, int] | None:
 # Exit codes for the worker: it falls back to notifications for either.
 EXIT_NO_DISPLAY = 3
 EXIT_UNSUPPORTED = 4
-WINDOWS_APP_ID = "Aperca.ClipboardPlus"
 
 
 def set_macos_accessory_policy() -> None:
@@ -108,19 +107,13 @@ def hide_from_app_switcher(root: tk.Tk) -> None:
         except tk.TclError as exc:
             log.info("could not mark the recording pill as a tool window: %s", exc)
         try:
-            import ctypes
-
-            result = getattr(ctypes, "windll").shell32.SetCurrentProcessExplicitAppUserModelID(
-                WINDOWS_APP_ID
-            )
-            if result:
-                log.info("could not set the Clipboard+ Windows app identity: %s", result)
+            desktop.set_windows_app_id()
         except (AttributeError, OSError) as exc:
             log.info("could not set the Clipboard+ Windows app identity: %s", exc)
     elif platform == "linux":
         # Notification windows are excluded from GNOME/KDE task lists and docks.
         try:
-            root.tk.call("wm", "class", str(root), "ClipboardPlus", "ClipboardPlus")
+            root.tk.call("wm", "class", str(root), desktop.WM_CLASS, desktop.WM_CLASS)
             root.wm_attributes("-type", "notification")
         except tk.TclError as exc:
             log.info("could not mark the recording pill as a notification: %s", exc)

@@ -247,6 +247,18 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(command[command.index("--apply") + 1], "9.9.9")
         self.assertTrue(popen.call_args.kwargs.get("start_new_session") or True)
 
+    def test_a_packaged_build_starts_its_sibling_updater_not_the_tray(self):
+        with (
+            patch.object(updates.desktop, "frozen_root", return_value=Path("/app/usr/bin")),
+            patch.object(updates.desktop, "platform_name", return_value="linux"),
+            patch.object(updates.subprocess, "Popen") as popen,
+        ):
+            updates.start_updater("9.9.9", "https://example.com/t")
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["/app/usr/bin/updates", "--apply", "9.9.9", "https://example.com/t"],
+        )
+
     def test_a_release_is_read_from_a_real_http_response(self):
         import threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

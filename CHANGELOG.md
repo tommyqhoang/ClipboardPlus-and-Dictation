@@ -5,6 +5,13 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+### Fixed
+- Linux AppImage showed as "Unknown app" in notifications and the window list: it now registers a
+  menu entry and icon (with the window class) in your user folders on start-up.
+- Updating from a packaged build started the tray program instead of the updater.
+- Windows tray and app windows now carry the Clipboard+ identity, and the Start Menu shortcut
+  declares it, so toasts and the taskbar show the product name.
+
 ### Changed
 - Linux AppImage no longer bundles ffmpeg (it records through `arecord` and never ran it),
   so the release no longer depends on a third-party ffmpeg host and the download is smaller.

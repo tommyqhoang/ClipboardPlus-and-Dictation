@@ -977,5 +977,50 @@ class MacosBundleTests(unittest.TestCase):
             self.assertEqual(desktop.macos_bundle(), "")
 
 
+class AppImageIntegrationTests(unittest.TestCase):
+    def run_integration(self, home: Path, appimage: str = "/opt/My Apps/Clipboard+.AppImage"):
+        icon = home / "src.png"
+        icon.write_bytes(b"png")
+        with (
+            patch.object(desktop, "platform_name", return_value="linux"),
+            patch.dict(os.environ, {"APPIMAGE": appimage}),
+        ):
+            return desktop.integrate_appimage(home, icon)
+
+    def test_it_registers_a_launcher_and_icon_matching_the_window_class(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            self.assertTrue(self.run_integration(home))
+            text = (home / ".local/share/applications/clipboardplus.desktop").read_text()
+            self.assertIn('Exec="/opt/My Apps/Clipboard+.AppImage"', text)
+            self.assertIn(f"StartupWMClass={desktop.WM_CLASS}", text)
+            self.assertEqual(
+                (home / ".local/share/icons/hicolor/256x256/apps/clipboardplus.png").read_bytes(),
+                b"png",
+            )
+            self.assertFalse(self.run_integration(home))  # Unchanged: nothing rewritten.
+
+    def test_a_moved_appimage_updates_the_launcher(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            self.run_integration(home)
+            self.assertTrue(self.run_integration(home, "/new/Clipboard+.AppImage"))
+            text = (home / ".local/share/applications/clipboardplus.desktop").read_text()
+            self.assertIn('Exec="/new/Clipboard+.AppImage"', text)
+
+    def test_nothing_is_written_outside_an_appimage_or_on_other_systems(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            with patch.dict(os.environ, {}, clear=False) as env:
+                env.pop("APPIMAGE", None)
+                self.assertFalse(desktop.integrate_appimage(home))
+            with (
+                patch.object(desktop, "platform_name", return_value="macos"),
+                patch.dict(os.environ, {"APPIMAGE": "/x.AppImage"}),
+            ):
+                self.assertFalse(desktop.integrate_appimage(home))
+            self.assertFalse((home / ".local").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

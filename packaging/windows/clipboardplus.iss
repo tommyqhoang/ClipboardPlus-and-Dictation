@@ -42,8 +42,8 @@ Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Clipboard+"; Filename: "{app}\Clipboard+.exe"
-Name: "{userdesktop}\Clipboard+"; Filename: "{app}\Clipboard+.exe"; Tasks: desktopicon
+Name: "{group}\Clipboard+"; Filename: "{app}\Clipboard+.exe"; AppUserModelID: "Aperca.ClipboardPlus"
+Name: "{userdesktop}\Clipboard+"; Filename: "{app}\Clipboard+.exe"; AppUserModelID: "Aperca.ClipboardPlus"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked

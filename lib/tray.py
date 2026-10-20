@@ -921,6 +921,8 @@ def main() -> int:
             print("No desktop session to show the tray icon in; it starts at your next login.")
             return 1
         telemetry.install("tray")
+        desktop.integrate_appimage()
+        desktop.set_windows_app_id()
         if not child:
             return supervise(desktop.relaunch("tray"))
         try:

@@ -42,7 +42,8 @@ fi
 rm -f "$HOME/.config/autostart/clipboardplus.desktop" \
   "$HOME/.config/autostart/whisper-dictation.desktop" \
   "$HOME/.local/share/applications/clipboardplus.desktop" \
-  "$HOME/.local/share/applications/whisper-dictation.desktop"
+  "$HOME/.local/share/applications/whisper-dictation.desktop" \
+  "$HOME/.local/share/icons/hicolor/256x256/apps/clipboardplus.png"
 
 # KDE shortcuts: the launchers and their kglobalshortcutsrc entries.
 for launcher in "$HOME"/.local/share/applications/clipboardplus-*.desktop; do

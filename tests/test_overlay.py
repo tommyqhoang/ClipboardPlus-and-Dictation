@@ -67,7 +67,7 @@ class HelperTests(unittest.TestCase):
             overlay.hide_from_app_switcher(root)
         root.wm_attributes.assert_called_once_with("-toolwindow", True)
         windll.shell32.SetCurrentProcessExplicitAppUserModelID.assert_called_once_with(
-            overlay.WINDOWS_APP_ID
+            overlay.desktop.WINDOWS_APP_ID
         )
 
     def test_linux_overlay_is_a_branded_notification_window(self):

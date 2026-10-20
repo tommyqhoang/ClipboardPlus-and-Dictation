@@ -671,13 +671,7 @@ def apply_update(
 def start_updater(version: str, url: str) -> None:
     """Run apply_update in its own process; the tray reports progress from state."""
     subprocess.Popen(
-        [
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "--apply",
-            version,
-            url,
-        ],
+        desktop.relaunch("updates", "--apply", version, url),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

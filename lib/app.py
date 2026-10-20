@@ -2836,7 +2836,8 @@ def main(argv: list[str] | None = None) -> int:
     telemetry.install("window")
     try:
         set_macos_app_identity()
-        root = tk.Tk(className="ClipboardPlus")
+        desktop.set_windows_app_id()
+        root = tk.Tk(className=desktop.WM_CLASS)
 
         telemetry.watch_tk(root)
         telemetry.event("app_open", page=page or "home")
