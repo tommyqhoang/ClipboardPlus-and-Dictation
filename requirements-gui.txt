@@ -8,5 +8,6 @@ pyobjc-framework-AVFoundation==12.2.2; sys_platform == "darwin"
 pyobjc-framework-ApplicationServices==12.2.2; sys_platform == "darwin"
 pystray==0.19.5; sys_platform != "darwin"
 python-xlib==0.33; sys_platform == "linux"
-Pillow==12.3.0
+Pillow==13.0.0; python_version >= "3.11"
+Pillow==12.3.0; python_version < "3.11"
 keyring==25.7.0
