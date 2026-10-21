@@ -256,7 +256,7 @@ class UpdateTests(unittest.TestCase):
             updates.start_updater("9.9.9", "https://example.com/t")
         self.assertEqual(
             popen.call_args.args[0],
-            ["/app/usr/bin/updates", "--apply", "9.9.9", "https://example.com/t"],
+            [str(Path("/app/usr/bin") / "updates"), "--apply", "9.9.9", "https://example.com/t"],
         )
 
     def test_a_release_is_read_from_a_real_http_response(self):

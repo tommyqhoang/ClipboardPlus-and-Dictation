@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 if sys.platform == "win32":
@@ -558,7 +558,7 @@ def integrate_appimage(home: Path | None = None, icon_source: Path | None = None
     notification identity) in the user's own folders. Rewritten when the AppImage moved
     or an upgrade changed the entry. True when written; never raises."""
     appimage = os.environ.get("APPIMAGE")
-    if platform_name() != "linux" or not appimage or not Path(appimage).is_absolute():
+    if platform_name() != "linux" or not appimage or not PurePosixPath(appimage).is_absolute():
         return False
     home = home or Path.home()
     data = home / ".local/share"
