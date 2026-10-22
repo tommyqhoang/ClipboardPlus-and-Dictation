@@ -5,6 +5,8 @@ history; versions follow the `v*` release tags.
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-22
+
 ### Fixed
 - macOS: the app could quit immediately on first launch with no on-screen error ("Failed to
   load Python shared library"). The DMG build was missing a `Contents/Frameworks` symlink the
