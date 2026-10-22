@@ -19,6 +19,15 @@ cp -R "$DIST"/* "$APP/Contents/MacOS/"
 # Resources (sealed as resources, each Mach-O still signed below) and leave a
 # symlink so the executables find _internal next to themselves.
 mv "$APP/Contents/MacOS/_internal" "$APP/Contents/Resources/_internal"
+# Same reason, same move: dylibbundler (ffmpeg bundling step, macOS/Windows CI)
+# drops ffmpeg's dependency dylibs in a sibling libs/ folder and rewrites
+# ffmpeg's load commands to @executable_path/libs/*.dylib. Left in place it is
+# just a directory, not a signed Mach-O, so the cleanup loop below would also
+# delete it — silently breaking ffmpeg (and with it every mic feature) the
+# moment it tries to dlopen a dependency. Not every build bundles ffmpeg (a
+# local dev build run without the CI-only dylibbundler step won't), so only
+# move it when it exists.
+[[ -d "$APP/Contents/MacOS/libs" ]] && mv "$APP/Contents/MacOS/libs" "$APP/Contents/Resources/libs"
 # The PyInstaller bootloader detects it is running inside a .app (a path containing
 # "/Contents/MacOS/") and then looks for its support files under Contents/Frameworks,
 # the layout PyInstaller's own BUNDLE() step produces — never under Contents/MacOS,
@@ -36,6 +45,7 @@ for entry in "$APP/Contents/MacOS"/*; do
   fi
 done
 ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"
+[[ -d "$APP/Contents/Resources/libs" ]] && ln -s ../Resources/libs "$APP/Contents/MacOS/libs"
 # The executables read their data through that symlink; fail the build rather than
 # ship a menu bar app with no icon images.
 for required in menubar-icon.png menubar-recording.png; do
