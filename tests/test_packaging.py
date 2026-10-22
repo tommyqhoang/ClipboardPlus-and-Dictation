@@ -55,6 +55,11 @@ class MacBundleSigningTests(unittest.TestCase):
         # codesign rejects PyInstaller's _internal folder inside Contents/MacOS, so it
         # lives in Resources with a symlink left behind.
         self.assertIn('ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"', script)
+        # The PyInstaller bootloader looks for its support files in Contents/Frameworks
+        # when launched from inside a .app bundle, not next to the executable in
+        # Contents/MacOS — without this symlink every executable quits immediately
+        # with "Failed to load Python shared library" and no on-screen error.
+        self.assertIn('ln -s Resources/_internal "$APP/Contents/Frameworks"', script)
         # Only executables may remain in Contents/MacOS; data files there fail codesign.
         self.assertIn("grep -q 'Mach-O'", script)
         bundle_sign_pos = script.index('sign "$APP"')

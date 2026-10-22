@@ -6,6 +6,9 @@ history; versions follow the `v*` release tags.
 ## [Unreleased]
 
 ### Fixed
+- macOS: the app could quit immediately on first launch with no on-screen error ("Failed to
+  load Python shared library"). The DMG build was missing a `Contents/Frameworks` symlink the
+  bundled Python runtime needs; it's created and signed as part of the bundle now.
 - Linux AppImage showed as "Unknown app" in notifications and the window list: it now registers a
   menu entry and icon (with the window class) in your user folders on start-up.
 - Updating from a packaged build started the tray program instead of the updater.

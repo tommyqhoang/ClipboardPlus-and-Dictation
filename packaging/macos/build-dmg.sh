@@ -19,6 +19,14 @@ cp -R "$DIST"/* "$APP/Contents/MacOS/"
 # Resources (sealed as resources, each Mach-O still signed below) and leave a
 # symlink so the executables find _internal next to themselves.
 mv "$APP/Contents/MacOS/_internal" "$APP/Contents/Resources/_internal"
+# The PyInstaller bootloader detects it is running inside a .app (a path containing
+# "/Contents/MacOS/") and then looks for its support files under Contents/Frameworks,
+# the layout PyInstaller's own BUNDLE() step produces — never under Contents/MacOS,
+# even though that is where the symlink below also points. Without this, every
+# executable quits immediately with "Failed to load Python shared library" and no
+# on-screen error. (Found running an installed build: the MacOS/_internal symlink
+# alone was not enough to launch the app.)
+ln -s Resources/_internal "$APP/Contents/Frameworks"
 # Likewise any plain file PyInstaller left beside the executables (LICENSE and the
 # notices are already in Resources): codesign expects code, and only code, in MacOS.
 for entry in "$APP/Contents/MacOS"/*; do
@@ -30,12 +38,22 @@ done
 ln -s ../Resources/_internal "$APP/Contents/MacOS/_internal"
 # The executables read their data through that symlink; fail the build rather than
 # ship a menu bar app with no icon images.
-for required in menubar-icon.png menubar-recording.png libtk8.6.dylib; do
+for required in menubar-icon.png menubar-recording.png; do
   [[ -f "$APP/Contents/MacOS/_internal/$required" ]] || {
     echo "missing $required in the bundle" >&2
     exit 1
   }
 done
+# Tk's dylib name tracks the Python build's Tcl/Tk version (libtk8.6.dylib for
+# Tcl/Tk 8, libtcl9tk9.0.dylib for Tcl/Tk 9) rather than any fixed name, so glob
+# for it instead of hardcoding one version.
+shopt -s nullglob
+tk_libs=("$APP/Contents/MacOS/_internal"/libtk*.dylib "$APP/Contents/MacOS/_internal"/libtcl*tk*.dylib)
+shopt -u nullglob
+[[ ${#tk_libs[@]} -gt 0 ]] || {
+  echo "missing Tk's shared library in the bundle" >&2
+  exit 1
+}
 
 # --- Ad-hoc code signing ----------------------------------------------------
 # Two reasons this step exists:
