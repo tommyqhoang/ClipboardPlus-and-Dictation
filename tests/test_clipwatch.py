@@ -497,11 +497,15 @@ class X11Tests(unittest.TestCase):
 
         source = linux.X11Source()
         self.addCleanup(source.close)
-        with patch.object(source._display, "pending_events", side_effect=xerror.ConnectionClosedError("gone")):
+        with patch.object(
+            source._display, "pending_events", side_effect=xerror.ConnectionClosedError("gone")
+        ):
             with self.assertRaises(clipwatch.Unavailable):
                 source.wait(0.1)
             source._display.pending_events.side_effect = None
-        with patch.object(source._display, "close", side_effect=xerror.ConnectionClosedError("gone")):
+        with patch.object(
+            source._display, "close", side_effect=xerror.ConnectionClosedError("gone")
+        ):
             source.close()  # Closing an already-dead connection must not raise.
 
     def test_a_watcher_without_a_display_is_unavailable(self):
