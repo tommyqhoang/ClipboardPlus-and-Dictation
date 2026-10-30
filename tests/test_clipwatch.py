@@ -492,6 +492,18 @@ class X11Tests(unittest.TestCase):
         replacement.copy({"UTF8_STRING": b"second"})
         self.assertEqual(watcher.next_change(3).text, "second")
 
+    def test_a_closed_display_connection_is_unavailable_not_a_crash(self):
+        from Xlib import error as xerror
+
+        source = linux.X11Source()
+        self.addCleanup(source.close)
+        with patch.object(source._display, "pending_events", side_effect=xerror.ConnectionClosedError("gone")):
+            with self.assertRaises(clipwatch.Unavailable):
+                source.wait(0.1)
+            source._display.pending_events.side_effect = None
+        with patch.object(source._display, "close", side_effect=xerror.ConnectionClosedError("gone")):
+            source.close()  # Closing an already-dead connection must not raise.
+
     def test_a_watcher_without_a_display_is_unavailable(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DISPLAY", None)

@@ -190,6 +190,12 @@ class X11Source:
                 self._owner_class = self._window_class(event.owner)
 
     def wait(self, timeout: float) -> bool:
+        try:
+            return self._wait(timeout)
+        except self._error.ConnectionClosedError as exc:
+            raise Unavailable("The display connection closed.") from exc
+
+    def _wait(self, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
             self._drain()
@@ -218,7 +224,10 @@ class X11Source:
 
     # -- content -----------------------------------------------------------
     def read(self) -> Clip:
-        clip = self._read_content()
+        try:
+            clip = self._read_content()
+        except self._error.ConnectionClosedError as exc:
+            raise Unavailable("The display connection closed.") from exc
         return replace(clip, source_app=self._owner_class) if self._owner_class else clip
 
     def _read_content(self) -> Clip:
@@ -343,7 +352,7 @@ class X11Source:
     def close(self) -> None:
         try:
             self._display.close()
-        except (OSError, self._error.XError):
+        except (OSError, self._error.XError, self._error.ConnectionClosedError):
             pass
 
 
