@@ -322,16 +322,59 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("A `v*` tag runs `release.yml`", docs)
 
     def test_signing_steps_only_run_when_secrets_exist(self):
-        for secret in (
+        secret_names = (
             "APPLE_CERTIFICATE",
+            "APPLE_CERTIFICATE_PASSWORD",
+            "APPLE_SIGNING_IDENTITY",
             "APPLE_ID",
-            "AZURE_CLIENT_SECRET",
-            "WINDOWS_CERTIFICATE",
-        ):
+            "APPLE_TEAM_ID",
+            "APPLE_APP_SPECIFIC_PASSWORD",
+        )
+        for secret in (*secret_names, "AZURE_CLIENT_SECRET", "WINDOWS_CERTIFICATE"):
             self.assertIn(f"secrets.{secret}", self.release)
         self.assertIn("notarytool submit", self.release)
         self.assertIn("stapler staple", self.release)
         self.assertIn("steps.signing.outputs.apple == 'true'", self.release)
+
+        section = self.release.split("      - name: Detect signing credentials\n", 1)[1]
+        run_block = section.split("        run: |\n", 1)[1].split("      - name:", 1)[0]
+        script = "\n".join(line[10:] for line in run_block.splitlines())
+        with tempfile.TemporaryDirectory() as folder:
+            output_file = Path(folder) / "github-output"
+
+            def run_check(configured):
+                env = os.environ.copy()
+                for name in (*secret_names, "AZURE_CLIENT_SECRET", "WINDOWS_CERTIFICATE"):
+                    env.pop(name, None)
+                env.update(configured)
+                env["GITHUB_OUTPUT"] = str(output_file)
+                output_file.write_text("", encoding="utf-8")
+                return subprocess.run(
+                    ["bash", "-c", script],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+
+            unsigned = run_check({})
+            self.assertEqual(unsigned.returncode, 0, unsigned.stderr)
+            self.assertIn("ad-hoc/unsigned fallback", unsigned.stdout)
+            self.assertNotIn("apple=true", output_file.read_text(encoding="utf-8"))
+
+            partial = run_check({"APPLE_CERTIFICATE": "PRIVATE_CERTIFICATE_SENTINEL"})
+            self.assertNotEqual(partial.returncode, 0)
+            self.assertIn("Partial Apple signing configuration", partial.stdout)
+            self.assertIn("APPLE_CERTIFICATE_PASSWORD", partial.stdout)
+            self.assertNotIn("PRIVATE_CERTIFICATE_SENTINEL", partial.stdout + partial.stderr)
+            self.assertNotIn(
+                "PRIVATE_CERTIFICATE_SENTINEL", output_file.read_text(encoding="utf-8")
+            )
+
+            complete = run_check({name: "configured" for name in secret_names})
+            self.assertEqual(complete.returncode, 0, complete.stderr)
+            self.assertIn("apple=true", output_file.read_text(encoding="utf-8"))
+            self.assertNotIn("configured", complete.stdout + complete.stderr)
 
     def test_ci_security_workflows_exist(self):
         self.assertIn("python", read(".github", "workflows", "codeql.yml"))

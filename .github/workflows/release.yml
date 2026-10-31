@@ -195,13 +195,34 @@ jobs:
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
         run: |
-          [ -n "$APPLE_CERTIFICATE" ] && echo "apple=true" >> "$GITHUB_OUTPUT" || true
+          apple_secrets=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD)
+          present=0
+          missing=()
+          for name in "${apple_secrets[@]}"; do
+            if [ -n "${!name}" ]; then
+              present=$((present + 1))
+            else
+              missing+=("$name")
+            fi
+          done
+          if [ "$present" -eq "${#apple_secrets[@]}" ]; then
+            echo "apple=true" >> "$GITHUB_OUTPUT"
+          elif [ "$present" -eq 0 ]; then
+            echo "Apple signing secrets are not configured; using the documented ad-hoc/unsigned fallback."
+          else
+            echo "::error::Partial Apple signing configuration; missing required secrets: ${missing[*]}"
+            exit 1
+          fi
           [ -n "$AZURE_CLIENT_SECRET" ] && echo "azure=true" >> "$GITHUB_OUTPUT" || true
           [ -n "$WINDOWS_CERTIFICATE" ] && echo "pfx=true" >> "$GITHUB_OUTPUT" || true
-          echo "Unsigned fallbacks apply for any platform without secrets (see packaging/README.md)."
       - name: Smoke-launch every bundled entry point
         shell: bash
         run: |
